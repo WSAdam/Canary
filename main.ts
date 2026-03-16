@@ -50,6 +50,7 @@ function cronMatchesNow(cron: string, now: Date): boolean {
 
 Deno.cron("canary-runner", "* * * * *", async () => {
   const now = new Date();
+  lastCronTick = now.toISOString();
   console.log("🔍 cron tick:", now.toISOString());
 
   for await (const entry of kv.list<CheckDto>({ prefix: ["check"] })) {
@@ -91,12 +92,26 @@ async function parseBody<T>(req: Request): Promise<T> {
   }
 }
 
+const startedAt = new Date().toISOString();
+let lastCronTick: string | null = null;
+
 Deno.serve(async (req: Request): Promise<Response> => {
   const url = new URL(req.url);
   const { pathname } = url;
   const method = req.method;
 
   try {
+    // GET /
+    if (method === "GET" && pathname === "/") {
+      const monitors = await listMonitors();
+      return json({
+        status: "ok",
+        startedAt,
+        lastCronTick,
+        monitors: monitors.monitors.length,
+      });
+    }
+
     // POST /monitors
     if (method === "POST" && pathname === "/monitors") {
       const body = await parseBody(req);
