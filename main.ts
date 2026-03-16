@@ -1038,6 +1038,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const url = new URL(req.url);
   const { pathname } = url;
   const method = req.method;
+  const authHeader = req.headers.get("Authorization") ?? "(none)";
+  const tokenSnippet = authHeader.startsWith("Bearer ")
+    ? authHeader.slice(7, 15) + "..."
+    : "(no token)";
+  console.log(`🌐 ${method} ${pathname} | auth: ${tokenSnippet}`);
 
   try {
     // SPA shell

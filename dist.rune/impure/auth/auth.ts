@@ -9,6 +9,10 @@ interface UserRecord {
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
+function tok(t: string) {
+  return t.slice(0, 8) + "...";
+}
+
 async function hashPassword(password: string): Promise<{ hash: string; salt: string }> {
   const saltBytes = crypto.getRandomValues(new Uint8Array(16));
   const keyMaterial = await crypto.subtle.importKey(
@@ -48,35 +52,61 @@ async function verifyPassword(password: string, hash: string, salt: string): Pro
 }
 
 export async function seedAdmin(username: string, password: string): Promise<void> {
+  console.log("🔍 seedAdmin: checking for existing user:", username);
   const existing = await kv.get<UserRecord>(["user", username]);
-  if (existing.value !== null) return;
+  if (existing.value !== null) {
+    console.log("🔍 seedAdmin: user already exists, skipping");
+    return;
+  }
   const { hash, salt } = await hashPassword(password);
   await kv.set(["user", username], { username, passwordHash: hash, salt });
-  console.log("✅ admin seeded:", username);
+  console.log("✅ seedAdmin: admin created:", username);
 }
 
 export async function login(username: string, password: string): Promise<{ token: string }> {
+  console.log("🔍 login: attempt for:", username);
   const entry = await kv.get<UserRecord>(["user", username]);
-  if (!entry.value) throw new CanaryError("unauthorized", "Invalid credentials", 401);
+  if (!entry.value) {
+    console.log("❌ login: user not found in KV:", username);
+    throw new CanaryError("unauthorized", "Invalid credentials", 401);
+  }
+  console.log("🔍 login: user found, verifying password");
   const valid = await verifyPassword(password, entry.value.passwordHash, entry.value.salt);
-  if (!valid) throw new CanaryError("unauthorized", "Invalid credentials", 401);
+  if (!valid) {
+    console.log("❌ login: password mismatch for:", username);
+    throw new CanaryError("unauthorized", "Invalid credentials", 401);
+  }
   const token = crypto.randomUUID();
+  console.log("🔍 login: writing session to KV, token:", tok(token));
   await kv.set(["session", token], { username }, { expireIn: SESSION_TTL_MS });
-  console.log("✅ login:", username);
+  // Verify it was written
+  const check = await kv.get(["session", token]);
+  if (!check.value) {
+    console.log("❌ login: session write FAILED — KV returned null immediately after set");
+  } else {
+    console.log("✅ login: session confirmed in KV for:", username);
+  }
   return { token };
 }
 
 export async function logout(token: string): Promise<void> {
+  console.log("🔍 logout: deleting session:", tok(token));
   await kv.delete(["session", token]);
 }
 
 export async function validateSession(token: string): Promise<{ username: string }> {
+  console.log("🔍 validateSession: looking up token:", tok(token));
   const entry = await kv.get<{ username: string }>(["session", token]);
-  if (!entry.value) throw new CanaryError("unauthorized", "Invalid or expired session", 401);
+  if (!entry.value) {
+    console.log("❌ validateSession: session not found for token:", tok(token));
+    throw new CanaryError("unauthorized", "Invalid or expired session", 401);
+  }
+  console.log("✅ validateSession: valid session for:", entry.value.username);
   return entry.value;
 }
 
 export async function createUser(username: string, password: string): Promise<void> {
+  console.log("🔍 createUser:", username);
   const existing = await kv.get<UserRecord>(["user", username]);
   if (existing.value !== null) {
     throw new CanaryError("conflict", `User '${username}' already exists`, 409);
