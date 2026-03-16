@@ -89,6 +89,243 @@ Deno.cron("canary-runner", "* * * * *", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Static assets
+// ---------------------------------------------------------------------------
+
+const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <ellipse cx="42" cy="64" rx="26" ry="20" fill="#FFD700"/>
+  <circle cx="66" cy="38" r="19" fill="#FFD700"/>
+  <polygon points="83,36 97,32 83,43" fill="#FF8C00"/>
+  <circle cx="72" cy="32" r="4.5" fill="#1a1a1a"/>
+  <circle cx="73" cy="31" r="1.8" fill="white"/>
+  <ellipse cx="37" cy="65" rx="17" ry="9" fill="#FFC107" transform="rotate(-15 37 65)"/>
+  <polygon points="17,70 4,58 4,80" fill="#FFB300"/>
+  <line x1="46" y1="84" x2="38" y2="96" stroke="#FF8C00" stroke-width="3.5" stroke-linecap="round"/>
+  <line x1="38" y1="96" x2="32" y2="99" stroke="#FF8C00" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="38" y1="96" x2="43" y2="100" stroke="#FF8C00" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="56" y1="84" x2="64" y2="96" stroke="#FF8C00" stroke-width="3.5" stroke-linecap="round"/>
+  <line x1="64" y1="96" x2="70" y2="99" stroke="#FF8C00" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="64" y1="96" x2="60" y2="100" stroke="#FF8C00" stroke-width="2.5" stroke-linecap="round"/>
+</svg>`;
+
+const INDEX_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Canary</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --yellow: #FFD700;
+      --bg: #0f0f0f;
+      --surface: #1a1a1a;
+      --border: #2a2a2a;
+      --text: #e0e0e0;
+      --muted: #777;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .page { width: 100%; max-width: 480px; padding: 24px; }
+
+    /* Login */
+    .login-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 44px 40px;
+    }
+    .logo { text-align: center; margin-bottom: 36px; }
+    .logo img { width: 60px; height: 60px; }
+    .logo h1 { font-size: 22px; font-weight: 600; margin-top: 14px; letter-spacing: 0.3px; }
+    .logo p { color: var(--muted); font-size: 13px; margin-top: 5px; }
+    .form-group { margin-bottom: 14px; }
+    label { display: block; font-size: 12px; font-weight: 500; margin-bottom: 7px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
+    input {
+      width: 100%; padding: 11px 14px;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); font-size: 14px;
+      outline: none; transition: border-color 0.15s;
+    }
+    input:focus { border-color: var(--yellow); }
+    .btn {
+      width: 100%; padding: 12px;
+      background: var(--yellow); color: #000;
+      border: none; border-radius: 8px;
+      font-size: 14px; font-weight: 600;
+      cursor: pointer; margin-top: 10px;
+      transition: opacity 0.15s;
+    }
+    .btn:hover { opacity: 0.88; }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .error { color: #ff5f5f; font-size: 13px; margin-top: 14px; text-align: center; min-height: 18px; }
+
+    /* Dashboard */
+    #dashboard { display: none; }
+    .dash-header {
+      display: flex; align-items: center;
+      justify-content: space-between; margin-bottom: 28px;
+    }
+    .dash-title { display: flex; align-items: center; gap: 12px; }
+    .dash-title img { width: 30px; height: 30px; }
+    .dash-title h1 { font-size: 18px; font-weight: 600; }
+    .logout-btn {
+      background: none; border: 1px solid var(--border);
+      color: var(--muted); border-radius: 8px;
+      padding: 6px 14px; font-size: 12px;
+      cursor: pointer; transition: border-color 0.15s, color 0.15s;
+    }
+    .logout-btn:hover { border-color: var(--text); color: var(--text); }
+    .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 20px;
+    }
+    .full { grid-column: 1 / -1; }
+    .card-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    .card-value { font-size: 30px; font-weight: 700; margin-top: 8px; }
+    .card-value.ok { color: var(--yellow); }
+    .card-sub { font-size: 13px; font-weight: 500; margin-top: 8px; color: var(--text); }
+    .card-sub.dim { color: var(--muted); }
+    .api-hint {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 16px 20px;
+      font-size: 12px; color: var(--muted); line-height: 1.7;
+    }
+    .api-hint code {
+      background: var(--bg); padding: 1px 6px; border-radius: 4px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 11px; color: var(--yellow);
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <div id="login">
+    <div class="login-card">
+      <div class="logo">
+        <img src="/favicon.svg" alt="Canary">
+        <h1>Canary</h1>
+        <p>HTTP monitoring and alerting</p>
+      </div>
+      <div class="form-group">
+        <label for="username">Username</label>
+        <input type="text" id="username" placeholder="you@example.com" autocomplete="username">
+      </div>
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input type="password" id="password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" autocomplete="current-password">
+      </div>
+      <button class="btn" id="login-btn" onclick="doLogin()">Sign in</button>
+      <div class="error" id="login-error"></div>
+    </div>
+  </div>
+
+  <div id="dashboard">
+    <div class="dash-header">
+      <div class="dash-title">
+        <img src="/favicon.svg" alt="Canary">
+        <h1>Canary</h1>
+      </div>
+      <button class="logout-btn" onclick="doLogout()">Sign out</button>
+    </div>
+    <div class="cards">
+      <div class="card">
+        <div class="card-label">Status</div>
+        <div class="card-value ok" id="status-val">ok</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Monitors</div>
+        <div class="card-value" id="monitors-val">—</div>
+      </div>
+      <div class="card full">
+        <div class="card-label">Last cron tick</div>
+        <div class="card-sub dim" id="tick-val">—</div>
+      </div>
+      <div class="card full">
+        <div class="card-label">Started</div>
+        <div class="card-sub dim" id="started-val">—</div>
+      </div>
+    </div>
+    <div class="api-hint">
+      Use <code>Authorization: Bearer &lt;token&gt;</code> to access the API programmatically.
+      Your session is stored in this browser and expires after 24 hours.
+    </div>
+  </div>
+
+</div>
+<script>
+  const TOKEN_KEY = 'canary_token';
+  const getToken = () => localStorage.getItem(TOKEN_KEY);
+  const setToken = (t) => localStorage.setItem(TOKEN_KEY, t);
+  const clearToken = () => localStorage.removeItem(TOKEN_KEY);
+
+  async function doLogin() {
+    const username = document.getElementById('username').value.trim();
+    const password = document.getElementById('password').value;
+    const btn = document.getElementById('login-btn');
+    const err = document.getElementById('login-error');
+    if (!username || !password) { err.textContent = 'Username and password are required.'; return; }
+    btn.disabled = true; btn.textContent = 'Signing in...'; err.textContent = '';
+    try {
+      const res = await fetch('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) { err.textContent = data.message || 'Login failed.'; return; }
+      setToken(data.token);
+      showDashboard();
+    } catch { err.textContent = 'Network error. Please try again.'; }
+    finally { btn.disabled = false; btn.textContent = 'Sign in'; }
+  }
+
+  async function doLogout() {
+    const token = getToken();
+    if (token) fetch('/auth/logout', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token } }).catch(() => {});
+    clearToken();
+    showLogin();
+  }
+
+  async function showDashboard() {
+    document.getElementById('login').style.display = 'none';
+    document.getElementById('dashboard').style.display = 'block';
+    try {
+      const res = await fetch('/api/status');
+      const d = await res.json();
+      document.getElementById('monitors-val').textContent = d.monitors ?? '—';
+      document.getElementById('status-val').textContent = d.status || 'ok';
+      document.getElementById('tick-val').textContent = d.lastCronTick
+        ? new Date(d.lastCronTick).toLocaleString() : 'Not yet ticked';
+      document.getElementById('started-val').textContent = d.startedAt
+        ? new Date(d.startedAt).toLocaleString() : '—';
+    } catch {}
+  }
+
+  function showLogin() {
+    document.getElementById('login').style.display = 'block';
+    document.getElementById('dashboard').style.display = 'none';
+  }
+
+  document.getElementById('password').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+  document.getElementById('username').addEventListener('keydown', (e) => { if (e.key === 'Enter') document.getElementById('password').focus(); });
+
+  if (getToken()) showDashboard();
+</script>
+</body>
+</html>`;
+
+// ---------------------------------------------------------------------------
 // HTTP helpers
 // ---------------------------------------------------------------------------
 
@@ -96,6 +333,12 @@ function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
     headers: { "Content-Type": "application/json" },
+  });
+}
+
+function html(content: string): Response {
+  return new Response(content, {
+    headers: { "Content-Type": "text/html; charset=utf-8" },
   });
 }
 
@@ -133,15 +376,22 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const method = req.method;
 
   try {
-    // GET / — public health check
+    // GET / — login/dashboard UI
     if (method === "GET" && pathname === "/") {
-      const monitors = await listMonitors();
-      return json({
-        status: "ok",
-        startedAt,
-        lastCronTick,
-        monitors: monitors.monitors.length,
+      return html(INDEX_HTML);
+    }
+
+    // GET /favicon.svg
+    if (method === "GET" && pathname === "/favicon.svg") {
+      return new Response(FAVICON_SVG, {
+        headers: { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=86400" },
       });
+    }
+
+    // GET /api/status — public JSON status
+    if (method === "GET" && pathname === "/api/status") {
+      const monitors = await listMonitors();
+      return json({ status: "ok", startedAt, lastCronTick, monitors: monitors.monitors.length });
     }
 
     // POST /auth/login — public
