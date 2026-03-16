@@ -1,6 +1,15 @@
 import { CanaryError } from "./dist.rune/dto/_shared.ts";
 import { kv } from "./dist.rune/impure/_kv.ts";
 import type { CheckDto } from "./dist.rune/dto/check-dto.ts";
+import {
+  createUser,
+  deleteUser,
+  listUsers,
+  login,
+  logout,
+  seedAdmin,
+  validateSession,
+} from "./dist.rune/impure/auth/auth.ts";
 
 // Integration imports
 import { createMonitor } from "./dist.rune/integration/monitor-create/monitor-create.ts";
@@ -15,6 +24,18 @@ import { setSecret } from "./dist.rune/integration/secret-set/secret-set.ts";
 import { listSecrets } from "./dist.rune/integration/secret-list/secret-list.ts";
 import { deleteSecret } from "./dist.rune/integration/secret-delete/secret-delete.ts";
 import { executeRunner } from "./dist.rune/integration/runner-execute/runner-execute.ts";
+
+// ---------------------------------------------------------------------------
+// Seed admin on startup
+// ---------------------------------------------------------------------------
+
+const adminUsername = Deno.env.get("ADMIN_USERNAME");
+const adminPassword = Deno.env.get("ADMIN_PASSWORD");
+if (adminUsername && adminPassword) {
+  await seedAdmin(adminUsername, adminPassword);
+} else {
+  console.warn("⚠️ ADMIN_USERNAME or ADMIN_PASSWORD not set — admin not seeded");
+}
 
 // ---------------------------------------------------------------------------
 // Cron: check all monitors every minute, run those whose cron matches now
@@ -48,6 +69,9 @@ function cronMatchesNow(cron: string, now: Date): boolean {
   );
 }
 
+const startedAt = new Date().toISOString();
+let lastCronTick: string | null = null;
+
 Deno.cron("canary-runner", "* * * * *", async () => {
   const now = new Date();
   lastCronTick = now.toISOString();
@@ -58,14 +82,14 @@ Deno.cron("canary-runner", "* * * * *", async () => {
     if (cronMatchesNow(checkDto.cron, now)) {
       console.log("⏰ scheduling run for monitor:", checkDto.monitorId);
       executeRunner({ monitorId: checkDto.monitorId }).catch((e) => {
-        console.error("❌ runner failed for", checkDto.monitorId, "—", (e as Error).message);
+        console.error("❌ runner failed for", checkDto.monitorId, ":", (e as Error).message);
       });
     }
   }
 });
 
 // ---------------------------------------------------------------------------
-// HTTP server
+// HTTP helpers
 // ---------------------------------------------------------------------------
 
 function json(data: unknown, status = 200): Response {
@@ -92,8 +116,16 @@ async function parseBody<T>(req: Request): Promise<T> {
   }
 }
 
-const startedAt = new Date().toISOString();
-let lastCronTick: string | null = null;
+function extractToken(req: Request): string {
+  const header = req.headers.get("Authorization") ?? "";
+  const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+  if (!token) throw new CanaryError("unauthorized", "Missing Authorization header", 401);
+  return token;
+}
+
+// ---------------------------------------------------------------------------
+// HTTP server
+// ---------------------------------------------------------------------------
 
 Deno.serve(async (req: Request): Promise<Response> => {
   const url = new URL(req.url);
@@ -101,7 +133,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const method = req.method;
 
   try {
-    // GET /
+    // GET / — public health check
     if (method === "GET" && pathname === "/") {
       const monitors = await listMonitors();
       return json({
@@ -110,6 +142,41 @@ Deno.serve(async (req: Request): Promise<Response> => {
         lastCronTick,
         monitors: monitors.monitors.length,
       });
+    }
+
+    // POST /auth/login — public
+    if (method === "POST" && pathname === "/auth/login") {
+      const body = await parseBody<{ username: string; password: string }>(req);
+      return json(await login(body.username, body.password));
+    }
+
+    // All routes below require a valid session
+    const token = extractToken(req);
+    await validateSession(token);
+
+    // POST /auth/logout
+    if (method === "POST" && pathname === "/auth/logout") {
+      await logout(token);
+      return json({ ok: true });
+    }
+
+    // POST /users
+    if (method === "POST" && pathname === "/users") {
+      const body = await parseBody<{ username: string; password: string }>(req);
+      await createUser(body.username, body.password);
+      return json({ ok: true }, 201);
+    }
+
+    // GET /users
+    if (method === "GET" && pathname === "/users") {
+      return json(await listUsers());
+    }
+
+    // DELETE /users/:username
+    const userMatch = pathname.match(/^\/users\/([^/]+)$/);
+    if (userMatch && method === "DELETE") {
+      await deleteUser(decodeURIComponent(userMatch[1]));
+      return json({ ok: true });
     }
 
     // POST /monitors
