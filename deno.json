@@ -1,10 +1,11 @@
 {
   "tasks": {
-    "start": "deno run --allow-net --allow-env --unstable-cron --env-file main.ts",
-    "dev": "deno run --allow-net --allow-env --unstable-cron --env-file --watch main.ts",
+    "start": "deno run --allow-net --allow-env --unstable-cron --unstable-kv --env-file main.ts",
+    "dev": "deno run --allow-net --allow-env --unstable-cron --unstable-kv --env-file --watch main.ts",
     "test": "deno test --allow-net --allow-env dist.rune/pure/"
   },
   "compilerOptions": {
     "strict": true
-  }
+  },
+  "unstable": ["kv", "cron"]
 }
