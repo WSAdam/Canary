@@ -10,6 +10,7 @@ import {
   seedAdmin,
   validateSession,
 } from "./dist.rune/impure/auth/auth.ts";
+import { consumeInvite, createInvites } from "./dist.rune/impure/invite/invite.ts";
 
 // Integration imports
 import { createMonitor } from "./dist.rune/integration/monitor-create/monitor-create.ts";
@@ -38,7 +39,7 @@ if (adminUsername && adminPassword) {
 }
 
 // ---------------------------------------------------------------------------
-// Cron: check all monitors every minute, run those whose cron matches now
+// Cron: check all monitors every minute
 // ---------------------------------------------------------------------------
 
 function matchField(field: string, value: number): boolean {
@@ -76,7 +77,6 @@ Deno.cron("canary-runner", "* * * * *", async () => {
   const now = new Date();
   lastCronTick = now.toISOString();
   console.log("🔍 cron tick:", now.toISOString());
-
   for await (const entry of kv.list<CheckDto>({ prefix: ["check"] })) {
     const checkDto = entry.value;
     if (cronMatchesNow(checkDto.cron, now)) {
@@ -111,216 +111,882 @@ const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 10
 const INDEX_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Canary</title>
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    :root {
-      --yellow: #FFD700;
-      --bg: #0f0f0f;
-      --surface: #1a1a1a;
-      --border: #2a2a2a;
-      --text: #e0e0e0;
-      --muted: #777;
-    }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .page { width: 100%; max-width: 480px; padding: 24px; }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Canary</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --y:#FFD700;--bg:#0f0f0f;--s:#1a1a1a;--b:#2a2a2a;--t:#e0e0e0;--m:#777;--red:#ff5f5f;--green:#4ade80;
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--t);min-height:100vh}
+.center{display:flex;align-items:center;justify-content:center;min-height:100vh}
+.page{width:100%;max-width:520px;padding:24px}
+.wide{width:100%;max-width:860px;padding:24px;margin:0 auto}
 
-    /* Login */
-    .login-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 44px 40px;
-    }
-    .logo { text-align: center; margin-bottom: 36px; }
-    .logo img { width: 60px; height: 60px; }
-    .logo h1 { font-size: 22px; font-weight: 600; margin-top: 14px; letter-spacing: 0.3px; }
-    .logo p { color: var(--muted); font-size: 13px; margin-top: 5px; }
-    .form-group { margin-bottom: 14px; }
-    label { display: block; font-size: 12px; font-weight: 500; margin-bottom: 7px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
-    input {
-      width: 100%; padding: 11px 14px;
-      background: var(--bg); border: 1px solid var(--border);
-      border-radius: 8px; color: var(--text); font-size: 14px;
-      outline: none; transition: border-color 0.15s;
-    }
-    input:focus { border-color: var(--yellow); }
-    .btn {
-      width: 100%; padding: 12px;
-      background: var(--yellow); color: #000;
-      border: none; border-radius: 8px;
-      font-size: 14px; font-weight: 600;
-      cursor: pointer; margin-top: 10px;
-      transition: opacity 0.15s;
-    }
-    .btn:hover { opacity: 0.88; }
-    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
-    .error { color: #ff5f5f; font-size: 13px; margin-top: 14px; text-align: center; min-height: 18px; }
+/* Typography */
+h2{font-size:18px;font-weight:600;margin-bottom:20px}
+label{display:block;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.5px;color:var(--m);margin-bottom:7px}
 
-    /* Dashboard */
-    #dashboard { display: none; }
-    .dash-header {
-      display: flex; align-items: center;
-      justify-content: space-between; margin-bottom: 28px;
-    }
-    .dash-title { display: flex; align-items: center; gap: 12px; }
-    .dash-title img { width: 30px; height: 30px; }
-    .dash-title h1 { font-size: 18px; font-weight: 600; }
-    .logout-btn {
-      background: none; border: 1px solid var(--border);
-      color: var(--muted); border-radius: 8px;
-      padding: 6px 14px; font-size: 12px;
-      cursor: pointer; transition: border-color 0.15s, color 0.15s;
-    }
-    .logout-btn:hover { border-color: var(--text); color: var(--text); }
-    .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
-    .card {
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: 10px; padding: 20px;
-    }
-    .full { grid-column: 1 / -1; }
-    .card-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
-    .card-value { font-size: 30px; font-weight: 700; margin-top: 8px; }
-    .card-value.ok { color: var(--yellow); }
-    .card-sub { font-size: 13px; font-weight: 500; margin-top: 8px; color: var(--text); }
-    .card-sub.dim { color: var(--muted); }
-    .api-hint {
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: 10px; padding: 16px 20px;
-      font-size: 12px; color: var(--muted); line-height: 1.7;
-    }
-    .api-hint code {
-      background: var(--bg); padding: 1px 6px; border-radius: 4px;
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      font-size: 11px; color: var(--yellow);
-    }
-  </style>
+/* Inputs */
+input,select,textarea{width:100%;padding:10px 14px;background:var(--bg);border:1px solid var(--b);border-radius:8px;color:var(--t);font-size:14px;outline:none;transition:border-color .15s;font-family:inherit}
+input:focus,select:focus,textarea:focus{border-color:var(--y)}
+select option{background:var(--s)}
+textarea{resize:vertical;min-height:72px}
+.form-group{margin-bottom:16px}
+.form-row{display:grid;gap:12px;margin-bottom:16px}
+.col2{grid-template-columns:1fr 1fr}
+.col3{grid-template-columns:1fr 1fr 1fr}
+
+/* Buttons */
+.btn{padding:10px 20px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;border:none;transition:opacity .15s}
+.btn:hover{opacity:.85}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn-primary{background:var(--y);color:#000}
+.btn-ghost{background:none;border:1px solid var(--b);color:var(--m)}
+.btn-ghost:hover{border-color:var(--t);color:var(--t);opacity:1}
+.btn-danger{background:none;border:1px solid #3a1a1a;color:var(--red)}
+.btn-danger:hover{border-color:var(--red);opacity:1}
+.btn-full{width:100%}
+.btn-sm{padding:6px 14px;font-size:12px}
+
+/* Cards */
+.card{background:var(--s);border:1px solid var(--b);border-radius:10px;padding:20px}
+.card+.card{margin-top:12px}
+
+/* Auth views */
+.auth-card{background:var(--s);border:1px solid var(--b);border-radius:14px;padding:44px 40px}
+.logo{text-align:center;margin-bottom:36px}
+.logo img{width:56px;height:56px}
+.logo h1{font-size:22px;font-weight:600;margin-top:14px}
+.logo p{color:var(--m);font-size:13px;margin-top:5px}
+.error-msg{color:var(--red);font-size:13px;margin-top:12px;text-align:center;min-height:18px}
+.success-msg{color:var(--green);font-size:13px;margin-top:12px;text-align:center;min-height:18px}
+
+/* Dashboard */
+.dash-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:32px;padding-top:24px}
+.dash-title{display:flex;align-items:center;gap:10px}
+.dash-title img{width:28px;height:28px}
+.dash-title h1{font-size:18px;font-weight:600}
+.dash-actions{display:flex;gap:8px;align-items:center}
+.status-row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:28px}
+.stat-card{background:var(--s);border:1px solid var(--b);border-radius:10px;padding:18px 20px}
+.stat-label{font-size:11px;color:var(--m);text-transform:uppercase;letter-spacing:.5px}
+.stat-val{font-size:26px;font-weight:700;margin-top:6px}
+.stat-val.ok{color:var(--y)}
+.stat-sub{font-size:12px;color:var(--m);margin-top:4px}
+.section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.section-title{font-size:15px;font-weight:600}
+
+/* Monitor cards */
+.monitor-card{background:var(--s);border:1px solid var(--b);border-radius:10px;padding:18px 20px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+.monitor-card+.monitor-card{margin-top:10px}
+.monitor-info h3{font-size:15px;font-weight:600;margin-bottom:3px}
+.monitor-info p{font-size:13px;color:var(--m)}
+.monitor-actions{display:flex;gap:8px;flex-shrink:0}
+.empty-state{text-align:center;padding:48px 0;color:var(--m);font-size:14px}
+.empty-state p{margin-top:8px;font-size:13px}
+
+/* Wizard */
+.wizard-header{display:flex;align-items:center;gap:16px;margin-bottom:28px;padding-top:24px}
+.wizard-back{background:none;border:none;color:var(--m);cursor:pointer;font-size:20px;padding:4px;line-height:1}
+.wizard-back:hover{color:var(--t)}
+.steps{display:flex;align-items:center;gap:0;margin-bottom:32px}
+.step{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--m)}
+.step-num{width:26px;height:26px;border-radius:50%;border:1px solid var(--b);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex-shrink:0}
+.step.active .step-num{background:var(--y);border-color:var(--y);color:#000}
+.step.done .step-num{background:#2a2a2a;border-color:#2a2a2a;color:var(--y)}
+.step.active{color:var(--t)}
+.step-line{flex:1;height:1px;background:var(--b);margin:0 8px}
+.wizard-footer{display:flex;gap:10px;margin-top:24px;justify-content:flex-end}
+
+/* Headers builder */
+.headers-list{margin-bottom:8px}
+.header-row{display:grid;grid-template-columns:1fr 1fr 32px;gap:8px;margin-bottom:8px;align-items:center}
+.header-row input{margin:0}
+.icon-btn{width:32px;height:32px;border-radius:6px;border:1px solid var(--b);background:none;color:var(--m);cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center}
+.icon-btn:hover{border-color:var(--red);color:var(--red)}
+
+/* Recipients */
+.recipient-row{display:grid;grid-template-columns:120px 1fr 32px;gap:8px;margin-bottom:8px;align-items:center}
+.recipient-row select,.recipient-row input{margin:0}
+
+/* Toggle */
+.toggle-row{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid var(--b)}
+.toggle-label{font-size:14px}
+.toggle-desc{font-size:12px;color:var(--m);margin-top:2px}
+input[type=checkbox]{width:auto;accent-color:var(--y)}
+
+/* Schedule */
+.schedule-tabs{display:flex;gap:0;margin-bottom:16px;border:1px solid var(--b);border-radius:8px;overflow:hidden}
+.sched-tab{flex:1;padding:8px;font-size:13px;font-weight:500;cursor:pointer;background:none;border:none;color:var(--m);transition:background .15s}
+.sched-tab.active{background:var(--s);color:var(--t)}
+.sched-tab:hover:not(.active){background:#1a1a1a}
+
+/* Invite modal */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;align-items:center;justify-content:center}
+.modal-overlay.open{display:flex}
+.modal{background:var(--s);border:1px solid var(--b);border-radius:14px;padding:36px;width:100%;max-width:500px;max-height:90vh;overflow-y:auto}
+.modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}
+.modal-header h2{font-size:18px;font-weight:600;margin:0}
+.modal-close{background:none;border:none;color:var(--m);cursor:pointer;font-size:22px;line-height:1;padding:2px}
+.modal-close:hover{color:var(--t)}
+.invite-email-row{display:grid;grid-template-columns:1fr 32px;gap:8px;margin-bottom:8px;align-items:center}
+.invite-email-row input{margin:0}
+
+/* Section divider */
+.divider{border:none;border-top:1px solid var(--b);margin:20px 0}
+.hint{font-size:12px;color:var(--m);margin-top:6px;line-height:1.5}
+
+/* Spinner */
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner{width:16px;height:16px;border:2px solid var(--b);border-top-color:var(--y);border-radius:50%;animation:spin .6s linear infinite;display:inline-block;vertical-align:middle;margin-right:6px}
+</style>
 </head>
 <body>
+
+<!-- ============================================================ LOGIN ============================================================ -->
+<div id="view-login" class="center">
 <div class="page">
-
-  <div id="login">
-    <div class="login-card">
-      <div class="logo">
-        <img src="/favicon.svg" alt="Canary">
-        <h1>Canary</h1>
-        <p>HTTP monitoring and alerting</p>
-      </div>
-      <div class="form-group">
-        <label for="username">Username</label>
-        <input type="text" id="username" placeholder="you@example.com" autocomplete="username">
-      </div>
-      <div class="form-group">
-        <label for="password">Password</label>
-        <input type="password" id="password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" autocomplete="current-password">
-      </div>
-      <button class="btn" id="login-btn" onclick="doLogin()">Sign in</button>
-      <div class="error" id="login-error"></div>
-    </div>
+<div class="auth-card">
+  <div class="logo">
+    <img src="/favicon.svg" alt="Canary">
+    <h1>Canary</h1>
+    <p>HTTP monitoring and alerting</p>
   </div>
-
-  <div id="dashboard">
-    <div class="dash-header">
-      <div class="dash-title">
-        <img src="/favicon.svg" alt="Canary">
-        <h1>Canary</h1>
-      </div>
-      <button class="logout-btn" onclick="doLogout()">Sign out</button>
-    </div>
-    <div class="cards">
-      <div class="card">
-        <div class="card-label">Status</div>
-        <div class="card-value ok" id="status-val">ok</div>
-      </div>
-      <div class="card">
-        <div class="card-label">Monitors</div>
-        <div class="card-value" id="monitors-val">—</div>
-      </div>
-      <div class="card full">
-        <div class="card-label">Last cron tick</div>
-        <div class="card-sub dim" id="tick-val">—</div>
-      </div>
-      <div class="card full">
-        <div class="card-label">Started</div>
-        <div class="card-sub dim" id="started-val">—</div>
-      </div>
-    </div>
-    <div class="api-hint">
-      Use <code>Authorization: Bearer &lt;token&gt;</code> to access the API programmatically.
-      Your session is stored in this browser and expires after 24 hours.
-    </div>
+  <div class="form-group">
+    <label for="li-user">Username</label>
+    <input type="text" id="li-user" placeholder="you@example.com" autocomplete="username">
   </div>
-
+  <div class="form-group">
+    <label for="li-pass">Password</label>
+    <input type="password" id="li-pass" placeholder="••••••••" autocomplete="current-password">
+  </div>
+  <button class="btn btn-primary btn-full" id="li-btn" onclick="doLogin()">Sign in</button>
+  <div class="error-msg" id="li-err"></div>
 </div>
+</div>
+</div>
+
+<!-- ============================================================ INVITE ACCEPT ============================================================ -->
+<div id="view-invite-accept" class="center" style="display:none">
+<div class="page">
+<div class="auth-card">
+  <div class="logo">
+    <img src="/favicon.svg" alt="Canary">
+    <h1>Welcome to Canary</h1>
+    <p>Set a password to activate your account</p>
+  </div>
+  <div class="form-group">
+    <label>Email</label>
+    <input type="text" id="ia-email" disabled style="color:var(--m)">
+  </div>
+  <div class="form-group">
+    <label for="ia-pass">Password</label>
+    <input type="password" id="ia-pass" placeholder="Choose a password" autocomplete="new-password">
+  </div>
+  <div class="form-group">
+    <label for="ia-pass2">Confirm password</label>
+    <input type="password" id="ia-pass2" placeholder="Confirm password" autocomplete="new-password">
+  </div>
+  <button class="btn btn-primary btn-full" id="ia-btn" onclick="doAcceptInvite()">Create account</button>
+  <div class="error-msg" id="ia-err"></div>
+</div>
+</div>
+</div>
+
+<!-- ============================================================ DASHBOARD ============================================================ -->
+<div id="view-dashboard" style="display:none">
+<div class="wide">
+  <div class="dash-header">
+    <div class="dash-title">
+      <img src="/favicon.svg" alt="Canary">
+      <h1>Canary</h1>
+    </div>
+    <div class="dash-actions">
+      <button class="btn btn-ghost btn-sm" onclick="openInviteModal()">+ Invite member</button>
+      <button class="btn btn-ghost btn-sm" onclick="doLogout()">Sign out</button>
+    </div>
+  </div>
+
+  <div class="status-row">
+    <div class="stat-card">
+      <div class="stat-label">Status</div>
+      <div class="stat-val ok" id="d-status">ok</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Monitors</div>
+      <div class="stat-val" id="d-monitors">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Last cron tick</div>
+      <div class="stat-sub" style="margin-top:10px" id="d-tick">—</div>
+    </div>
+  </div>
+
+  <div class="section-header">
+    <span class="section-title">Monitors</span>
+    <button class="btn btn-primary btn-sm" onclick="startWizard()">+ Add monitor</button>
+  </div>
+  <div id="d-monitor-list">
+    <div class="empty-state">
+      <div style="font-size:32px">🐦</div>
+      <p>No monitors yet. Add one to get started.</p>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ============================================================ WIZARD ============================================================ -->
+<div id="view-wizard" style="display:none">
+<div class="wide" style="max-width:620px">
+  <div class="wizard-header">
+    <button class="wizard-back" onclick="wizardBack()" title="Back">&#8592;</button>
+    <div>
+      <h2 style="margin:0;font-size:18px" id="wiz-title">Add monitor</h2>
+      <div style="font-size:12px;color:var(--m);margin-top:2px" id="wiz-subtitle"></div>
+    </div>
+  </div>
+
+  <div class="steps" id="wiz-steps">
+    <div class="step active" id="wstep-1"><div class="step-num">1</div><span>Basics</span></div>
+    <div class="step-line"></div>
+    <div class="step" id="wstep-2"><div class="step-num">2</div><span>Check</span></div>
+    <div class="step-line"></div>
+    <div class="step" id="wstep-3"><div class="step-num">3</div><span>Alerts</span></div>
+  </div>
+
+  <!-- Step 1: Basics -->
+  <div id="ws1">
+    <div class="card">
+      <div class="form-group">
+        <label for="w-name">Monitor name *</label>
+        <input type="text" id="w-name" placeholder="Production API">
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label for="w-desc">Description</label>
+        <input type="text" id="w-desc" placeholder="What does this monitor watch?">
+      </div>
+    </div>
+    <div class="wizard-footer">
+      <button class="btn btn-ghost" onclick="showView('dashboard')">Cancel</button>
+      <button class="btn btn-primary" onclick="wizardStep1()">Next: Check config</button>
+    </div>
+    <div class="error-msg" id="ws1-err"></div>
+  </div>
+
+  <!-- Step 2: Check -->
+  <div id="ws2" style="display:none">
+    <div class="card">
+      <div class="form-row col2">
+        <div>
+          <label for="w-method">Method</label>
+          <select id="w-method">
+            <option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option>
+          </select>
+        </div>
+        <div>
+          <label for="w-url">URL *</label>
+          <input type="text" id="w-url" placeholder="https://api.example.com/health">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Headers <span style="color:var(--m);text-transform:none;font-weight:400">(optional)</span></label>
+        <div id="headers-list" class="headers-list"></div>
+        <button class="btn btn-ghost btn-sm" onclick="addHeaderRow()">+ Add header</button>
+      </div>
+
+      <hr class="divider">
+
+      <div class="form-row col3">
+        <div>
+          <label for="w-expr">JSON expression *</label>
+          <input type="text" id="w-expr" placeholder="data.value">
+        </div>
+        <div>
+          <label for="w-op">Comparator</label>
+          <select id="w-op">
+            <option value="gt">gt (&gt;)</option>
+            <option value="lt">lt (&lt;)</option>
+            <option value="gte">gte (&ge;)</option>
+            <option value="lte">lte (&le;)</option>
+            <option value="eq">eq (=)</option>
+          </select>
+        </div>
+        <div>
+          <label for="w-threshold">Threshold *</label>
+          <input type="number" id="w-threshold" placeholder="100">
+        </div>
+      </div>
+
+      <hr class="divider">
+
+      <div class="form-group" style="margin-bottom:12px">
+        <label>Schedule</label>
+        <div class="schedule-tabs">
+          <button class="sched-tab active" id="sched-simple-tab" onclick="setSchedMode('simple')">Simple</button>
+          <button class="sched-tab" id="sched-cron-tab" onclick="setSchedMode('cron')">Cron expression</button>
+        </div>
+      </div>
+
+      <div id="sched-simple">
+        <div class="form-row col3">
+          <div>
+            <label for="w-freq">Frequency</label>
+            <select id="w-freq" onchange="updateSimpleSched()">
+              <option value="daily">Daily</option>
+              <option value="hourly">Hourly</option>
+              <option value="once">Once</option>
+            </select>
+          </div>
+          <div id="sched-time-col">
+            <label for="w-time">Time of day</label>
+            <input type="time" id="w-time" value="09:00" onchange="updateSimpleSched()">
+          </div>
+          <div id="sched-days-col">
+            <label for="w-days">Days</label>
+            <select id="w-days" onchange="updateSimpleSched()">
+              <option value="daily">Every day</option>
+              <option value="weekdays">Weekdays</option>
+              <option value="weekends">Weekends</option>
+            </select>
+          </div>
+        </div>
+        <div class="hint" id="sched-preview" style="margin-bottom:4px"></div>
+      </div>
+
+      <div id="sched-cron" style="display:none">
+        <div class="form-group">
+          <input type="text" id="w-cron" placeholder="*/5 * * * *">
+          <div class="hint">5-field cron: minute hour day month weekday</div>
+        </div>
+      </div>
+
+      <div class="toggle-row">
+        <div>
+          <div class="toggle-label">Notify on recover</div>
+          <div class="toggle-desc">Send an alert when this monitor returns to healthy</div>
+        </div>
+        <input type="checkbox" id="w-recover">
+      </div>
+    </div>
+    <div class="wizard-footer">
+      <button class="btn btn-ghost" onclick="wizardGoStep(1)">Back</button>
+      <button class="btn btn-primary" onclick="wizardStep2()">Next: Alert config</button>
+    </div>
+    <div class="error-msg" id="ws2-err"></div>
+  </div>
+
+  <!-- Step 3: Alerts -->
+  <div id="ws3" style="display:none">
+    <div class="card">
+      <p style="font-size:14px;color:var(--m);margin-bottom:16px">Add the people who should be notified when this monitor fails.</p>
+      <div id="recipients-list"></div>
+      <button class="btn btn-ghost btn-sm" onclick="addRecipientRow()">+ Add recipient</button>
+    </div>
+    <div class="wizard-footer">
+      <button class="btn btn-ghost" onclick="wizardGoStep(2)">Back</button>
+      <button class="btn btn-primary" id="ws3-btn" onclick="wizardStep3()">Save monitor</button>
+    </div>
+    <div class="error-msg" id="ws3-err"></div>
+    <div class="success-msg" id="ws3-ok"></div>
+  </div>
+</div>
+</div>
+
+<!-- ============================================================ INVITE MODAL ============================================================ -->
+<div class="modal-overlay" id="invite-modal">
+<div class="modal">
+  <div class="modal-header">
+    <h2>Invite members</h2>
+    <button class="modal-close" onclick="closeInviteModal()">&#x2715;</button>
+  </div>
+  <p style="font-size:13px;color:var(--m);margin-bottom:20px">Enter up to 10 email addresses. Each person will receive an invite link to set their password.</p>
+  <div id="invite-emails"></div>
+  <button class="btn btn-ghost btn-sm" id="invite-add-btn" onclick="addInviteEmail()">+ Add another</button>
+  <hr class="divider">
+  <div style="display:flex;gap:10px;justify-content:flex-end">
+    <button class="btn btn-ghost" onclick="closeInviteModal()">Cancel</button>
+    <button class="btn btn-primary" id="invite-send-btn" onclick="sendInvites()">Send invitations</button>
+  </div>
+  <div class="error-msg" id="invite-err"></div>
+  <div class="success-msg" id="invite-ok"></div>
+</div>
+</div>
+
 <script>
-  const TOKEN_KEY = 'canary_token';
-  const getToken = () => localStorage.getItem(TOKEN_KEY);
-  const setToken = (t) => localStorage.setItem(TOKEN_KEY, t);
-  const clearToken = () => localStorage.removeItem(TOKEN_KEY);
+// ─── State ───────────────────────────────────────────────────────────────────
+const S = {
+  token: localStorage.getItem('canary_token'),
+  wizardMonitorId: null,
+  wizardMode: 'create', // 'create' | 'edit-check' | 'edit-alert'
+  schedMode: 'simple',
+};
 
-  async function doLogin() {
-    const username = document.getElementById('username').value.trim();
-    const password = document.getElementById('password').value;
-    const btn = document.getElementById('login-btn');
-    const err = document.getElementById('login-error');
-    if (!username || !password) { err.textContent = 'Username and password are required.'; return; }
-    btn.disabled = true; btn.textContent = 'Signing in...'; err.textContent = '';
+// ─── API ─────────────────────────────────────────────────────────────────────
+async function api(method, path, body) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (S.token) headers['Authorization'] = 'Bearer ' + S.token;
+  const res = await fetch(path, {
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.message || 'Request failed (' + res.status + ')');
+  return data;
+}
+
+// ─── View router ─────────────────────────────────────────────────────────────
+function showView(name) {
+  ['login','invite-accept','dashboard','wizard'].forEach(v => {
+    const el = document.getElementById('view-' + v);
+    if (el) el.style.display = 'none';
+  });
+  const el = document.getElementById('view-' + name);
+  if (el) el.style.display = name === 'login' || name === 'invite-accept' ? 'flex' : 'block';
+  if (name === 'dashboard') loadDashboard();
+}
+
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+async function doLogin() {
+  const username = document.getElementById('li-user').value.trim();
+  const password = document.getElementById('li-pass').value;
+  const btn = document.getElementById('li-btn');
+  const err = document.getElementById('li-err');
+  if (!username || !password) { err.textContent = 'Username and password are required.'; return; }
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Signing in...'; err.textContent = '';
+  try {
+    const data = await api('POST', '/auth/login', { username, password });
+    S.token = data.token;
+    localStorage.setItem('canary_token', data.token);
+    showView('dashboard');
+  } catch (e) { err.textContent = e.message; }
+  finally { btn.disabled = false; btn.textContent = 'Sign in'; }
+}
+
+async function doLogout() {
+  if (S.token) api('POST', '/auth/logout').catch(() => {});
+  S.token = null;
+  localStorage.removeItem('canary_token');
+  showView('login');
+}
+
+// ─── Invite accept ───────────────────────────────────────────────────────────
+async function initInviteAccept() {
+  const token = new URLSearchParams(location.search).get('token');
+  if (!token) { showView('login'); return; }
+
+  // fetch email hint from server
+  try {
+    const d = await api('GET', '/invite/info?token=' + encodeURIComponent(token));
+    document.getElementById('ia-email').value = d.email;
+  } catch {}
+
+  document.getElementById('ia-btn').onclick = () => doAcceptInvite(token);
+}
+
+async function doAcceptInvite(token) {
+  const pass = document.getElementById('ia-pass').value;
+  const pass2 = document.getElementById('ia-pass2').value;
+  const btn = document.getElementById('ia-btn');
+  const err = document.getElementById('ia-err');
+  if (!pass) { err.textContent = 'Please choose a password.'; return; }
+  if (pass !== pass2) { err.textContent = 'Passwords do not match.'; return; }
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Creating account...'; err.textContent = '';
+  try {
+    const data = await api('POST', '/invite/accept', { token, password: pass });
+    S.token = data.token;
+    localStorage.setItem('canary_token', data.token);
+    history.replaceState(null, '', '/');
+    showView('dashboard');
+  } catch (e) { err.textContent = e.message; }
+  finally { btn.disabled = false; btn.textContent = 'Create account'; }
+}
+
+// ─── Dashboard ───────────────────────────────────────────────────────────────
+async function loadDashboard() {
+  try {
+    const status = await api('GET', '/api/status');
+    document.getElementById('d-status').textContent = status.status || 'ok';
+    document.getElementById('d-monitors').textContent = status.monitors ?? '—';
+    document.getElementById('d-tick').textContent = status.lastCronTick
+      ? new Date(status.lastCronTick).toLocaleString() : 'Not yet ticked';
+  } catch {}
+
+  try {
+    const data = await api('GET', '/monitors');
+    renderMonitorList(data.monitors || []);
+  } catch {}
+}
+
+function renderMonitorList(monitors) {
+  const el = document.getElementById('d-monitor-list');
+  if (!monitors.length) {
+    el.innerHTML = '<div class="empty-state"><div style="font-size:32px">🐦</div><p>No monitors yet. Add one to get started.</p></div>';
+    return;
+  }
+  el.innerHTML = monitors.map(m => \`
+    <div class="monitor-card">
+      <div class="monitor-info">
+        <h3>\${esc(m.name)}</h3>
+        <p>\${esc(m.description || 'No description')}</p>
+      </div>
+      <div class="monitor-actions">
+        <button class="btn btn-ghost btn-sm" onclick="editCheck('\${esc(m.monitorId)}')">Edit check</button>
+        <button class="btn btn-ghost btn-sm" onclick="editAlert('\${esc(m.monitorId)}')">Edit alert</button>
+        <button class="btn btn-ghost btn-sm" onclick="runNow('\${esc(m.monitorId)}', this)">Run now</button>
+      </div>
+    </div>
+  \`).join('');
+}
+
+async function runNow(monitorId, btn) {
+  btn.disabled = true; btn.textContent = 'Running...';
+  try {
+    await api('POST', '/run/' + monitorId);
+    btn.textContent = 'Done!';
+    setTimeout(() => { btn.disabled = false; btn.textContent = 'Run now'; }, 2000);
+  } catch (e) {
+    btn.textContent = 'Failed';
+    setTimeout(() => { btn.disabled = false; btn.textContent = 'Run now'; }, 2000);
+  }
+}
+
+// ─── Wizard ──────────────────────────────────────────────────────────────────
+function startWizard() {
+  S.wizardMonitorId = null;
+  S.wizardMode = 'create';
+  resetWizard();
+  wizardGoStep(1);
+  showView('wizard');
+  document.getElementById('wiz-title').textContent = 'Add monitor';
+  document.getElementById('wiz-subtitle').textContent = '';
+}
+
+function editCheck(monitorId) {
+  S.wizardMonitorId = monitorId;
+  S.wizardMode = 'edit-check';
+  resetWizard();
+  wizardGoStep(2);
+  showView('wizard');
+  document.getElementById('wiz-title').textContent = 'Edit check';
+  document.getElementById('wiz-subtitle').textContent = monitorId;
+  prefillCheck(monitorId);
+}
+
+function editAlert(monitorId) {
+  S.wizardMonitorId = monitorId;
+  S.wizardMode = 'edit-alert';
+  resetWizard();
+  wizardGoStep(3);
+  showView('wizard');
+  document.getElementById('wiz-title').textContent = 'Edit alert';
+  document.getElementById('wiz-subtitle').textContent = monitorId;
+  prefillAlert(monitorId);
+}
+
+function resetWizard() {
+  document.getElementById('w-name').value = '';
+  document.getElementById('w-desc').value = '';
+  document.getElementById('w-url').value = '';
+  document.getElementById('w-method').value = 'GET';
+  document.getElementById('w-expr').value = '';
+  document.getElementById('w-op').value = 'gt';
+  document.getElementById('w-threshold').value = '';
+  document.getElementById('w-recover').checked = false;
+  document.getElementById('w-cron').value = '';
+  document.getElementById('w-time').value = '09:00';
+  document.getElementById('w-freq').value = 'daily';
+  document.getElementById('w-days').value = 'daily';
+  document.getElementById('headers-list').innerHTML = '';
+  document.getElementById('recipients-list').innerHTML = '';
+  setSchedMode('simple');
+  clearErr();
+  updateSimpleSched();
+}
+
+function wizardBack() {
+  const step = currentStep();
+  if (step === 1 || S.wizardMode !== 'create') {
+    showView('dashboard');
+  } else {
+    wizardGoStep(step - 1);
+  }
+}
+
+function currentStep() {
+  for (let i = 1; i <= 3; i++) {
+    if (document.getElementById('ws' + i).style.display !== 'none') return i;
+  }
+  return 1;
+}
+
+function wizardGoStep(n) {
+  for (let i = 1; i <= 3; i++) {
+    document.getElementById('ws' + i).style.display = i === n ? 'block' : 'none';
+    const s = document.getElementById('wstep-' + i);
+    s.className = 'step' + (i === n ? ' active' : i < n ? ' done' : '');
+  }
+}
+
+async function wizardStep1() {
+  const name = document.getElementById('w-name').value.trim();
+  const description = document.getElementById('w-desc').value.trim();
+  if (!name) { document.getElementById('ws1-err').textContent = 'Monitor name is required.'; return; }
+  clearErr();
+  try {
+    const data = await api('POST', '/monitors', { name, description });
+    S.wizardMonitorId = data.monitorId;
+    wizardGoStep(2);
+  } catch (e) {
+    document.getElementById('ws1-err').textContent = e.message;
+  }
+}
+
+async function wizardStep2() {
+  const url = document.getElementById('w-url').value.trim();
+  const expression = document.getElementById('w-expr').value.trim();
+  const threshold = parseFloat(document.getElementById('w-threshold').value);
+  if (!url) { document.getElementById('ws2-err').textContent = 'URL is required.'; return; }
+  if (!expression) { document.getElementById('ws2-err').textContent = 'JSON expression is required.'; return; }
+  if (isNaN(threshold)) { document.getElementById('ws2-err').textContent = 'Threshold must be a number.'; return; }
+
+  let cron = '';
+  if (S.schedMode === 'cron') {
+    cron = document.getElementById('w-cron').value.trim();
+    if (!cron) { document.getElementById('ws2-err').textContent = 'Cron expression is required.'; return; }
+  } else {
     try {
-      const res = await fetch('/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
+      const [hh, mm] = document.getElementById('w-time').value.split(':').map(Number);
+      const ampm = hh < 12 ? 'AM' : 'PM';
+      const h12 = hh % 12 || 12;
+      const timeOfDay = h12 + ':' + String(mm).padStart(2, '0') + ' ' + ampm;
+      const data = await api('POST', '/schedule/build', {
+        frequency: document.getElementById('w-freq').value,
+        timeOfDay,
+        daysOfWeek: document.getElementById('w-days').value,
       });
-      const data = await res.json();
-      if (!res.ok) { err.textContent = data.message || 'Login failed.'; return; }
-      setToken(data.token);
-      showDashboard();
-    } catch { err.textContent = 'Network error. Please try again.'; }
-    finally { btn.disabled = false; btn.textContent = 'Sign in'; }
+      cron = data.cron;
+    } catch (e) {
+      document.getElementById('ws2-err').textContent = e.message;
+      return;
+    }
   }
 
-  async function doLogout() {
-    const token = getToken();
-    if (token) fetch('/auth/logout', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token } }).catch(() => {});
-    clearToken();
-    showLogin();
+  const headers = {};
+  document.querySelectorAll('.header-row').forEach(row => {
+    const [k, v] = row.querySelectorAll('input');
+    if (k.value.trim()) headers[k.value.trim()] = v.value.trim();
+  });
+
+  clearErr();
+  try {
+    await api('POST', '/monitors/' + S.wizardMonitorId + '/check', {
+      url,
+      method: document.getElementById('w-method').value,
+      headers,
+      expression,
+      comparatorOp: document.getElementById('w-op').value,
+      threshold,
+      cron,
+      notifyOnRecover: document.getElementById('w-recover').checked,
+    });
+    wizardGoStep(3);
+  } catch (e) {
+    document.getElementById('ws2-err').textContent = e.message;
   }
+}
 
-  async function showDashboard() {
-    document.getElementById('login').style.display = 'none';
-    document.getElementById('dashboard').style.display = 'block';
-    try {
-      const res = await fetch('/api/status');
-      const d = await res.json();
-      document.getElementById('monitors-val').textContent = d.monitors ?? '—';
-      document.getElementById('status-val').textContent = d.status || 'ok';
-      document.getElementById('tick-val').textContent = d.lastCronTick
-        ? new Date(d.lastCronTick).toLocaleString() : 'Not yet ticked';
-      document.getElementById('started-val').textContent = d.startedAt
-        ? new Date(d.startedAt).toLocaleString() : '—';
-    } catch {}
+async function wizardStep3() {
+  const recipients = [];
+  document.querySelectorAll('.recipient-row').forEach(row => {
+    const sel = row.querySelector('select');
+    const inp = row.querySelector('input');
+    if (inp.value.trim()) recipients.push({ channel: sel.value, address: inp.value.trim() });
+  });
+
+  const btn = document.getElementById('ws3-btn');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Saving...';
+  clearErr();
+  try {
+    await api('POST', '/monitors/' + S.wizardMonitorId + '/alert', { recipients });
+    document.getElementById('ws3-ok').textContent = 'Monitor saved!';
+    setTimeout(() => showView('dashboard'), 1200);
+  } catch (e) {
+    document.getElementById('ws3-err').textContent = e.message;
+    btn.disabled = false; btn.textContent = 'Save monitor';
   }
+}
 
-  function showLogin() {
-    document.getElementById('login').style.display = 'block';
-    document.getElementById('dashboard').style.display = 'none';
+// ─── Prefill for edit mode ────────────────────────────────────────────────────
+async function prefillCheck(monitorId) {
+  try {
+    const d = await api('GET', '/monitors/' + monitorId + '/check');
+    document.getElementById('w-url').value = d.url || '';
+    document.getElementById('w-method').value = d.method || 'GET';
+    document.getElementById('w-expr').value = d.expression || '';
+    document.getElementById('w-op').value = d.comparatorOp || 'gt';
+    document.getElementById('w-threshold').value = d.threshold ?? '';
+    document.getElementById('w-cron').value = d.cron || '';
+    document.getElementById('w-recover').checked = !!d.notifyOnRecover;
+    if (d.cron) setSchedMode('cron');
+    if (d.headers) {
+      Object.entries(d.headers).forEach(([k, v]) => addHeaderRow(k, v));
+    }
+  } catch {}
+}
+
+async function prefillAlert(monitorId) {
+  try {
+    const d = await api('GET', '/monitors/' + monitorId + '/alert');
+    (d.recipients || []).forEach(r => addRecipientRow(r.channel, r.address));
+  } catch {}
+}
+
+// ─── Headers builder ──────────────────────────────────────────────────────────
+function addHeaderRow(k = '', v = '') {
+  const row = document.createElement('div');
+  row.className = 'header-row';
+  row.innerHTML = \`
+    <input type="text" placeholder="Header name" value="\${esc(k)}">
+    <input type="text" placeholder="Value" value="\${esc(v)}">
+    <button class="icon-btn" onclick="this.parentElement.remove()" title="Remove">&#x2715;</button>
+  \`;
+  document.getElementById('headers-list').appendChild(row);
+}
+
+// ─── Recipients builder ───────────────────────────────────────────────────────
+function addRecipientRow(channel = 'email', address = '') {
+  const row = document.createElement('div');
+  row.className = 'recipient-row';
+  row.innerHTML = \`
+    <select><option value="email"\${channel==='email'?' selected':''}>Email</option><option value="sms"\${channel==='sms'?' selected':''}>SMS</option></select>
+    <input type="text" placeholder="\${channel==='sms'?'+15555550100':'oncall@example.com'}" value="\${esc(address)}">
+    <button class="icon-btn" onclick="this.parentElement.remove()" title="Remove">&#x2715;</button>
+  \`;
+  row.querySelector('select').onchange = function() {
+    row.querySelector('input').placeholder = this.value === 'sms' ? '+15555550100' : 'oncall@example.com';
+  };
+  document.getElementById('recipients-list').appendChild(row);
+}
+
+// ─── Schedule ─────────────────────────────────────────────────────────────────
+function setSchedMode(mode) {
+  S.schedMode = mode;
+  document.getElementById('sched-simple').style.display = mode === 'simple' ? 'block' : 'none';
+  document.getElementById('sched-cron').style.display = mode === 'cron' ? 'block' : 'none';
+  document.getElementById('sched-simple-tab').className = 'sched-tab' + (mode === 'simple' ? ' active' : '');
+  document.getElementById('sched-cron-tab').className = 'sched-tab' + (mode === 'cron' ? ' active' : '');
+}
+
+async function updateSimpleSched() {
+  const freq = document.getElementById('w-freq').value;
+  const timeCol = document.getElementById('sched-time-col');
+  const daysCol = document.getElementById('sched-days-col');
+  timeCol.style.opacity = freq === 'hourly' ? '.4' : '1';
+  daysCol.style.opacity = freq === 'hourly' ? '.4' : '1';
+
+  const preview = document.getElementById('sched-preview');
+  try {
+    const [hh, mm] = document.getElementById('w-time').value.split(':').map(Number);
+    const ampm = hh < 12 ? 'AM' : 'PM';
+    const h12 = hh % 12 || 12;
+    const timeOfDay = h12 + ':' + String(mm).padStart(2, '0') + ' ' + ampm;
+    const data = await api('POST', '/schedule/build', {
+      frequency: freq,
+      timeOfDay,
+      daysOfWeek: document.getElementById('w-days').value,
+    });
+    preview.textContent = 'Cron: ' + data.cron;
+  } catch { preview.textContent = ''; }
+}
+
+// ─── Invite modal ─────────────────────────────────────────────────────────────
+function openInviteModal() {
+  document.getElementById('invite-emails').innerHTML = '';
+  document.getElementById('invite-err').textContent = '';
+  document.getElementById('invite-ok').textContent = '';
+  addInviteEmail();
+  document.getElementById('invite-modal').classList.add('open');
+}
+
+function closeInviteModal() {
+  document.getElementById('invite-modal').classList.remove('open');
+}
+
+function addInviteEmail() {
+  const list = document.getElementById('invite-emails');
+  if (list.children.length >= 10) return;
+  const row = document.createElement('div');
+  row.className = 'invite-email-row';
+  row.innerHTML = \`
+    <input type="email" placeholder="member@example.com">
+    <button class="icon-btn" onclick="this.parentElement.remove(); updateInviteAddBtn()">&#x2715;</button>
+  \`;
+  list.appendChild(row);
+  updateInviteAddBtn();
+  row.querySelector('input').focus();
+}
+
+function updateInviteAddBtn() {
+  const count = document.getElementById('invite-emails').children.length;
+  document.getElementById('invite-add-btn').style.display = count >= 10 ? 'none' : 'inline-flex';
+}
+
+async function sendInvites() {
+  const emails = [...document.querySelectorAll('#invite-emails input')]
+    .map(i => i.value.trim()).filter(Boolean);
+  const btn = document.getElementById('invite-send-btn');
+  const err = document.getElementById('invite-err');
+  const ok = document.getElementById('invite-ok');
+  if (!emails.length) { err.textContent = 'Enter at least one email address.'; return; }
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Sending...';
+  err.textContent = ''; ok.textContent = '';
+  try {
+    await api('POST', '/invites', { emails });
+    ok.textContent = 'Invitations sent!';
+    setTimeout(closeInviteModal, 2000);
+  } catch (e) { err.textContent = e.message; }
+  finally { btn.disabled = false; btn.textContent = 'Send invitations'; }
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function clearErr() {
+  ['ws1-err','ws2-err','ws3-err','ws3-ok'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.textContent = '';
+  });
+}
+
+// Close invite modal on overlay click
+document.getElementById('invite-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeInviteModal();
+});
+
+// Enter key on login
+document.getElementById('li-pass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+document.getElementById('li-user').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('li-pass').focus(); });
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+(async function init() {
+  const path = location.pathname;
+  const token = new URLSearchParams(location.search).get('token');
+  if (path === '/invite/accept' && token) {
+    showView('invite-accept');
+    initInviteAccept();
+  } else if (S.token) {
+    showView('dashboard');
+  } else {
+    showView('login');
   }
-
-  document.getElementById('password').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
-  document.getElementById('username').addEventListener('keydown', (e) => { if (e.key === 'Enter') document.getElementById('password').focus(); });
-
-  if (getToken()) showDashboard();
+  updateSimpleSched();
+})();
 </script>
 </body>
 </html>`;
@@ -337,9 +1003,7 @@ function json(data: unknown, status = 200): Response {
 }
 
 function html(content: string): Response {
-  return new Response(content, {
-    headers: { "Content-Type": "text/html; charset=utf-8" },
-  });
+  return new Response(content, { headers: { "Content-Type": "text/html; charset=utf-8" } });
 }
 
 function errorResponse(e: unknown): Response {
@@ -376,79 +1040,93 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const method = req.method;
 
   try {
-    // GET / — login/dashboard UI
-    if (method === "GET" && pathname === "/") {
+    // SPA shell
+    if (method === "GET" && (pathname === "/" || pathname === "/invite/accept")) {
       return html(INDEX_HTML);
     }
 
-    // GET /favicon.svg
+    // Favicon
     if (method === "GET" && pathname === "/favicon.svg") {
       return new Response(FAVICON_SVG, {
         headers: { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=86400" },
       });
     }
 
-    // GET /api/status — public JSON status
+    // Public JSON status
     if (method === "GET" && pathname === "/api/status") {
       const monitors = await listMonitors();
       return json({ status: "ok", startedAt, lastCronTick, monitors: monitors.monitors.length });
     }
 
-    // POST /auth/login — public
+    // Public: login
     if (method === "POST" && pathname === "/auth/login") {
       const body = await parseBody<{ username: string; password: string }>(req);
       return json(await login(body.username, body.password));
     }
 
-    // All routes below require a valid session
+    // Public: invite info (email hint for accept page)
+    if (method === "GET" && pathname === "/invite/info") {
+      const token = url.searchParams.get("token") ?? "";
+      if (!token) throw new CanaryError("validation-error", "Missing token", 400);
+      // peek without consuming
+      const { kv: kvStore } = await import("./dist.rune/impure/_kv.ts");
+      const entry = await kvStore.get<{ email: string }>(["invite", token]);
+      if (!entry.value) throw new CanaryError("not-found", "Invite not found or expired", 404);
+      return json({ email: entry.value.email });
+    }
+
+    // Public: accept invite
+    if (method === "POST" && pathname === "/invite/accept") {
+      const body = await parseBody<{ token: string; password: string }>(req);
+      const email = await consumeInvite(body.token);
+      await createUser(email, body.password);
+      const session = await login(email, body.password);
+      return json(session);
+    }
+
+    // ── All routes below require auth ────────────────────────────────────────
     const token = extractToken(req);
     await validateSession(token);
 
-    // POST /auth/logout
+    // Logout
     if (method === "POST" && pathname === "/auth/logout") {
       await logout(token);
       return json({ ok: true });
     }
 
-    // POST /users
+    // Users
     if (method === "POST" && pathname === "/users") {
       const body = await parseBody<{ username: string; password: string }>(req);
       await createUser(body.username, body.password);
       return json({ ok: true }, 201);
     }
-
-    // GET /users
-    if (method === "GET" && pathname === "/users") {
-      return json(await listUsers());
-    }
-
-    // DELETE /users/:username
+    if (method === "GET" && pathname === "/users") return json(await listUsers());
     const userMatch = pathname.match(/^\/users\/([^/]+)$/);
     if (userMatch && method === "DELETE") {
       await deleteUser(decodeURIComponent(userMatch[1]));
       return json({ ok: true });
     }
 
-    // POST /monitors
+    // Invites
+    if (method === "POST" && pathname === "/invites") {
+      const body = await parseBody<{ emails: string[] }>(req);
+      const fromEmail = Deno.env.get("POSTMARK_FROM_EMAIL") ?? "";
+      const postmarkToken = Deno.env.get("POSTMARK_SERVER_TOKEN") ?? "";
+      const baseUrl = `${url.protocol}//${url.host}`;
+      await createInvites(body.emails, baseUrl, fromEmail, postmarkToken);
+      return json({ ok: true });
+    }
+
+    // Monitors
     if (method === "POST" && pathname === "/monitors") {
       const body = await parseBody(req);
-      const result = await createMonitor(body as Parameters<typeof createMonitor>[0]);
-      return json(result, 201);
+      return json(await createMonitor(body as Parameters<typeof createMonitor>[0]), 201);
     }
-
-    // GET /monitors
-    if (method === "GET" && pathname === "/monitors") {
-      return json(await listMonitors());
-    }
-
-    // /monitors/:id
+    if (method === "GET" && pathname === "/monitors") return json(await listMonitors());
     const monitorMatch = pathname.match(/^\/monitors\/([^/]+)$/);
-    if (monitorMatch) {
-      const monitorId = monitorMatch[1];
-      if (method === "GET") return json(await getMonitor({ monitorId }));
-    }
+    if (monitorMatch && method === "GET") return json(await getMonitor({ monitorId: monitorMatch[1] }));
 
-    // /monitors/:id/check
+    // Check
     const checkMatch = pathname.match(/^\/monitors\/([^/]+)\/check$/);
     if (checkMatch) {
       const monitorId = checkMatch[1];
@@ -459,7 +1137,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       if (method === "GET") return json(await getCheck({ monitorId }));
     }
 
-    // /monitors/:id/alert
+    // Alert
     const alertMatch = pathname.match(/^\/monitors\/([^/]+)\/alert$/);
     if (alertMatch) {
       const monitorId = alertMatch[1];
@@ -470,34 +1148,20 @@ Deno.serve(async (req: Request): Promise<Response> => {
       if (method === "GET") return json(await getAlert({ monitorId }));
     }
 
-    // POST /schedule/build
+    // Schedule builder
     if (method === "POST" && pathname === "/schedule/build") {
-      const body = await parseBody(req);
-      return json(buildSchedule(body as Parameters<typeof buildSchedule>[0]));
+      return json(buildSchedule(await parseBody(req) as Parameters<typeof buildSchedule>[0]));
     }
 
-    // POST /secrets
-    if (method === "POST" && pathname === "/secrets") {
-      const body = await parseBody(req);
-      return json(await setSecret(body as Parameters<typeof setSecret>[0]));
-    }
-
-    // GET /secrets
-    if (method === "GET" && pathname === "/secrets") {
-      return json(await listSecrets());
-    }
-
-    // DELETE /secrets/:key
+    // Secrets
+    if (method === "POST" && pathname === "/secrets") return json(await setSecret(await parseBody(req) as Parameters<typeof setSecret>[0]));
+    if (method === "GET" && pathname === "/secrets") return json(await listSecrets());
     const secretMatch = pathname.match(/^\/secrets\/([^/]+)$/);
-    if (secretMatch && method === "DELETE") {
-      return json(await deleteSecret({ secretKey: decodeURIComponent(secretMatch[1]) }));
-    }
+    if (secretMatch && method === "DELETE") return json(await deleteSecret({ secretKey: decodeURIComponent(secretMatch[1]) }));
 
-    // POST /run/:monitorId  (manual trigger)
+    // Manual run
     const runMatch = pathname.match(/^\/run\/([^/]+)$/);
-    if (runMatch && method === "POST") {
-      return json(await executeRunner({ monitorId: runMatch[1] }));
-    }
+    if (runMatch && method === "POST") return json(await executeRunner({ monitorId: runMatch[1] }));
 
     return json({ error: "not-found", message: `No route for ${method} ${pathname}` }, 404);
   } catch (e) {
