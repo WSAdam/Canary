@@ -1,0 +1,267 @@
+// Canary — configurable monitoring and alerting system. Watches external
+// data sources on a schedule and sends alerts when checks fail or recover.
+//
+    // monitor.create(CreateMonitorDto)
+//   Creates a named monitor in Deno KV. A monitor is the top-level
+//   entity representing something you want to watch.
+//
+    // monitor.list({})
+//   Returns all configured monitors for the UI dashboard.
+//
+    // monitor.get(MonitorIdDto)
+//   Returns full detail of a single monitor.
+//
+    // check.configure(ConfigureCheckDto)
+//   Attaches a check to a monitor. Defines the HTTP source, extractor
+//   expression, comparator, threshold, cron schedule, and whether to
+//   send recovery alerts. Replaces any existing check config.
+//
+    // check.get(MonitorIdDto)
+//   Returns the check configuration for a given monitor.
+//
+    // schedule.build(ScheduleInputDto)
+//   Converts human-friendly time, days, and frequency input into a
+//   validated cron string for use in check.configure.
+//
+    // alert.configure(ConfigureAlertDto)
+    //   Attaches typed recipients (sms or email) to a monitor. Replaces
+//   any existing alert config.
+//
+    // alert.get(MonitorIdDto)
+//   Returns the alert channel configuration for a given monitor.
+//
+    // secret.set(SetSecretDto)
+//   Stores a named secret value in Deno KV for use by integrations.
+//
+    // secret.list({})
+//   Returns all stored secret key names. Values are never returned.
+//
+    // secret.delete(SecretKeyDto)
+//   Removes a named secret from Deno KV.
+//
+    // runner.execute(MonitorIdDto)
+//   Cron-triggered core loop. Loads monitor, check, and alert configs.
+//   Fetches the data source, extracts a numeric value, evaluates the
+//   comparator, saves the run result to history, and dispatches alerts
+//   if the check fails or recovers.
+
+[REQ] monitor.create(CreateMonitorDto): MonitorDto
+    monitor::checkUnique(name): void
+      duplicate-name
+    [CTR] monitor
+    db:monitor.insert(CreateMonitorDto): MonitorDto
+      timed-out
+
+
+[REQ] monitor.list({}): MonitorListDto
+    [CTR] monitor
+    db:monitor.list(): MonitorListDto
+      timed-out
+
+
+[REQ] monitor.get(MonitorIdDto): MonitorDto
+    [CTR] monitor
+    db:monitor.get(monitorId): MonitorDto
+      not-found timed-out
+
+
+[REQ] check.configure(ConfigureCheckDto): CheckDto
+    [CTR] monitor
+    db:monitor.get(monitorId): MonitorDto
+      not-found timed-out
+    schedule::validate(ConfigureCheckDto): void
+      invalid-cron
+    check::build(ConfigureCheckDto): check
+    check.toDto(): CheckDto
+    db:check.upsert(CheckDto): CheckDto
+      timed-out
+
+
+[REQ] check.get(MonitorIdDto): CheckDto
+    [CTR] check
+    db:check.get(monitorId): CheckDto
+      not-found timed-out
+
+
+[REQ] schedule.build(ScheduleInputDto): ScheduleDto
+    schedule::fromInput(ScheduleInputDto): schedule
+      invalid-time invalid-frequency
+    schedule.toCron(): ScheduleDto
+
+
+[REQ] alert.configure(ConfigureAlertDto): AlertDto
+    [CTR] monitor
+    db:monitor.get(monitorId): MonitorDto
+      not-found timed-out
+    alert::build(ConfigureAlertDto): alert
+    alert.toDto(): AlertDto
+    db:alert.upsert(AlertDto): AlertDto
+      timed-out
+
+
+[REQ] alert.get(MonitorIdDto): AlertDto
+    [CTR] alert
+    db:alert.get(monitorId): AlertDto
+      not-found timed-out
+
+
+[REQ] secret.set(SetSecretDto): SecretDto
+    [CTR] secret
+    db:secret.upsert(SetSecretDto): SecretDto
+      timed-out
+
+
+[REQ] secret.list({}): SecretListDto
+    [CTR] secret
+    db:secret.list(): SecretListDto
+      timed-out
+
+
+[REQ] secret.delete(SecretKeyDto): SecretDto
+    [CTR] secret
+    db:secret.get(secretKey): SecretDto
+      not-found timed-out
+    db:secret.delete(secretKey): void
+      timed-out
+    [RET] SecretDto
+
+
+[REQ] runner.execute(MonitorIdDto): RunResultDto
+    [CTR] monitor
+    db:monitor.get(monitorId): MonitorDto
+      not-found timed-out
+    [CTR] check
+    db:check.get(monitorId): CheckDto
+      not-found timed-out
+    [CTR] alert
+    db:alert.get(monitorId): AlertDto
+      not-found timed-out
+    source::fromCheck(CheckDto): source
+    [PLY] source.fetch(CheckDto): ResponseDto
+        [CSE] http
+        ex:source.request(CheckDto): ResponseDto
+          request-failed timed-out
+        extractor::apply(CheckDto, ResponseDto): observed
+          extraction-failed
+        comparator::evaluate(CheckDto, observed): passed
+        runResult::build(monitorId, observed, passed): runResult
+        runResult.toDto(): RunResultDto
+        db:runResult.save(RunResultDto): void
+          timed-out
+        alertChannel::fromAlert(AlertDto): alertChannel
+    [PLY] alertChannel.send(RunResultDto): void
+        [CSE] sms
+        ex:alertChannel.send(RunResultDto): void
+          send-failed timed-out
+        [CSE] email
+        ex:alertChannel.send(RunResultDto): void
+          send-failed timed-out
+        [RET] RunResultDto
+
+
+[TYP] monitor: Class
+    a named monitoring target stored in Deno KV
+[TYP] check: Class
+    check configuration attached to a monitor
+[TYP] schedule: Class
+    a validated cron schedule built from human-friendly input
+[TYP] alert: Class
+    alert channel configuration attached to a monitor
+[TYP] secret: Class
+    a named secret key-value pair stored in Deno KV
+[TYP] source: Class
+    abstract data source used to fetch check values
+[TYP] extractor: Class
+    logic for extracting a numeric value from a source response
+[TYP] comparator: Class
+    logic for comparing an observed value against a threshold
+[TYP] runResult: Class
+    the result of a single check execution with pass or fail status
+[TYP] alertChannel: Class
+    abstract alert dispatch channel supporting sms and email
+[TYP] recipient: Class
+    a typed alert recipient with a channel type and contact address
+[TYP] monitorId: string
+    unique identifier for a monitor
+[TYP] name: string
+    display name of a monitor
+[TYP] description: string
+    human-readable description of what the monitor is watching
+[TYP] url: string
+    HTTP endpoint URL for the check data source
+[TYP] method: string
+    HTTP method for the source request, GET or POST
+[TYP] headers: Record<string, string>
+    optional HTTP headers to include with the source request
+[TYP] body: string
+    optional JSON request body for POST source requests
+[TYP] expression: string
+    dot-notation path to extract a numeric value from the response
+[TYP] comparatorOp: string
+    comparison operator to apply: lt, gt, lte, gte, or eq
+[TYP] threshold: number
+    numeric value to compare the observed result against
+[TYP] cron: string
+    cron expression string defining when the check runs
+[TYP] notifyOnRecover: boolean
+    whether to send an alert when a failing check passes again
+[TYP] observed: number
+    the numeric value extracted from the source during a check run
+[TYP] passed: boolean
+    whether the check passed the configured comparator and threshold
+[TYP] secretKey: string
+    the name identifier for a stored secret
+[TYP] secretValue: string
+    the sensitive value of a stored secret
+[TYP] alertType: string
+    the type of alert channel: sms or email
+[TYP] contact: string
+    phone number or email address for an alert recipient
+[TYP] runId: string
+    unique identifier for a single check run
+[TYP] timestamp: string
+    ISO 8601 timestamp of when a check run occurred
+[TYP] timeOfDay: string
+    human-readable time for scheduling such as 4:00 PM
+[TYP] daysOfWeek: string
+    comma-separated days or keyword such as weekdays or daily
+[TYP] frequency: string
+    schedule frequency keyword such as once, hourly, or daily
+
+
+[DTO] CreateMonitorDto: name, description
+    input for creating a new named monitor
+[DTO] MonitorDto: monitorId, name, description
+    a resolved monitor with its identifier and display fields
+[DTO] MonitorListDto: monitor(s)
+    all configured monitors for the UI dashboard
+[DTO] MonitorIdDto: monitorId
+    input for querying a single monitor by ID
+[DTO] ConfigureCheckDto: monitorId, url, method, headers, body, expression,
+    comparatorOp, threshold, cron, notifyOnRecover
+    input for attaching or replacing a check configuration on a monitor
+[DTO] CheckDto: monitorId, url, method, headers, body, expression,
+    comparatorOp, threshold, cron, notifyOnRecover
+    resolved check configuration for a monitor
+[DTO] ScheduleInputDto: timeOfDay, daysOfWeek, frequency
+    human-friendly schedule input to convert into a cron expression
+[DTO] ScheduleDto: cron
+    a validated cron expression generated from human-friendly input
+[DTO] ConfigureAlertDto: monitorId, recipient(s)
+    input for attaching or replacing alert recipients on a monitor
+[DTO] AlertDto: monitorId, recipient(s)
+    resolved alert channel configuration for a monitor
+[DTO] RecipientDto: alertType, contact
+    a single typed alert recipient with channel type and contact
+[DTO] SetSecretDto: secretKey, secretValue
+    input for storing a named secret value in Deno KV
+[DTO] SecretDto: secretKey
+    a stored secret represented by its key name only, never its value
+[DTO] SecretKeyDto: secretKey
+    input for querying or deleting a secret by key name
+[DTO] SecretListDto: secret(s)
+    all stored secret key names
+[DTO] ResponseDto: payload
+    raw response payload from an HTTP source request
+[DTO] RunResultDto: runId, monitorId, observed, passed, timestamp
+    the result of a single check run including observed value and status
