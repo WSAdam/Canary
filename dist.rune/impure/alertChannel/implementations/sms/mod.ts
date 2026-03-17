@@ -23,11 +23,12 @@ export class Sms extends BaseAlertChannel {
           .replace(/\{timestamp\}/g, run.timestamp)
       : defaultMessage;
 
-    console.log(`📱 sms.send: to=${this.phoneNumber}`);
+    const number = this.phoneNumber.replace(/^\+/, "");
+    console.log(`📱 sms.send: to=${number}`);
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ Number: this.phoneNumber, Message: message }),
+      body: JSON.stringify({ number, message }),
     });
 
     if (!response.ok) {
