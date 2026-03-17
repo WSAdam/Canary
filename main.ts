@@ -749,6 +749,7 @@ function wizardGoStep(n) {
     const s = document.getElementById('wstep-' + i);
     s.className = 'step' + (i === n ? ' active' : i < n ? ' done' : '');
   }
+  if (n === 2) updateSimpleSched();
 }
 
 async function wizardStep1() {
@@ -1093,7 +1094,6 @@ document.getElementById('li-user').addEventListener('keydown', e => { if (e.key 
   } else {
     showView('login');
   }
-  updateSimpleSched();
   document.getElementById('w-method').addEventListener('change', updateBodyVisibility);
 })();
 </script>
