@@ -32,7 +32,7 @@ export class Monitor {
 
   async list(): Promise<MonitorListDto> {
     const monitors: MonitorDto[] = [];
-    for await (const entry of kv.list<MonitorDto>({ prefix: ["monitor"] }, { consistency: "strong" })) {
+    for await (const entry of kv.list<MonitorDto>({ prefix: ["monitor"] })) {
       if (entry.key.length === 2 && entry.key[0] === "monitor") {
         monitors.push(entry.value);
       }

@@ -12,43 +12,60 @@ import { AlertChannel } from "../../impure/alertChannel/mod.ts";
 export async function executeRunner(input: MonitorIdDto): Promise<RunResultDto> {
   console.log("🚀 runner.execute", input.monitorId);
 
-  // Load configs
-  const monitor = new Monitor();
-  await monitor.get(input.monitorId); // throws not-found if monitor missing
-
+  // Load check config (required)
   const check = new Check();
-  const checkDto = await check.get(input.monitorId); // throws not-found if check missing
+  const checkDto = await check.get(input.monitorId);
 
-  const alert = new Alert();
-  const alertDto = await alert.get(input.monitorId); // throws not-found if alert missing
+  // Load monitor name for human-readable alerts (optional — don't fail if missing)
+  let monitorName: string | undefined;
+  try {
+    const monitor = new Monitor();
+    const monitorDto = await monitor.get(input.monitorId);
+    monitorName = monitorDto.name;
+  } catch {
+    console.log(`⚠️ runner.execute: could not load monitor name for ${input.monitorId}`);
+  }
 
-  // Fetch the previous run result BEFORE saving the new one (for recovery detection)
+  // Fetch previous run for recovery detection
   const previousRun = await RunResult.getLatest(input.monitorId);
 
-  // Fetch source, extract value, evaluate comparator
-  const source = Source.fromCheck(checkDto);
-  const responseDto = await source.fetch(checkDto);
+  // Run the check — treat fetch/parse errors as a failed run (not a crash)
+  let observed = 0;
+  let passed = false;
+  let runError: string | undefined;
+  try {
+    const source = Source.fromCheck(checkDto);
+    const responseDto = await source.fetch(checkDto);
+    observed = Extractor.apply(checkDto, responseDto);
+    passed = Comparator.evaluate(checkDto, observed);
+    console.log(`🔍 runner.execute: observed=${observed}, passed=${passed}`);
+  } catch (e) {
+    runError = (e as Error).message;
+    console.log(`❌ runner.execute: check failed — ${runError}`);
+  }
 
-  const observed = Extractor.apply(checkDto, responseDto);
-  const passed = Comparator.evaluate(checkDto, observed);
-
-  // Build, persist, and return result
-  const runResult = RunResult.build(input.monitorId, observed, passed);
+  // Build and persist result
+  const runResult = RunResult.build(input.monitorId, observed, passed, monitorName, runError);
   const runResultDto = runResult.toDto();
   await runResult.save(runResultDto);
 
-  // Alert logic:
-  //   - always alert on failure
-  //   - alert on recovery (was failing, now passing) only if notifyOnRecover is set
+  // Alert if needed (optional — skip if no alert configured)
   const isRecovery = previousRun !== null && !previousRun.passed && passed;
   const shouldAlert = !passed || (isRecovery && checkDto.notifyOnRecover);
 
   if (shouldAlert) {
     console.log("⚠️ runner.execute alerting —", passed ? "recovery" : "failure");
-    const alertChannel = AlertChannel.fromAlert(alertDto);
-    await alertChannel.send(runResultDto);
+    try {
+      const alert = new Alert();
+      const alertDto = await alert.get(input.monitorId);
+      const alertChannel = AlertChannel.fromAlert(alertDto);
+      await alertChannel.send(runResultDto);
+      console.log("✅ runner.execute: alert sent");
+    } catch (e) {
+      console.log(`⚠️ runner.execute: alert failed (non-fatal) — ${(e as Error).message}`);
+    }
   }
 
-  console.log("✅ runner.execute", input.monitorId, "passed:", passed, "observed:", observed);
+  console.log("✅ runner.execute complete", input.monitorId, "passed:", passed);
   return runResultDto;
 }

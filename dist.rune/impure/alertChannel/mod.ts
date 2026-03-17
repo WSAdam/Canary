@@ -5,18 +5,21 @@ import { Sms } from "./implementations/sms/mod.ts";
 import { Email } from "./implementations/email/mod.ts";
 
 export class AlertChannel {
-  private constructor(private readonly channels: BaseAlertChannel[]) {}
+  private constructor(
+    private readonly channels: BaseAlertChannel[],
+    private readonly alert: AlertDto,
+  ) {}
 
   static fromAlert(dto: AlertDto): AlertChannel {
     const channels = dto.recipients.map((r) => {
-      if (r.alertType === "sms") return new Sms(r.contact);
-      if (r.alertType === "email") return new Email(r.contact);
-      throw new Error(`Unknown alertType: "${r.alertType}" — expected "sms" or "email"`);
+      if (r.channel === "sms") return new Sms(r.address);
+      if (r.channel === "email") return new Email(r.address);
+      throw new Error(`Unknown channel: "${r.channel}" — expected "sms" or "email"`);
     });
-    return new AlertChannel(channels);
+    return new AlertChannel(channels, dto);
   }
 
-  async send(dto: RunResultDto): Promise<void> {
-    await Promise.all(this.channels.map((c) => c.send(dto)));
+  async send(run: RunResultDto): Promise<void> {
+    await Promise.all(this.channels.map((c) => c.send(run, this.alert)));
   }
 }

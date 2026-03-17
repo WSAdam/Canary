@@ -2,7 +2,9 @@
 export interface RunResultDto {
   runId: string;
   monitorId: string;
+  monitorName?: string;
   observed: number;
   passed: boolean;
   timestamp: string;
+  error?: string;
 }

@@ -4,4 +4,7 @@ import type { RecipientDto } from "./recipient-dto.ts";
 export interface ConfigureAlertDto {
   monitorId: string;
   recipients: RecipientDto[];
+  emailSubject?: string;
+  emailMessage?: string;
+  smsMessage?: string;
 }

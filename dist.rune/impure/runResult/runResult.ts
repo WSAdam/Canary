@@ -4,14 +4,16 @@ import type { RunResultDto } from "../../dto/run-result-dto.ts";
 export class RunResult {
   private data?: RunResultDto;
 
-  static build(monitorId: string, observed: number, passed: boolean): RunResult {
+  static build(monitorId: string, observed: number, passed: boolean, monitorName?: string, error?: string): RunResult {
     const rr = new RunResult();
     rr.data = {
       runId: crypto.randomUUID(),
       monitorId,
+      monitorName,
       observed,
       passed,
       timestamp: new Date().toISOString(),
+      error,
     };
     return rr;
   }

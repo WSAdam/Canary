@@ -497,6 +497,20 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
   <!-- Step 3: Alerts -->
   <div id="ws3" style="display:none">
     <div class="card">
+      <div class="form-group">
+  <label>EMAIL SUBJECT <span style="color:#555;font-weight:400">(optional)</span></label>
+  <input type="text" id="w-email-subject" placeholder="Canary Alert: {monitor} {status}">
+  <p class="help-text">Variables: {monitor} {status}</p>
+</div>
+<div class="form-group">
+  <label>EMAIL MESSAGE <span style="color:#555;font-weight:400">(optional)</span></label>
+  <textarea id="w-email-message" rows="3" placeholder="Default: status, monitor name, observed value, timestamp&#10;Variables: {monitor} {status} {observed} {timestamp}" style="width:100%;background:#111;border:1px solid #2a2a2a;border-radius:6px;padding:10px 12px;color:#e0e0e0;font-size:13px;resize:vertical"></textarea>
+</div>
+<div class="form-group">
+  <label>SMS MESSAGE <span style="color:#555;font-weight:400">(optional)</span></label>
+  <input type="text" id="w-sms-message" placeholder="Canary {status}: {monitor} — observed: {observed}">
+  <p class="help-text">Variables: {monitor} {status} {observed} {timestamp}</p>
+</div>
       <p style="font-size:14px;color:var(--m);margin-bottom:16px">Add the people who should be notified when this monitor fails.</p>
       <div id="recipients-list"></div>
       <button class="btn btn-ghost btn-sm" onclick="addRecipientRow()">+ Add recipient</button>
@@ -720,6 +734,9 @@ function resetWizard() {
   document.getElementById('w-body').value = '';
   document.getElementById('headers-list').innerHTML = '';
   document.getElementById('recipients-list').innerHTML = '';
+  document.getElementById('w-email-subject').value = '';
+  document.getElementById('w-email-message').value = '';
+  document.getElementById('w-sms-message').value = '';
   document.getElementById('test-result').style.display = 'none';
   document.getElementById('test-error').style.display = 'none';
   setSchedMode('simple');
@@ -815,6 +832,9 @@ async function wizardStep2() {
 
 async function wizardStep3() {
   const recipients = [];
+  const emailSubject = document.getElementById('w-email-subject').value.trim() || undefined;
+  const emailMessage = document.getElementById('w-email-message').value.trim() || undefined;
+  const smsMessage = document.getElementById('w-sms-message').value.trim() || undefined;
   document.querySelectorAll('.recipient-row').forEach(row => {
     const sel = row.querySelector('select');
     const inp = row.querySelector('input');
@@ -831,7 +851,7 @@ async function wizardStep3() {
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Saving...';
   clearErr();
   try {
-    await api('POST', '/monitors/' + S.wizardMonitorId + '/alert', { recipients });
+    await api('POST', '/monitors/' + S.wizardMonitorId + '/alert', { recipients, emailSubject, emailMessage, smsMessage });
     document.getElementById('ws3-ok').textContent = isEditAlert ? 'Alert saved!' : 'Monitor saved!';
     setTimeout(() => showView('dashboard'), 1200);
   } catch (e) {
@@ -863,6 +883,9 @@ async function prefillAlert(monitorId) {
     const d = await api('GET', '/monitors/' + monitorId + '/alert');
     const list = d.recipients || [];
     list.forEach(r => addRecipientRow(r.channel, r.address));
+    if (d.emailSubject) document.getElementById('w-email-subject').value = d.emailSubject;
+    if (d.emailMessage) document.getElementById('w-email-message').value = d.emailMessage;
+    if (d.smsMessage) document.getElementById('w-sms-message').value = d.smsMessage;
     if (list.length === 0) {
       document.getElementById('ws3-err').textContent = 'No recipients configured yet. Add one below.';
     }

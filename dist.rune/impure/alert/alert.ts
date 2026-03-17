@@ -8,7 +8,13 @@ export class Alert {
 
   static build(dto: ConfigureAlertDto): Alert {
     const alert = new Alert();
-    alert.data = { monitorId: dto.monitorId, recipients: dto.recipients };
+    alert.data = {
+      monitorId: dto.monitorId,
+      recipients: dto.recipients,
+      emailSubject: dto.emailSubject,
+      emailMessage: dto.emailMessage,
+      smsMessage: dto.smsMessage,
+    };
     return alert;
   }
 
