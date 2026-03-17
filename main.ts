@@ -700,6 +700,7 @@ function editAlert(monitorId) {
   showView('wizard');
   document.getElementById('wiz-title').textContent = 'Edit alert';
   document.getElementById('wiz-subtitle').textContent = monitorId;
+  document.getElementById('ws3-btn').textContent = 'Save alert';
   prefillAlert(monitorId);
 }
 
@@ -820,16 +821,22 @@ async function wizardStep3() {
     if (inp.value.trim()) recipients.push({ channel: sel.value, address: inp.value.trim() });
   });
 
+  if (recipients.length === 0) {
+    document.getElementById('ws3-err').textContent = 'Add at least one recipient before saving.';
+    return;
+  }
+
   const btn = document.getElementById('ws3-btn');
+  const isEditAlert = S.wizardMode === 'edit-alert';
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Saving...';
   clearErr();
   try {
     await api('POST', '/monitors/' + S.wizardMonitorId + '/alert', { recipients });
-    document.getElementById('ws3-ok').textContent = 'Monitor saved!';
+    document.getElementById('ws3-ok').textContent = isEditAlert ? 'Alert saved!' : 'Monitor saved!';
     setTimeout(() => showView('dashboard'), 1200);
   } catch (e) {
     document.getElementById('ws3-err').textContent = e.message;
-    btn.disabled = false; btn.textContent = 'Save monitor';
+    btn.disabled = false; btn.textContent = isEditAlert ? 'Save alert' : 'Save monitor';
   }
 }
 
@@ -854,8 +861,18 @@ async function prefillCheck(monitorId) {
 async function prefillAlert(monitorId) {
   try {
     const d = await api('GET', '/monitors/' + monitorId + '/alert');
-    (d.recipients || []).forEach(r => addRecipientRow(r.channel, r.address));
-  } catch {}
+    const list = d.recipients || [];
+    list.forEach(r => addRecipientRow(r.channel, r.address));
+    if (list.length === 0) {
+      document.getElementById('ws3-err').textContent = 'No recipients configured yet. Add one below.';
+    }
+  } catch (e) {
+    if (e.message && (e.message.includes('404') || e.message.includes('not-found'))) {
+      document.getElementById('ws3-err').textContent = 'No alert configured yet. Add recipients below.';
+    } else {
+      document.getElementById('ws3-err').textContent = 'Could not load existing alert: ' + e.message;
+    }
+  }
 }
 
 // ─── Headers builder ──────────────────────────────────────────────────────────
