@@ -25,6 +25,10 @@ import { setSecret } from "./dist.rune/integration/secret-set/secret-set.ts";
 import { listSecrets } from "./dist.rune/integration/secret-list/secret-list.ts";
 import { deleteSecret } from "./dist.rune/integration/secret-delete/secret-delete.ts";
 import { executeRunner } from "./dist.rune/integration/runner-execute/runner-execute.ts";
+import { Email } from "./dist.rune/impure/alertChannel/implementations/email/mod.ts";
+import { Sms } from "./dist.rune/impure/alertChannel/implementations/sms/mod.ts";
+import type { RunResultDto } from "./dist.rune/dto/run-result-dto.ts";
+import type { AlertDto } from "./dist.rune/dto/alert-dto.ts";
 
 // ---------------------------------------------------------------------------
 // Seed admin on startup
@@ -496,27 +500,67 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
 
   <!-- Step 3: Alerts -->
   <div id="ws3" style="display:none">
-    <div class="card">
+    <div style="display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid #2a2a2a">
+      <button id="ws3-tab-config" class="sched-tab active" onclick="ws3Tab('config')" style="padding:8px 20px">Configuration</button>
+      <button id="ws3-tab-examples" class="sched-tab" onclick="ws3Tab('examples')" style="padding:8px 20px">Examples &amp; Try it</button>
+    </div>
+
+    <!-- Configuration tab -->
+    <div id="ws3-config" class="card">
       <div class="form-group">
-  <label>EMAIL SUBJECT <span style="color:#555;font-weight:400">(optional)</span></label>
-  <input type="text" id="w-email-subject" placeholder="Canary Alert: {monitor} {status}">
-  <p class="help-text">Variables: {monitor} {status}</p>
-</div>
-<div class="form-group">
-  <label>EMAIL MESSAGE <span style="color:#555;font-weight:400">(optional)</span></label>
-  <textarea id="w-email-message" rows="3" placeholder="Default: status, monitor name, observed value, timestamp&#10;Variables: {monitor} {status} {observed} {timestamp}" style="width:100%;background:#111;border:1px solid #2a2a2a;border-radius:6px;padding:10px 12px;color:#e0e0e0;font-size:13px;resize:vertical"></textarea>
-</div>
-<div class="form-group">
-  <label>SMS MESSAGE <span style="color:#555;font-weight:400">(optional)</span></label>
-  <input type="text" id="w-sms-message" placeholder="Canary {status}: {monitor} — observed: {observed}">
-  <p class="help-text">Variables: {monitor} {status} {observed} {timestamp}</p>
-</div>
-      <p style="font-size:14px;color:var(--m);margin-bottom:16px">Add the people who should be notified when this monitor fails.</p>
+        <label>EMAIL SUBJECT <span style="color:#555;font-weight:400">(optional)</span></label>
+        <input type="text" id="w-email-subject" placeholder="Canary Alert: {monitor} {status}">
+        <p class="help-text">Variables: {monitor} {status}</p>
+      </div>
+      <div class="form-group">
+        <label>EMAIL MESSAGE <span style="color:#555;font-weight:400">(optional)</span></label>
+        <textarea id="w-email-message" rows="3" placeholder="Leave blank for default. Variables: {monitor} {status} {observed} {timestamp}" style="width:100%;background:#111;border:1px solid #2a2a2a;border-radius:6px;padding:10px 12px;color:#e0e0e0;font-size:13px;resize:vertical;box-sizing:border-box"></textarea>
+      </div>
+      <div class="form-group">
+        <label>SMS MESSAGE <span style="color:#555;font-weight:400">(optional)</span></label>
+        <input type="text" id="w-sms-message" placeholder="Leave blank for default. Variables: {monitor} {status} {observed} {timestamp}">
+      </div>
+      <p style="font-size:14px;color:var(--m);margin-bottom:16px">Who gets notified when this monitor fails.</p>
       <div id="recipients-list"></div>
       <button class="btn btn-ghost btn-sm" onclick="addRecipientRow()">+ Add recipient</button>
     </div>
+
+    <!-- Examples & Try it tab -->
+    <div id="ws3-examples" style="display:none">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <div class="card">
+          <p style="font-size:11px;color:#FFD700;font-weight:600;letter-spacing:.08em;margin-bottom:12px">EMAIL EXAMPLE</p>
+          <div style="background:#111;border:1px solid #2a2a2a;border-radius:8px;padding:14px;font-size:12px;color:#999;font-family:monospace;margin-bottom:16px;line-height:1.8">
+            <span style="color:#e0e0e0">Subject:</span> Canary Alert: Example Monitor FAILED<br>
+            <br>
+            <span style="color:#e0e0e0">Status:</span>    ❌ FAILED<br>
+            <span style="color:#e0e0e0">Monitor:</span>   Example Monitor<br>
+            <span style="color:#e0e0e0">Observed:</span>  42<br>
+            <span style="color:#e0e0e0">Run ID:</span>    test-1234<br>
+            <span style="color:#e0e0e0">Timestamp:</span> 2026-03-17T11:00:00.000Z
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="text" id="ex-email-addr" placeholder="your@email.com" style="flex:1">
+            <button class="btn btn-ghost btn-sm" id="ex-email-btn" onclick="sendTestAlert('email')">Send test</button>
+          </div>
+          <div id="ex-email-result" style="font-size:12px;margin-top:8px"></div>
+        </div>
+        <div class="card">
+          <p style="font-size:11px;color:#FFD700;font-weight:600;letter-spacing:.08em;margin-bottom:12px">SMS EXAMPLE</p>
+          <div style="background:#111;border:1px solid #2a2a2a;border-radius:8px;padding:14px;font-size:12px;color:#999;font-family:monospace;margin-bottom:16px;line-height:1.8">
+            Canary FAILED: Example Monitor — observed: 42 at 2026-03-17T11:00:00.000Z
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="text" id="ex-sms-addr" placeholder="+15555550100" style="flex:1">
+            <button class="btn btn-ghost btn-sm" id="ex-sms-btn" onclick="sendTestAlert('sms')">Send test</button>
+          </div>
+          <div id="ex-sms-result" style="font-size:12px;margin-top:8px"></div>
+        </div>
+      </div>
+    </div>
+
     <div class="wizard-footer">
-      <button class="btn btn-ghost" onclick="wizardGoStep(2)">Back</button>
+      <button class="btn btn-ghost" onclick="wizardBack()">Back</button>
       <button class="btn btn-primary" id="ws3-btn" onclick="wizardStep3()">Save monitor</button>
     </div>
     <div class="error-msg" id="ws3-err"></div>
@@ -737,6 +781,7 @@ function resetWizard() {
   document.getElementById('w-email-subject').value = '';
   document.getElementById('w-email-message').value = '';
   document.getElementById('w-sms-message').value = '';
+  ws3Tab('config');
   document.getElementById('test-result').style.display = 'none';
   document.getElementById('test-error').style.display = 'none';
   setSchedMode('simple');
@@ -962,6 +1007,35 @@ function updateSimpleSched() {
   document.getElementById('sched-days-col').style.opacity = freq === 'hourly' ? '.4' : '1';
   const cron = buildLocalCron(freq, document.getElementById('w-time').value, document.getElementById('w-days').value);
   document.getElementById('sched-preview').textContent = 'Cron: ' + cron;
+}
+
+// ─── Alert config tabs ────────────────────────────────────────────────────────
+function ws3Tab(tab) {
+  const isConfig = tab === 'config';
+  document.getElementById('ws3-config').style.display = isConfig ? 'block' : 'none';
+  document.getElementById('ws3-examples').style.display = isConfig ? 'none' : 'block';
+  document.getElementById('ws3-tab-config').className = 'sched-tab' + (isConfig ? ' active' : '');
+  document.getElementById('ws3-tab-examples').className = 'sched-tab' + (!isConfig ? ' active' : '');
+}
+
+async function sendTestAlert(channel) {
+  const addrEl = document.getElementById(\`ex-\${channel}-addr\`);
+  const resultEl = document.getElementById(\`ex-\${channel}-result\`);
+  const btn = document.getElementById(\`ex-\${channel}-btn\`);
+  const address = addrEl.value.trim();
+  if (!address) { resultEl.textContent = 'Enter an address first.'; resultEl.style.color = '#f66'; return; }
+  btn.disabled = true; btn.textContent = 'Sending...';
+  resultEl.textContent = '';
+  try {
+    await api('POST', '/test-alert', { channel, address });
+    resultEl.textContent = '✅ Sent! Check your ' + (channel === 'email' ? 'inbox' : 'phone') + '.';
+    resultEl.style.color = '#4caf50';
+  } catch (e) {
+    resultEl.textContent = '❌ ' + e.message;
+    resultEl.style.color = '#f66';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Send test';
+  }
 }
 
 // ─── Invite modal ─────────────────────────────────────────────────────────────
@@ -1342,6 +1416,40 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // Manual run
     const runMatch = pathname.match(/^\/run\/([^/]+)$/);
     if (runMatch && method === "POST") return json(await executeRunner({ monitorId: runMatch[1] }));
+
+    // Test alert (send a real email or SMS to verify config)
+    if (method === "POST" && pathname === "/test-alert") {
+      const body = await parseBody(req) as { channel: string; address: string; emailSubject?: string; emailMessage?: string; smsMessage?: string };
+      if (!body.channel || !body.address) throw new CanaryError("validation-error", "channel and address are required", 400);
+      const fakeRun: RunResultDto = {
+        runId: "test-" + Date.now(),
+        monitorId: "test",
+        monitorName: "Example Monitor",
+        observed: 42,
+        passed: false,
+        timestamp: new Date().toISOString(),
+      };
+      const fakeAlert: AlertDto = {
+        monitorId: "test",
+        recipients: [],
+        emailSubject: body.emailSubject,
+        emailMessage: body.emailMessage,
+        smsMessage: body.smsMessage,
+      };
+      if (body.channel === "email") {
+        console.log(`📧 test-alert: sending email to ${body.address}`);
+        const ch = new Email(body.address);
+        await ch.send(fakeRun, fakeAlert);
+      } else if (body.channel === "sms") {
+        console.log(`📱 test-alert: sending SMS to ${body.address}`);
+        const ch = new Sms(body.address);
+        await ch.send(fakeRun, fakeAlert);
+      } else {
+        throw new CanaryError("validation-error", `Unknown channel: ${body.channel}`, 400);
+      }
+      console.log(`✅ test-alert: sent ${body.channel} to ${body.address}`);
+      return json({ sent: true });
+    }
 
     return json({ error: "not-found", message: `No route for ${method} ${pathname}` }, 404);
   } catch (e) {
