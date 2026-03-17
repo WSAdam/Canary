@@ -551,7 +551,7 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
             Canary FAILED: Example Monitor — observed: 42 at 2026-03-17T11:00:00.000Z
           </div>
           <div style="display:flex;gap:8px;align-items:center">
-            <input type="text" id="ex-sms-addr" placeholder="+15555550100" style="flex:1">
+            <input type="text" id="ex-sms-addr" placeholder="15555550100" style="flex:1">
             <button class="btn btn-ghost btn-sm" id="ex-sms-btn" onclick="sendTestAlert('sms')">Send test</button>
           </div>
           <div id="ex-sms-result" style="font-size:12px;margin-top:8px"></div>
@@ -961,11 +961,11 @@ function addRecipientRow(channel = 'email', address = '') {
   row.className = 'recipient-row';
   row.innerHTML = \`
     <select><option value="email"\${channel==='email'?' selected':''}>Email</option><option value="sms"\${channel==='sms'?' selected':''}>SMS</option></select>
-    <input type="text" placeholder="\${channel==='sms'?'+15555550100':'oncall@example.com'}" value="\${esc(address)}">
+    <input type="text" placeholder="\${channel==='sms'?'15555550100':'oncall@example.com'}" value="\${esc(address)}">
     <button class="icon-btn" onclick="this.parentElement.remove()" title="Remove">&#x2715;</button>
   \`;
   row.querySelector('select').onchange = function() {
-    row.querySelector('input').placeholder = this.value === 'sms' ? '+15555550100' : 'oncall@example.com';
+    row.querySelector('input').placeholder = this.value === 'sms' ? '15555550100' : 'oncall@example.com';
   };
   document.getElementById('recipients-list').appendChild(row);
 }
@@ -1230,10 +1230,11 @@ function html(content: string): Response {
 
 function errorResponse(e: unknown): Response {
   if (e instanceof CanaryError) {
+    console.log(`❌ errorResponse: CanaryError fault=${e.fault} status=${e.status} message=${e.message}`);
     return json({ error: e.fault, message: e.message }, e.status);
   }
   const msg = e instanceof Error ? e.message : String(e);
-  console.error("❌ unhandled error:", msg);
+  console.error("❌ errorResponse: unhandled error:", msg, (e instanceof Error ? e.stack : ""));
   return json({ error: "internal-error", message: msg }, 500);
 }
 
@@ -1282,13 +1283,18 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // Public JSON status
     if (method === "GET" && pathname === "/api/status") {
       const monitors = await listMonitors();
-      return json({ status: "ok", startedAt, lastCronTick, monitors: monitors.monitors.length });
+      const statusData = { status: "ok", startedAt, lastCronTick, monitors: monitors.monitors.length };
+      console.log(`✅ GET /api/status → 200 monitors=${statusData.monitors}`);
+      return json(statusData);
     }
 
     // Public: login
     if (method === "POST" && pathname === "/auth/login") {
       const body = await parseBody<{ username: string; password: string }>(req);
-      return json(await login(body.username, body.password));
+      console.log(`🔍 POST /auth/login: username="${body.username}"`);
+      const session = await login(body.username, body.password);
+      console.log(`✅ POST /auth/login → 200 username="${body.username}"`);
+      return json(session);
     }
 
     // Public: invite info (email hint for accept page)
@@ -1318,19 +1324,29 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // Logout
     if (method === "POST" && pathname === "/auth/logout") {
       await logout(token);
+      console.log(`✅ POST /auth/logout → 200`);
       return json({ ok: true });
     }
 
     // Users
     if (method === "POST" && pathname === "/users") {
       const body = await parseBody<{ username: string; password: string }>(req);
+      console.log(`🔍 POST /users: username="${body.username}"`);
       await createUser(body.username, body.password);
+      console.log(`✅ POST /users → 201 username="${body.username}"`);
       return json({ ok: true }, 201);
     }
-    if (method === "GET" && pathname === "/users") return json(await listUsers());
+    if (method === "GET" && pathname === "/users") {
+      const users = await listUsers();
+      console.log(`✅ GET /users → 200 count=${users.length}`);
+      return json(users);
+    }
     const userMatch = pathname.match(/^\/users\/([^/]+)$/);
     if (userMatch && method === "DELETE") {
-      await deleteUser(decodeURIComponent(userMatch[1]));
+      const username = decodeURIComponent(userMatch[1]);
+      console.log(`🔍 DELETE /users/${username}`);
+      await deleteUser(username);
+      console.log(`✅ DELETE /users/${username} → 200`);
       return json({ ok: true });
     }
 
@@ -1374,11 +1390,24 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // Monitors
     if (method === "POST" && pathname === "/monitors") {
       const body = await parseBody(req);
-      return json(await createMonitor(body as Parameters<typeof createMonitor>[0]), 201);
+      console.log(`🔍 POST /monitors: body=${JSON.stringify(body)}`);
+      const result = await createMonitor(body as Parameters<typeof createMonitor>[0]);
+      console.log(`✅ POST /monitors → 201 monitorId=${result.monitorId} name="${result.name}"`);
+      return json(result, 201);
     }
-    if (method === "GET" && pathname === "/monitors") return json(await listMonitors());
+    if (method === "GET" && pathname === "/monitors") {
+      const result = await listMonitors();
+      console.log(`✅ GET /monitors → 200 count=${result.monitors.length}`);
+      return json(result);
+    }
     const monitorMatch = pathname.match(/^\/monitors\/([^/]+)$/);
-    if (monitorMatch && method === "GET") return json(await getMonitor({ monitorId: monitorMatch[1] }));
+    if (monitorMatch && method === "GET") {
+      const monitorId = monitorMatch[1];
+      console.log(`🔍 GET /monitors/${monitorId}`);
+      const result = await getMonitor({ monitorId });
+      console.log(`✅ GET /monitors/${monitorId} → 200 name="${result.name}"`);
+      return json(result);
+    }
 
     // Check
     const checkMatch = pathname.match(/^\/monitors\/([^/]+)\/check$/);
@@ -1386,9 +1415,17 @@ Deno.serve(async (req: Request): Promise<Response> => {
       const monitorId = checkMatch[1];
       if (method === "POST") {
         const body = await parseBody(req);
-        return json(await configureCheck({ ...(body as object), monitorId } as Parameters<typeof configureCheck>[0]));
+        console.log(`🔍 POST /monitors/${monitorId}/check: body=${JSON.stringify(body)}`);
+        const result = await configureCheck({ ...(body as object), monitorId } as Parameters<typeof configureCheck>[0]);
+        console.log(`✅ POST /monitors/${monitorId}/check → 200`);
+        return json(result);
       }
-      if (method === "GET") return json(await getCheck({ monitorId }));
+      if (method === "GET") {
+        console.log(`🔍 GET /monitors/${monitorId}/check`);
+        const result = await getCheck({ monitorId });
+        console.log(`✅ GET /monitors/${monitorId}/check → 200 url=${result.url}`);
+        return json(result);
+      }
     }
 
     // Alert
@@ -1397,9 +1434,17 @@ Deno.serve(async (req: Request): Promise<Response> => {
       const monitorId = alertMatch[1];
       if (method === "POST") {
         const body = await parseBody(req);
-        return json(await configureAlert({ ...(body as object), monitorId } as Parameters<typeof configureAlert>[0]));
+        console.log(`🔍 POST /monitors/${monitorId}/alert: recipients=${(body as { recipients?: unknown[] }).recipients?.length ?? 0}`);
+        const result = await configureAlert({ ...(body as object), monitorId } as Parameters<typeof configureAlert>[0]);
+        console.log(`✅ POST /monitors/${monitorId}/alert → 200`);
+        return json(result);
       }
-      if (method === "GET") return json(await getAlert({ monitorId }));
+      if (method === "GET") {
+        console.log(`🔍 GET /monitors/${monitorId}/alert`);
+        const result = await getAlert({ monitorId });
+        console.log(`✅ GET /monitors/${monitorId}/alert → 200 recipients=${result.recipients.length}`);
+        return json(result);
+      }
     }
 
     // Schedule builder
@@ -1408,14 +1453,36 @@ Deno.serve(async (req: Request): Promise<Response> => {
     }
 
     // Secrets
-    if (method === "POST" && pathname === "/secrets") return json(await setSecret(await parseBody(req) as Parameters<typeof setSecret>[0]));
-    if (method === "GET" && pathname === "/secrets") return json(await listSecrets());
+    if (method === "POST" && pathname === "/secrets") {
+      const body = await parseBody(req) as Parameters<typeof setSecret>[0];
+      console.log(`🔍 POST /secrets: key=${body.secretKey}`);
+      const result = await setSecret(body);
+      console.log(`✅ POST /secrets → 200 key=${body.secretKey}`);
+      return json(result);
+    }
+    if (method === "GET" && pathname === "/secrets") {
+      const result = await listSecrets();
+      console.log(`✅ GET /secrets → 200 count=${result.secrets.length}`);
+      return json(result);
+    }
     const secretMatch = pathname.match(/^\/secrets\/([^/]+)$/);
-    if (secretMatch && method === "DELETE") return json(await deleteSecret({ secretKey: decodeURIComponent(secretMatch[1]) }));
+    if (secretMatch && method === "DELETE") {
+      const secretKey = decodeURIComponent(secretMatch[1]);
+      console.log(`🔍 DELETE /secrets/${secretKey}`);
+      const result = await deleteSecret({ secretKey });
+      console.log(`✅ DELETE /secrets/${secretKey} → 200`);
+      return json(result);
+    }
 
     // Manual run
     const runMatch = pathname.match(/^\/run\/([^/]+)$/);
-    if (runMatch && method === "POST") return json(await executeRunner({ monitorId: runMatch[1] }));
+    if (runMatch && method === "POST") {
+      const monitorId = runMatch[1];
+      console.log(`🔍 POST /run/${monitorId}: triggering manual run`);
+      const result = await executeRunner({ monitorId });
+      console.log(`✅ POST /run/${monitorId} → 200 passed=${result.passed} observed=${result.observed}`);
+      return json(result);
+    }
 
     // Test alert (send a real email or SMS to verify config)
     if (method === "POST" && pathname === "/test-alert") {
@@ -1453,6 +1520,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
     return json({ error: "not-found", message: `No route for ${method} ${pathname}` }, 404);
   } catch (e) {
+    console.log(`❌ request error: ${(e as Error).message}`, (e as Error).stack);
     return errorResponse(e);
   }
 });

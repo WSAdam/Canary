@@ -7,6 +7,7 @@ export class Alert {
   private data?: AlertDto;
 
   static build(dto: ConfigureAlertDto): Alert {
+    console.log(`🔍 alert.build: monitorId=${dto.monitorId} recipients=${dto.recipients.length}`);
     const alert = new Alert();
     alert.data = {
       monitorId: dto.monitorId,
@@ -24,15 +25,25 @@ export class Alert {
   }
 
   async upsert(dto: AlertDto): Promise<AlertDto> {
+    console.log(`🚀 alert.upsert: key=["alert", "${dto.monitorId}"] recipients=${dto.recipients.length}`);
     await kv.set(["alert", dto.monitorId], dto);
+    const verify = await kv.get<AlertDto>(["alert", dto.monitorId], { consistency: "strong" });
+    if (verify.value === null) {
+      console.log(`❌ alert.upsert: READ-BACK FAILED — write did not persist!`);
+    } else {
+      console.log(`✅ alert.upsert: verified alert for ${dto.monitorId} recipients=${verify.value.recipients.length}`);
+    }
     return dto;
   }
 
   async get(monitorId: string): Promise<AlertDto> {
+    console.log(`🔍 alert.get: key=["alert", "${monitorId}"] consistency=strong`);
     const result = await kv.get<AlertDto>(["alert", monitorId], { consistency: "strong" });
     if (result.value === null) {
+      console.log(`❌ alert.get: NOT FOUND for monitorId=${monitorId}`);
       throw new CanaryError("not-found", `Alert config for monitor "${monitorId}" not found`, 404);
     }
+    console.log(`✅ alert.get: found alert recipients=${result.value.recipients.length} versionstamp=${result.versionstamp}`);
     return result.value;
   }
 }
