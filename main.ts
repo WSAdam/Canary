@@ -1234,17 +1234,25 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // Test request proxy
     if (method === "POST" && pathname === "/test-request") {
       const body = await parseBody<{ url: string; method: string; headers?: Record<string, string>; body?: string }>(req);
+      const forwardHeaders: Record<string, string> = { ...(body.headers ?? {}) };
+      if (body.body) forwardHeaders["Content-Type"] = forwardHeaders["Content-Type"] ?? "application/json";
+      console.log(`🔍 test-request → ${body.method} ${body.url}`);
+      console.log(`🔍 test-request headers:`, JSON.stringify(forwardHeaders));
+      console.log(`🔍 test-request body:`, body.body ?? "(none)");
       let res: Response;
       try {
         res = await fetch(body.url, {
           method: body.method,
-          headers: body.headers ?? {},
+          headers: forwardHeaders,
           body: body.body ?? undefined,
         });
       } catch (e) {
+        console.log(`❌ test-request fetch threw:`, (e as Error).message);
         throw new CanaryError("request-failed", `Could not reach ${body.url}: ${(e as Error).message}`, 502);
       }
       const text = await res.text();
+      console.log(`🔍 test-request response status:`, res.status);
+      console.log(`🔍 test-request response body:`, text.slice(0, 500));
       let data: unknown;
       try { data = JSON.parse(text); } catch { data = text; }
       return json({ status: res.status, ok: res.ok, data });
