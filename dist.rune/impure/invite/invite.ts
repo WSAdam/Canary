@@ -62,7 +62,7 @@ export async function createInvites(
 }
 
 export async function consumeInvite(token: string): Promise<string> {
-  const entry = await kv.get<InviteRecord>(["invite", token]);
+  const entry = await kv.get<InviteRecord>(["invite", token], { consistency: "strong" });
   if (!entry.value) throw new CanaryError("not-found", "Invite link not found or expired", 404);
   const { email } = entry.value;
   await kv.delete(["invite", token]);

@@ -280,12 +280,13 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
   <div class="logo">
     <img src="/favicon.svg" alt="Canary">
     <h1>Welcome to Canary</h1>
-    <p>Set a password to activate your account</p>
+    <p>You've been invited. Set a password to activate your account.</p>
   </div>
-  <div class="form-group">
-    <label>Email</label>
-    <input type="text" id="ia-email" disabled style="color:var(--m)">
+  <div style="background:#111;border:1px solid #2a2a2a;border-radius:8px;padding:14px 16px;margin-bottom:20px;text-align:center">
+    <p style="font-size:11px;color:#555;letter-spacing:.08em;margin:0 0 4px">SIGNING IN AS</p>
+    <p id="ia-email-display" style="font-size:15px;color:#FFD700;font-weight:600;margin:0">Loading...</p>
   </div>
+  <input type="hidden" id="ia-email">
   <div class="form-group">
     <label for="ia-pass">Password</label>
     <input type="password" id="ia-pass" placeholder="Choose a password" autocomplete="new-password">
@@ -652,11 +653,17 @@ async function initInviteAccept() {
   const token = new URLSearchParams(location.search).get('token');
   if (!token) { showView('login'); return; }
 
-  // fetch email hint from server
   try {
     const d = await api('GET', '/invite/info?token=' + encodeURIComponent(token));
-    document.getElementById('ia-email').value = d.email;
-  } catch {}
+    const emailEl = document.getElementById('ia-email');
+    emailEl.value = d.email;
+    emailEl.placeholder = d.email;
+    // Also update the subtitle so the email is visible even before focusing the field
+    document.getElementById('ia-email-display').textContent = d.email;
+  } catch (e) {
+    document.getElementById('ia-err').textContent = 'This invite link is invalid or has expired. Ask your admin to send a new one.';
+    document.getElementById('ia-btn').disabled = true;
+  }
 
   document.getElementById('ia-btn').onclick = () => doAcceptInvite(token);
 }
@@ -1303,7 +1310,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       if (!token) throw new CanaryError("validation-error", "Missing token", 400);
       // peek without consuming
       const { kv: kvStore } = await import("./dist.rune/impure/_kv.ts");
-      const entry = await kvStore.get<{ email: string }>(["invite", token]);
+      const entry = await kvStore.get<{ email: string }>(["invite", token], { consistency: "strong" });
       if (!entry.value) throw new CanaryError("not-found", "Invite not found or expired", 404);
       return json({ email: entry.value.email });
     }
