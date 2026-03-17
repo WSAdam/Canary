@@ -32,7 +32,7 @@ export class Monitor {
 
   async list(): Promise<MonitorListDto> {
     const monitors: MonitorDto[] = [];
-    for await (const entry of kv.list<MonitorDto>({ prefix: ["monitor"] })) {
+    for await (const entry of kv.list<MonitorDto>({ prefix: ["monitor"] }, { consistency: "strong" })) {
       if (entry.key.length === 2 && entry.key[0] === "monitor") {
         monitors.push(entry.value);
       }
@@ -41,10 +41,20 @@ export class Monitor {
   }
 
   async get(monitorId: string): Promise<MonitorDto> {
+    console.log(`🔍 monitor.get: looking up ["monitor", "${monitorId}"]`);
     const result = await kv.get<MonitorDto>(["monitor", monitorId], { consistency: "strong" });
     if (result.value === null) {
+      // Dump existing monitor keys to help diagnose stale-ID issues
+      const existing: string[] = [];
+      for await (const entry of kv.list<MonitorDto>({ prefix: ["monitor"] }, { consistency: "strong" })) {
+        if (entry.key.length === 2 && entry.key[0] === "monitor") {
+          existing.push(entry.key[1] as string);
+        }
+      }
+      console.log(`❌ monitor.get: NOT FOUND. Existing monitor IDs in KV: [${existing.join(", ")}]`);
       throw new CanaryError("not-found", `Monitor "${monitorId}" not found`, 404);
     }
+    console.log(`✅ monitor.get: found "${result.value.name}" (${monitorId})`);
     return result.value;
   }
 }
