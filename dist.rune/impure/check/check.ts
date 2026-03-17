@@ -23,7 +23,7 @@ export class Check {
   }
 
   async get(monitorId: string): Promise<CheckDto> {
-    const result = await kv.get<CheckDto>(["check", monitorId]);
+    const result = await kv.get<CheckDto>(["check", monitorId], { consistency: "strong" });
     if (result.value === null) {
       throw new CanaryError("not-found", `Check config for monitor "${monitorId}" not found`, 404);
     }

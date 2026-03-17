@@ -19,7 +19,7 @@ export class Secret {
   }
 
   async get(secretKey: string): Promise<SecretDto> {
-    const result = await kv.get(["secret", secretKey]);
+    const result = await kv.get(["secret", secretKey], { consistency: "strong" });
     if (result.value === null) {
       throw new CanaryError("not-found", `Secret "${secretKey}" not found`, 404);
     }

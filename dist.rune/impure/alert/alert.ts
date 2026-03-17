@@ -23,7 +23,7 @@ export class Alert {
   }
 
   async get(monitorId: string): Promise<AlertDto> {
-    const result = await kv.get<AlertDto>(["alert", monitorId]);
+    const result = await kv.get<AlertDto>(["alert", monitorId], { consistency: "strong" });
     if (result.value === null) {
       throw new CanaryError("not-found", `Alert config for monitor "${monitorId}" not found`, 404);
     }

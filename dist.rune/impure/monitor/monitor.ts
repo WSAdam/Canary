@@ -6,7 +6,7 @@ import { CanaryError } from "../../dto/_shared.ts";
 
 export class Monitor {
   static async checkUnique(name: string): Promise<void> {
-    const result = await kv.get<string>(["monitor_name", name]);
+    const result = await kv.get<string>(["monitor_name", name], { consistency: "strong" });
     if (result.value !== null) {
       throw new CanaryError("duplicate-name", `Monitor with name "${name}" already exists`, 409);
     }
@@ -41,7 +41,7 @@ export class Monitor {
   }
 
   async get(monitorId: string): Promise<MonitorDto> {
-    const result = await kv.get<MonitorDto>(["monitor", monitorId]);
+    const result = await kv.get<MonitorDto>(["monitor", monitorId], { consistency: "strong" });
     if (result.value === null) {
       throw new CanaryError("not-found", `Monitor "${monitorId}" not found`, 404);
     }
