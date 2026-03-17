@@ -398,12 +398,27 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
         <button class="btn btn-ghost btn-sm" onclick="addHeaderRow()">+ Add header</button>
       </div>
 
+      <div class="form-group" id="w-body-group" style="display:none">
+        <label for="w-body">Request body <span style="color:var(--m);text-transform:none;font-weight:400">(JSON)</span></label>
+        <textarea id="w-body" placeholder='{"key":"value"}'></textarea>
+      </div>
+
       <hr class="divider">
+
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <label style="margin:0">Response — pick a value to compare</label>
+        <button class="btn btn-ghost btn-sm" id="test-btn" onclick="testRequest()">Test request</button>
+      </div>
+      <div id="test-result" style="display:none;background:var(--bg);border:1px solid var(--b);border-radius:8px;padding:14px;margin-bottom:16px;font-family:'SF Mono','Fira Code',monospace;font-size:12px;line-height:1.7;max-height:260px;overflow:auto">
+        <div id="test-result-inner"></div>
+      </div>
+      <div id="test-error" style="display:none;color:var(--red);font-size:13px;margin-bottom:12px"></div>
 
       <div class="form-row col3">
         <div>
-          <label for="w-expr">JSON expression *</label>
+          <label for="w-expr">Response path *</label>
           <input type="text" id="w-expr" placeholder="data.value">
+          <div class="hint">Dot-notation path into the response JSON</div>
         </div>
         <div>
           <label for="w-op">Comparator</label>
@@ -701,9 +716,13 @@ function resetWizard() {
   document.getElementById('w-time').value = '09:00';
   document.getElementById('w-freq').value = 'daily';
   document.getElementById('w-days').value = 'daily';
+  document.getElementById('w-body').value = '';
   document.getElementById('headers-list').innerHTML = '';
   document.getElementById('recipients-list').innerHTML = '';
+  document.getElementById('test-result').style.display = 'none';
+  document.getElementById('test-error').style.display = 'none';
   setSchedMode('simple');
+  updateBodyVisibility();
   clearErr();
   updateSimpleSched();
 }
@@ -784,10 +803,12 @@ async function wizardStep2() {
 
   clearErr();
   try {
+    const bodyVal = document.getElementById('w-body').value.trim();
     await api('POST', '/monitors/' + S.wizardMonitorId + '/check', {
       url,
       method: document.getElementById('w-method').value,
       headers,
+      body: bodyVal || undefined,
       expression,
       comparatorOp: document.getElementById('w-op').value,
       threshold,
@@ -953,6 +974,93 @@ async function sendInvites() {
   finally { btn.disabled = false; btn.textContent = 'Send invitations'; }
 }
 
+// ─── Body visibility ─────────────────────────────────────────────────────────
+function updateBodyVisibility() {
+  const method = document.getElementById('w-method').value;
+  const show = ['POST','PUT','PATCH'].includes(method);
+  document.getElementById('w-body-group').style.display = show ? 'block' : 'none';
+}
+
+// ─── Test request ─────────────────────────────────────────────────────────────
+async function testRequest() {
+  const url = document.getElementById('w-url').value.trim();
+  if (!url) { document.getElementById('ws2-err').textContent = 'Enter a URL first.'; return; }
+
+  const headers = {};
+  document.querySelectorAll('.header-row').forEach(row => {
+    const [k, v] = row.querySelectorAll('input');
+    if (k.value.trim()) headers[k.value.trim()] = v.value.trim();
+  });
+
+  const bodyVal = document.getElementById('w-body').value.trim();
+  const btn = document.getElementById('test-btn');
+  const resultEl = document.getElementById('test-result');
+  const innerEl = document.getElementById('test-result-inner');
+  const errEl = document.getElementById('test-error');
+
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Testing...';
+  resultEl.style.display = 'none'; errEl.style.display = 'none';
+  document.getElementById('ws2-err').textContent = '';
+
+  try {
+    const data = await api('POST', '/test-request', {
+      url,
+      method: document.getElementById('w-method').value,
+      headers,
+      body: bodyVal || undefined,
+    });
+    innerEl.innerHTML = renderClickableJson(data.data, '');
+    resultEl.style.display = 'block';
+  } catch (e) {
+    errEl.textContent = 'Test failed: ' + e.message;
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Test request';
+  }
+}
+
+function renderClickableJson(val, path) {
+  if (val === null) return '<span style="color:var(--m)">null</span>';
+  if (typeof val === 'boolean') return \`<span style="color:#a78bfa">\${val}</span>\`;
+  if (typeof val === 'number') {
+    return \`<span class="json-leaf" style="color:var(--y);cursor:pointer" title="Click to use this value" onclick="selectJsonValue('\${path}', \${val})">\${val}</span>\`;
+  }
+  if (typeof val === 'string') {
+    const display = val.length > 80 ? val.slice(0,80) + '…' : val;
+    const isNum = !isNaN(Number(val)) && val !== '';
+    const style = isNum ? 'color:var(--y);cursor:pointer' : 'color:#86efac';
+    const click = isNum ? \`onclick="selectJsonValue('\${path}', \${Number(val)})"\` : '';
+    return \`<span class="json-leaf" style="\${style}" \${click} title="\${isNum?'Click to use this value':''}">&quot;\${display}&quot;</span>\`;
+  }
+  if (Array.isArray(val)) {
+    if (!val.length) return '<span style="color:var(--m)">[]</span>';
+    const items = val.map((v,i) => {
+      const p = path ? path+'.'+i : String(i);
+      return '<div style="padding-left:16px">' + renderClickableJson(v, p) + '</div>';
+    }).join('');
+    return '<span style="color:var(--m)">[</span>' + items + '<span style="color:var(--m)">]</span>';
+  }
+  if (typeof val === 'object') {
+    const entries = Object.entries(val).map(([k, v]) => {
+      const p = path ? path+'.'+k : k;
+      return \`<div style="padding-left:16px"><span style="color:#93c5fd">&quot;\${k}&quot;</span><span style="color:var(--m)">: </span>\${renderClickableJson(v, p)}</div>\`;
+    }).join('');
+    return '<span style="color:var(--m)">{</span>' + entries + '<span style="color:var(--m)">}</span>';
+  }
+  return String(val);
+}
+
+function selectJsonValue(path, num) {
+  document.getElementById('w-expr').value = path;
+  document.getElementById('w-threshold').value = num;
+  document.getElementById('w-expr').style.borderColor = 'var(--y)';
+  document.getElementById('w-threshold').style.borderColor = 'var(--y)';
+  setTimeout(() => {
+    document.getElementById('w-expr').style.borderColor = '';
+    document.getElementById('w-threshold').style.borderColor = '';
+  }, 1500);
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function esc(s) {
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -986,6 +1094,7 @@ document.getElementById('li-user').addEventListener('keydown', e => { if (e.key 
     showView('login');
   }
   updateSimpleSched();
+  document.getElementById('w-method').addEventListener('change', updateBodyVisibility);
 })();
 </script>
 </body>
@@ -1120,6 +1229,25 @@ Deno.serve(async (req: Request): Promise<Response> => {
       const baseUrl = `${url.protocol}//${url.host}`;
       await createInvites(body.emails, baseUrl, fromEmail, postmarkToken);
       return json({ ok: true });
+    }
+
+    // Test request proxy
+    if (method === "POST" && pathname === "/test-request") {
+      const body = await parseBody<{ url: string; method: string; headers?: Record<string, string>; body?: string }>(req);
+      let res: Response;
+      try {
+        res = await fetch(body.url, {
+          method: body.method,
+          headers: body.headers ?? {},
+          body: body.body ?? undefined,
+        });
+      } catch (e) {
+        throw new CanaryError("request-failed", `Could not reach ${body.url}: ${(e as Error).message}`, 502);
+      }
+      const text = await res.text();
+      let data: unknown;
+      try { data = JSON.parse(text); } catch { data = text; }
+      return json({ status: res.status, ok: res.ok, data });
     }
 
     // Monitors
