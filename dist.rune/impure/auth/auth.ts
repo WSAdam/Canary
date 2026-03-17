@@ -53,7 +53,7 @@ async function verifyPassword(password: string, hash: string, salt: string): Pro
 
 export async function seedAdmin(username: string, password: string): Promise<void> {
   console.log("🔍 seedAdmin: checking for existing user:", username);
-  const existing = await kv.get<UserRecord>(["user", username]);
+  const existing = await kv.get<UserRecord>(["user", username], { consistency: "strong" });
   if (existing.value !== null) {
     console.log("🔍 seedAdmin: user already exists, skipping");
     return;
@@ -65,7 +65,7 @@ export async function seedAdmin(username: string, password: string): Promise<voi
 
 export async function login(username: string, password: string): Promise<{ token: string }> {
   console.log("🔍 login: attempt for:", username);
-  const entry = await kv.get<UserRecord>(["user", username]);
+  const entry = await kv.get<UserRecord>(["user", username], { consistency: "strong" });
   if (!entry.value) {
     console.log("❌ login: user not found in KV:", username);
     throw new CanaryError("unauthorized", "Invalid credentials", 401);
@@ -96,7 +96,7 @@ export async function logout(token: string): Promise<void> {
 
 export async function validateSession(token: string): Promise<{ username: string }> {
   console.log("🔍 validateSession: looking up token:", tok(token));
-  const entry = await kv.get<{ username: string }>(["session", token]);
+  const entry = await kv.get<{ username: string }>(["session", token], { consistency: "strong" });
   if (!entry.value) {
     console.log("❌ validateSession: session not found for token:", tok(token));
     throw new CanaryError("unauthorized", "Invalid or expired session", 401);
