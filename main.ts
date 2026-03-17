@@ -458,7 +458,7 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
           </div>
           <div id="sched-time-col">
             <label for="w-time">Time of day</label>
-            <input type="time" id="w-time" value="09:00" onchange="updateSimpleSched()">
+            <select id="w-time" onchange="updateSimpleSched()"></select>
           </div>
           <div id="sched-days-col">
             <label for="w-days">Days</label>
@@ -713,7 +713,7 @@ function resetWizard() {
   document.getElementById('w-threshold').value = '';
   document.getElementById('w-recover').checked = false;
   document.getElementById('w-cron').value = '';
-  document.getElementById('w-time').value = '09:00';
+  document.getElementById('w-time').value = '09:00'; // default selection
   document.getElementById('w-freq').value = 'daily';
   document.getElementById('w-days').value = 'daily';
   document.getElementById('w-body').value = '';
@@ -779,21 +779,11 @@ async function wizardStep2() {
     cron = document.getElementById('w-cron').value.trim();
     if (!cron) { document.getElementById('ws2-err').textContent = 'Cron expression is required.'; return; }
   } else {
-    try {
-      const [hh, mm] = document.getElementById('w-time').value.split(':').map(Number);
-      const ampm = hh < 12 ? 'AM' : 'PM';
-      const h12 = hh % 12 || 12;
-      const timeOfDay = h12 + ':' + String(mm).padStart(2, '0') + ' ' + ampm;
-      const data = await api('POST', '/schedule/build', {
-        frequency: document.getElementById('w-freq').value,
-        timeOfDay,
-        daysOfWeek: document.getElementById('w-days').value,
-      });
-      cron = data.cron;
-    } catch (e) {
-      document.getElementById('ws2-err').textContent = e.message;
-      return;
-    }
+    cron = buildLocalCron(
+      document.getElementById('w-freq').value,
+      document.getElementById('w-time').value,
+      document.getElementById('w-days').value,
+    );
   }
 
   const headers = {};
@@ -904,26 +894,34 @@ function setSchedMode(mode) {
   document.getElementById('sched-cron-tab').className = 'sched-tab' + (mode === 'cron' ? ' active' : '');
 }
 
-async function updateSimpleSched() {
-  const freq = document.getElementById('w-freq').value;
-  const timeCol = document.getElementById('sched-time-col');
-  const daysCol = document.getElementById('sched-days-col');
-  timeCol.style.opacity = freq === 'hourly' ? '.4' : '1';
-  daysCol.style.opacity = freq === 'hourly' ? '.4' : '1';
+function buildLocalCron(freq, timeValue, days) {
+  if (freq === 'hourly') return '0 * * * *';
+  const [hh, mm] = timeValue.split(':').map(Number);
+  const dayField = days === 'weekdays' ? '1-5' : days === 'weekends' ? '0,6' : '*';
+  return \`\${mm} \${hh} * * \${dayField}\`;
+}
 
-  const preview = document.getElementById('sched-preview');
-  try {
-    const [hh, mm] = document.getElementById('w-time').value.split(':').map(Number);
-    const ampm = hh < 12 ? 'AM' : 'PM';
-    const h12 = hh % 12 || 12;
-    const timeOfDay = h12 + ':' + String(mm).padStart(2, '0') + ' ' + ampm;
-    const data = await api('POST', '/schedule/build', {
-      frequency: freq,
-      timeOfDay,
-      daysOfWeek: document.getElementById('w-days').value,
-    });
-    preview.textContent = 'Cron: ' + data.cron;
-  } catch { preview.textContent = ''; }
+function buildTimeOptions() {
+  const sel = document.getElementById('w-time');
+  const opts = [];
+  for (let h = 0; h < 24; h++) {
+    for (let m = 0; m < 60; m += 10) {
+      const ampm = h < 12 ? 'AM' : 'PM';
+      const h12 = h % 12 || 12;
+      const label = h12 + ':' + String(m).padStart(2,'0') + ' ' + ampm;
+      const val = String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0');
+      opts.push('<option value="' + val + '"' + (val === '09:00' ? ' selected' : '') + '>' + label + '</option>');
+    }
+  }
+  sel.innerHTML = opts.join('');
+}
+
+function updateSimpleSched() {
+  const freq = document.getElementById('w-freq').value;
+  document.getElementById('sched-time-col').style.opacity = freq === 'hourly' ? '.4' : '1';
+  document.getElementById('sched-days-col').style.opacity = freq === 'hourly' ? '.4' : '1';
+  const cron = buildLocalCron(freq, document.getElementById('w-time').value, document.getElementById('w-days').value);
+  document.getElementById('sched-preview').textContent = 'Cron: ' + cron;
 }
 
 // ─── Invite modal ─────────────────────────────────────────────────────────────
@@ -1095,6 +1093,7 @@ document.getElementById('li-user').addEventListener('keydown', e => { if (e.key 
     showView('login');
   }
   document.getElementById('w-method').addEventListener('change', updateBodyVisibility);
+  buildTimeOptions();
 })();
 </script>
 </body>
