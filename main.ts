@@ -603,11 +603,24 @@ const S = {
 async function api(method, path, body) {
   const headers = { 'Content-Type': 'application/json' };
   if (S.token) headers['Authorization'] = 'Bearer ' + S.token;
-  const res = await fetch(path, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => { console.error('❌ api: timeout after 15s', method, path); controller.abort(); }, 15000);
+  console.log('🔍 api:', method, path, body !== undefined ? JSON.stringify(body).slice(0, 120) : '(no body)');
+  let res;
+  try {
+    res = await fetch(path, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    console.error('❌ api: fetch failed', method, path, err.message);
+    throw new Error(err.name === 'AbortError' ? 'Request timed out after 15s' : 'Network error: ' + err.message);
+  }
+  clearTimeout(timer);
+  console.log('✅ api:', method, path, '→', res.status);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.message || 'Request failed (' + res.status + ')');
   return data;
