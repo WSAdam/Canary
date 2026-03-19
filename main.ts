@@ -989,8 +989,13 @@ function setSchedMode(mode) {
 function buildLocalCron(freq, timeValue, days) {
   if (freq === 'hourly') return '0 * * * *';
   const [hh, mm] = timeValue.split(':').map(Number);
+  // Convert local time to UTC (cron runs in UTC on Deno Deploy)
+  const offsetMin = new Date().getTimezoneOffset(); // minutes west of UTC
+  const totalMin = hh * 60 + mm + offsetMin;
+  const utcHh = ((Math.floor(totalMin / 60)) % 24 + 24) % 24;
+  const utcMm = ((totalMin % 60) + 60) % 60;
   const dayField = days === 'weekdays' ? '1-5' : days === 'weekends' ? '0,6' : '*';
-  return \`\${mm} \${hh} * * \${dayField}\`;
+  return \`\${utcMm} \${utcHh} * * \${dayField}\`;
 }
 
 function buildTimeOptions() {
@@ -1013,7 +1018,13 @@ function updateSimpleSched() {
   document.getElementById('sched-time-col').style.opacity = freq === 'hourly' ? '.4' : '1';
   document.getElementById('sched-days-col').style.opacity = freq === 'hourly' ? '.4' : '1';
   const cron = buildLocalCron(freq, document.getElementById('w-time').value, document.getElementById('w-days').value);
-  document.getElementById('sched-preview').textContent = 'Cron: ' + cron;
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const offsetMin = new Date().getTimezoneOffset();
+  const offsetHr = -(offsetMin / 60);
+  const tzLabel = \`\${tz} (UTC\${offsetHr >= 0 ? '+' : ''}\${offsetHr})\`;
+  document.getElementById('sched-preview').textContent = freq === 'hourly'
+    ? 'Cron: ' + cron + ' — runs every hour'
+    : \`Cron: \${cron} — times in UTC, converted from your local time (\${tzLabel})\`;
 }
 
 // ─── Alert config tabs ────────────────────────────────────────────────────────
