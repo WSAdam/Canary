@@ -863,9 +863,10 @@ async function wizardStep2() {
   });
 
   clearErr();
+  console.log('🚀 wizardStep2: saving check monitorId=' + S.wizardMonitorId + ' schedMode=' + S.schedMode + ' cron=' + cron);
   try {
     const bodyVal = document.getElementById('w-body').value.trim();
-    await api('POST', '/monitors/' + S.wizardMonitorId + '/check', {
+    const payload = {
       url,
       method: document.getElementById('w-method').value,
       headers,
@@ -875,7 +876,10 @@ async function wizardStep2() {
       threshold,
       cron,
       notifyOnRecover: document.getElementById('w-recover').checked,
-    });
+    };
+    console.log('🔍 wizardStep2: POST payload', JSON.stringify(payload));
+    const result = await api('POST', '/monitors/' + S.wizardMonitorId + '/check', payload);
+    console.log('✅ wizardStep2: check saved', JSON.stringify(result));
     wizardGoStep(3);
     if (S.wizardMode === 'edit-check') prefillAlert(S.wizardMonitorId);
   } catch (e) {
@@ -914,21 +918,58 @@ async function wizardStep3() {
 }
 
 // ─── Prefill for edit mode ────────────────────────────────────────────────────
+function parseUtcCronToSimple(cron) {
+  if (!cron) return null;
+  if (cron === '0 * * * *') return { freq: 'hourly', timeValue: '09:00', days: 'every' };
+  const parts = cron.split(' ');
+  if (parts.length !== 5) return null;
+  const [mm, hh, dom, month, dow] = parts;
+  if (dom !== '*' || month !== '*') return null;
+  const utcMm = parseInt(mm, 10);
+  const utcHh = parseInt(hh, 10);
+  if (isNaN(utcMm) || isNaN(utcHh)) return null;
+  // Convert UTC back to local
+  const offsetMin = new Date().getTimezoneOffset();
+  const localTotalMin = utcHh * 60 + utcMm - offsetMin;
+  const localHh = ((Math.floor(localTotalMin / 60)) % 24 + 24) % 24;
+  const localMm = ((localTotalMin % 60) + 60) % 60;
+  const timeValue = String(localHh).padStart(2,'0') + ':' + String(localMm).padStart(2,'0');
+  let days = 'every';
+  if (dow === '1-5') days = 'weekdays';
+  else if (dow === '0,6') days = 'weekends';
+  else if (dow !== '*') return null;
+  return { freq: 'daily', timeValue, days };
+}
+
 async function prefillCheck(monitorId) {
+  console.log('🔍 prefillCheck: loading monitorId=' + monitorId);
   try {
     const d = await api('GET', '/monitors/' + monitorId + '/check');
+    console.log('✅ prefillCheck: got check', JSON.stringify(d));
     document.getElementById('w-url').value = d.url || '';
     document.getElementById('w-method').value = d.method || 'GET';
     document.getElementById('w-expr').value = d.expression || '';
     document.getElementById('w-op').value = d.comparatorOp || 'gt';
     document.getElementById('w-threshold').value = d.threshold ?? '';
-    document.getElementById('w-cron').value = d.cron || '';
     document.getElementById('w-recover').checked = !!d.notifyOnRecover;
-    if (d.cron) setSchedMode('cron');
     if (d.headers) {
       Object.entries(d.headers).forEach(([k, v]) => addHeaderRow(k, v));
     }
-  } catch {}
+    const simple = parseUtcCronToSimple(d.cron);
+    console.log('🔍 prefillCheck: cron=' + d.cron + ' → simple=' + JSON.stringify(simple));
+    if (simple) {
+      setSchedMode('simple');
+      document.getElementById('w-freq').value = simple.freq;
+      document.getElementById('w-time').value = simple.timeValue;
+      document.getElementById('w-days').value = simple.days;
+      updateSimpleSched();
+    } else if (d.cron) {
+      setSchedMode('cron');
+      document.getElementById('w-cron').value = d.cron;
+    }
+  } catch (e) {
+    console.error('❌ prefillCheck: error', e.message);
+  }
 }
 
 async function prefillAlert(monitorId) {
