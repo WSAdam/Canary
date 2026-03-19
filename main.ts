@@ -907,11 +907,14 @@ async function wizardStep3() {
   const isEditAlert = S.wizardMode === 'edit-alert';
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Saving...';
   clearErr();
+  console.log('🚀 wizardStep3: saving alert monitorId=' + S.wizardMonitorId + ' recipients=' + JSON.stringify(recipients));
   try {
-    await api('POST', '/monitors/' + S.wizardMonitorId + '/alert', { recipients, emailSubject, emailMessage, smsMessage });
+    const result = await api('POST', '/monitors/' + S.wizardMonitorId + '/alert', { recipients, emailSubject, emailMessage, smsMessage });
+    console.log('✅ wizardStep3: alert saved', JSON.stringify(result));
     document.getElementById('ws3-ok').textContent = isEditAlert ? 'Alert saved!' : 'Monitor saved!';
-    setTimeout(() => showView('dashboard'), 1200);
+    setTimeout(() => { console.log('🔍 wizardStep3: navigating to dashboard'); showView('dashboard'); }, 1200);
   } catch (e) {
+    console.error('❌ wizardStep3: error', e.message);
     document.getElementById('ws3-err').textContent = e.message;
     btn.disabled = false; btn.textContent = isEditAlert ? 'Save alert' : 'Save monitor';
   }
@@ -934,7 +937,7 @@ function parseUtcCronToSimple(cron) {
   const localHh = ((Math.floor(localTotalMin / 60)) % 24 + 24) % 24;
   const localMm = ((localTotalMin % 60) + 60) % 60;
   const timeValue = String(localHh).padStart(2,'0') + ':' + String(localMm).padStart(2,'0');
-  let days = 'every';
+  let days = 'daily';
   if (dow === '1-5') days = 'weekdays';
   else if (dow === '0,6') days = 'weekends';
   else if (dow !== '*') return null;
