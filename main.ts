@@ -877,6 +877,7 @@ async function wizardStep2() {
       notifyOnRecover: document.getElementById('w-recover').checked,
     });
     wizardGoStep(3);
+    if (S.wizardMode === 'edit-check') prefillAlert(S.wizardMonitorId);
   } catch (e) {
     document.getElementById('ws2-err').textContent = e.message;
   }
