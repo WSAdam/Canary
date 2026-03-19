@@ -3,6 +3,10 @@ import type { RunResultDto } from "../../../../dto/run-result-dto.ts";
 import type { AlertDto } from "../../../../dto/alert-dto.ts";
 import { CanaryError } from "../../../../dto/_shared.ts";
 
+function applyVars(template: string, vars: Record<string, string>): string {
+  return Object.entries(vars).reduce((s, [k, v]) => s.replace(new RegExp(`\\{${k}\\}`, "g"), v), template);
+}
+
 export class Email extends BaseAlertChannel {
   constructor(private readonly emailAddress: string) {
     super();
@@ -18,16 +22,12 @@ export class Email extends BaseAlertChannel {
     const monitorLabel = run.monitorName || run.monitorId;
     const defaultSubject = `Canary Alert: ${monitorLabel} ${status}`;
     const subject = alert.emailSubject
-      ? alert.emailSubject.replace(/\{status\}/g, status).replace(/\{monitor\}/g, monitorLabel)
+      ? applyVars(alert.emailSubject, { status, monitor: monitorLabel, observed: String(run.observed), timestamp: run.timestamp, ...run.captures })
       : defaultSubject;
 
     const defaultBody = buildEmailBody(run);
     const body = alert.emailMessage
-      ? alert.emailMessage
-          .replace(/\{status\}/g, status)
-          .replace(/\{monitor\}/g, monitorLabel)
-          .replace(/\{observed\}/g, String(run.observed))
-          .replace(/\{timestamp\}/g, run.timestamp)
+      ? applyVars(alert.emailMessage, { status, monitor: monitorLabel, observed: String(run.observed), timestamp: run.timestamp, ...run.captures })
       : defaultBody;
 
     console.log(`📧 email.send: to=${this.emailAddress} subject="${subject}"`);

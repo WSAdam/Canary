@@ -7,4 +7,5 @@ export interface RunResultDto {
   passed: boolean;
   timestamp: string;
   error?: string;
+  captures?: Record<string, string>;
 }

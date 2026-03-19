@@ -39,6 +39,7 @@ export async function executeRunner(input: MonitorIdDto): Promise<RunResultDto> 
   let observed = 0;
   let passed = false;
   let runError: string | undefined;
+  let captures: Record<string, string> | undefined;
   try {
     console.log(`🔍 runner.execute: building source from check config`);
     const source = Source.fromCheck(checkDto);
@@ -46,9 +47,13 @@ export async function executeRunner(input: MonitorIdDto): Promise<RunResultDto> 
     const responseDto = await source.fetch(checkDto);
     console.log(`🔍 runner.execute: response received — status=${responseDto.status} bodyLength=${JSON.stringify(responseDto.body ?? "").length}`);
     observed = Extractor.apply(checkDto, responseDto);
-    console.log(`🔍 runner.execute: extractor applied — extract=${checkDto.extract} observed=${observed}`);
+    console.log(`🔍 runner.execute: extractor applied — observed=${observed}`);
     passed = Comparator.evaluate(checkDto, observed);
-    console.log(`🔍 runner.execute: comparator evaluated — comparator=${checkDto.comparator} expected=${checkDto.expected} observed=${observed} passed=${passed}`);
+    console.log(`🔍 runner.execute: comparator evaluated — observed=${observed} passed=${passed}`);
+    if (checkDto.captures && Object.keys(checkDto.captures).length > 0) {
+      captures = Extractor.applyCaptures(checkDto.captures, responseDto.payload);
+      console.log(`🔍 runner.execute: captures extracted — ${JSON.stringify(captures)}`);
+    }
   } catch (e) {
     runError = (e as Error).message;
     console.log(`❌ runner.execute: check failed — ${runError}`, (e as Error).stack);
@@ -56,7 +61,7 @@ export async function executeRunner(input: MonitorIdDto): Promise<RunResultDto> 
 
   // Build and persist result
   console.log(`🔍 runner.execute: building run result — observed=${observed} passed=${passed} error=${runError ?? "none"}`);
-  const runResult = RunResult.build(input.monitorId, observed, passed, monitorName, runError);
+  const runResult = RunResult.build(input.monitorId, observed, passed, monitorName, runError, captures);
   const runResultDto = runResult.toDto();
   console.log(`🔍 runner.execute: saving run result runId=${runResultDto.runId}`);
   await runResult.save(runResultDto);

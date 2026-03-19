@@ -441,6 +441,13 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
         </div>
       </div>
 
+      <div class="form-group" style="margin-top:12px">
+        <label>Response captures <span style="color:var(--m);text-transform:none;font-weight:400">(optional — use values in alert messages)</span></label>
+        <div id="captures-list" class="headers-list"></div>
+        <button class="btn btn-ghost btn-sm" onclick="addCaptureRow()">+ Add capture</button>
+        <div class="hint">Name a value from the response to use as <code style="background:#1a1a1a;padding:1px 5px;border-radius:3px">{name}</code> in alert messages. E.g. name=<em>callsLeft</em>, path=<em>data.remaining</em> → <em>{callsLeft}</em></div>
+      </div>
+
       <hr class="divider">
 
       <div class="form-group" style="margin-bottom:12px">
@@ -508,22 +515,34 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
 
     <!-- Configuration tab -->
     <div id="ws3-config" class="card">
-      <div class="form-group">
-        <label>EMAIL SUBJECT <span style="color:#555;font-weight:400">(optional)</span></label>
-        <input type="text" id="w-email-subject" placeholder="Canary Alert: {monitor} {status}">
-        <p class="help-text">Variables: {monitor} {status}</p>
+      <div style="padding-bottom:20px;margin-bottom:20px;border-bottom:1px solid #2a2a2a">
+        <p style="font-size:11px;color:#FFD700;font-weight:600;letter-spacing:.08em;margin-bottom:14px">EMAIL</p>
+        <div class="form-group">
+          <label>EMAIL ADDRESS <span style="color:#555;font-weight:400">(leave blank to skip email alerts)</span></label>
+          <input type="text" id="w-email-addr" placeholder="oncall@example.com">
+        </div>
+        <div class="form-group">
+          <label>EMAIL SUBJECT <span style="color:#555;font-weight:400">(optional)</span></label>
+          <input type="text" id="w-email-subject" placeholder="Canary Alert: {monitor} {status}">
+          <p class="help-text">Variables: {monitor} {status}</p>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label>EMAIL MESSAGE <span style="color:#555;font-weight:400">(optional)</span></label>
+          <textarea id="w-email-message" rows="3" placeholder="Leave blank for default. Variables: {monitor} {status} {observed} {timestamp} + any captures" style="width:100%;background:#111;border:1px solid #2a2a2a;border-radius:6px;padding:10px 12px;color:#e0e0e0;font-size:13px;resize:vertical;box-sizing:border-box"></textarea>
+        </div>
       </div>
-      <div class="form-group">
-        <label>EMAIL MESSAGE <span style="color:#555;font-weight:400">(optional)</span></label>
-        <textarea id="w-email-message" rows="3" placeholder="Leave blank for default. Variables: {monitor} {status} {observed} {timestamp}" style="width:100%;background:#111;border:1px solid #2a2a2a;border-radius:6px;padding:10px 12px;color:#e0e0e0;font-size:13px;resize:vertical;box-sizing:border-box"></textarea>
+      <div>
+        <p style="font-size:11px;color:#FFD700;font-weight:600;letter-spacing:.08em;margin-bottom:14px">SMS</p>
+        <div class="form-group">
+          <label>PHONE NUMBER <span style="color:#555;font-weight:400">(leave blank to skip SMS alerts)</span></label>
+          <input type="text" id="w-sms-addr" placeholder="18432222986">
+          <p class="help-text">10 or 11 digits, no + prefix (e.g. 18432222986)</p>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label>SMS MESSAGE <span style="color:#555;font-weight:400">(optional)</span></label>
+          <input type="text" id="w-sms-message" placeholder="Leave blank for default. Variables: {monitor} {status} {observed} {timestamp} + any captures">
+        </div>
       </div>
-      <div class="form-group">
-        <label>SMS MESSAGE <span style="color:#555;font-weight:400">(optional)</span></label>
-        <input type="text" id="w-sms-message" placeholder="Leave blank for default. Variables: {monitor} {status} {observed} {timestamp}">
-      </div>
-      <p style="font-size:14px;color:var(--m);margin-bottom:16px">Who gets notified when this monitor fails.</p>
-      <div id="recipients-list"></div>
-      <button class="btn btn-ghost btn-sm" onclick="addRecipientRow()">+ Add recipient</button>
     </div>
 
     <!-- Examples & Try it tab -->
@@ -797,7 +816,9 @@ function resetWizard() {
   document.getElementById('w-days').value = 'daily';
   document.getElementById('w-body').value = '';
   document.getElementById('headers-list').innerHTML = '';
-  document.getElementById('recipients-list').innerHTML = '';
+  document.getElementById('captures-list').innerHTML = '';
+  document.getElementById('w-email-addr').value = '';
+  document.getElementById('w-sms-addr').value = '';
   document.getElementById('w-email-subject').value = '';
   document.getElementById('w-email-message').value = '';
   document.getElementById('w-sms-message').value = '';
@@ -870,9 +891,15 @@ async function wizardStep2() {
   }
 
   const headers = {};
-  document.querySelectorAll('.header-row').forEach(row => {
+  document.querySelectorAll('#headers-list .header-row').forEach(row => {
     const [k, v] = row.querySelectorAll('input');
     if (k.value.trim()) headers[k.value.trim()] = v.value.trim();
+  });
+
+  const captures = {};
+  document.querySelectorAll('#captures-list .header-row').forEach(row => {
+    const [name, path] = row.querySelectorAll('input');
+    if (name.value.trim() && path.value.trim()) captures[name.value.trim()] = path.value.trim();
   });
 
   clearErr();
@@ -889,6 +916,7 @@ async function wizardStep2() {
       threshold,
       cron,
       notifyOnRecover: document.getElementById('w-recover').checked,
+      captures: Object.keys(captures).length ? captures : undefined,
     };
     console.log('🔍 wizardStep2: POST payload', JSON.stringify(payload));
     const result = await api('POST', '/monitors/' + S.wizardMonitorId + '/check', payload);
@@ -901,20 +929,39 @@ async function wizardStep2() {
 }
 
 async function wizardStep3() {
-  const recipients = [];
+  const emailAddr = document.getElementById('w-email-addr').value.trim();
+  const smsAddr = document.getElementById('w-sms-addr').value.trim();
   const emailSubject = document.getElementById('w-email-subject').value.trim() || undefined;
   const emailMessage = document.getElementById('w-email-message').value.trim() || undefined;
   const smsMessage = document.getElementById('w-sms-message').value.trim() || undefined;
-  document.querySelectorAll('.recipient-row').forEach(row => {
-    const sel = row.querySelector('select');
-    const inp = row.querySelector('input');
-    if (inp.value.trim()) recipients.push({ channel: sel.value, address: inp.value.trim() });
-  });
 
-  if (recipients.length === 0) {
-    document.getElementById('ws3-err').textContent = 'Add at least one recipient before saving.';
+  if (!emailAddr && !smsAddr) {
+    document.getElementById('ws3-err').textContent = 'Add at least one email address or phone number.';
     return;
   }
+  if (emailAddr && !emailAddr.includes('@')) {
+    document.getElementById('ws3-err').textContent = 'Email address must contain @.';
+    return;
+  }
+  if ((emailSubject || emailMessage) && !emailAddr) {
+    document.getElementById('ws3-err').textContent = 'Add an email address or clear the email subject/message.';
+    return;
+  }
+  if (smsAddr) {
+    const digits = smsAddr.replace(/\D/g, '');
+    if (digits.length < 10 || digits.length > 11) {
+      document.getElementById('ws3-err').textContent = 'Phone number must be 10 or 11 digits (e.g. 18432222986).';
+      return;
+    }
+  }
+  if (smsMessage && !smsAddr) {
+    document.getElementById('ws3-err').textContent = 'Add a phone number or clear the SMS message.';
+    return;
+  }
+
+  const recipients = [];
+  if (emailAddr) recipients.push({ channel: 'email', address: emailAddr });
+  if (smsAddr) recipients.push({ channel: 'sms', address: smsAddr });
 
   const btn = document.getElementById('ws3-btn');
   const isEditAlert = S.wizardMode === 'edit-alert';
@@ -971,6 +1018,9 @@ async function prefillCheck(monitorId) {
     if (d.headers) {
       Object.entries(d.headers).forEach(([k, v]) => addHeaderRow(k, v));
     }
+    if (d.captures) {
+      Object.entries(d.captures).forEach(([name, path]) => addCaptureRow(name, path));
+    }
     const simple = parseUtcCronToSimple(d.cron);
     console.log('🔍 prefillCheck: cron=' + d.cron + ' → simple=' + JSON.stringify(simple));
     if (simple) {
@@ -992,17 +1042,16 @@ async function prefillAlert(monitorId) {
   try {
     const d = await api('GET', '/monitors/' + monitorId + '/alert');
     const list = d.recipients || [];
-    list.forEach(r => addRecipientRow(r.channel, r.address));
+    const emailRec = list.find(r => r.channel === 'email');
+    const smsRec = list.find(r => r.channel === 'sms');
+    if (emailRec) document.getElementById('w-email-addr').value = emailRec.address;
+    if (smsRec) document.getElementById('w-sms-addr').value = smsRec.address;
     if (d.emailSubject) document.getElementById('w-email-subject').value = d.emailSubject;
     if (d.emailMessage) document.getElementById('w-email-message').value = d.emailMessage;
     if (d.smsMessage) document.getElementById('w-sms-message').value = d.smsMessage;
-    if (list.length === 0) {
-      document.getElementById('ws3-err').textContent = 'No recipients configured yet. Add one below.';
-    }
   } catch (e) {
-    if (e.message && (e.message.includes('404') || e.message.includes('not-found'))) {
-      document.getElementById('ws3-err').textContent = 'No alert configured yet. Add recipients below.';
-    } else {
+    // 404 = no alert configured yet, not an error worth showing
+    if (!e.message || (!e.message.includes('not found') && !e.message.includes('not-found') && !e.message.includes('404'))) {
       document.getElementById('ws3-err').textContent = 'Could not load existing alert: ' + e.message;
     }
   }
@@ -1020,20 +1069,18 @@ function addHeaderRow(k = '', v = '') {
   document.getElementById('headers-list').appendChild(row);
 }
 
-// ─── Recipients builder ───────────────────────────────────────────────────────
-function addRecipientRow(channel = 'email', address = '') {
+// ─── Captures builder ─────────────────────────────────────────────────────────
+function addCaptureRow(name = '', path = '') {
   const row = document.createElement('div');
-  row.className = 'recipient-row';
+  row.className = 'header-row';
   row.innerHTML = \`
-    <select><option value="email"\${channel==='email'?' selected':''}>Email</option><option value="sms"\${channel==='sms'?' selected':''}>SMS</option></select>
-    <input type="text" placeholder="\${channel==='sms'?'15555550100':'oncall@example.com'}" value="\${esc(address)}">
+    <input type="text" placeholder="variable name (e.g. callsLeft)" value="\${esc(name)}">
+    <input type="text" placeholder="json path (e.g. data.remaining)" value="\${esc(path)}">
     <button class="icon-btn" onclick="this.parentElement.remove()" title="Remove">&#x2715;</button>
   \`;
-  row.querySelector('select').onchange = function() {
-    row.querySelector('input').placeholder = this.value === 'sms' ? '15555550100' : 'oncall@example.com';
-  };
-  document.getElementById('recipients-list').appendChild(row);
+  document.getElementById('captures-list').appendChild(row);
 }
+
 
 // ─── Schedule ─────────────────────────────────────────────────────────────────
 function setSchedMode(mode) {

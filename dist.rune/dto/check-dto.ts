@@ -10,4 +10,5 @@ export interface CheckDto {
   threshold: number;
   cron: string;
   notifyOnRecover: boolean;
+  captures?: Record<string, string>;
 }
