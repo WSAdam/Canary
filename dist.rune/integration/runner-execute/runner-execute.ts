@@ -68,9 +68,10 @@ export async function executeRunner(input: MonitorIdDto): Promise<RunResultDto> 
   console.log(`✅ runner.execute: run result saved runId=${runResultDto.runId}`);
 
   // Alert if needed (optional — skip if no alert configured)
+  // Don't alert on HTTP/network errors — only on actual data comparison failures
   const isRecovery = previousRun !== null && !previousRun.passed && passed;
-  const shouldAlert = !passed || (isRecovery && checkDto.notifyOnRecover);
-  console.log(`🔍 runner.execute: alert check — passed=${passed} isRecovery=${isRecovery} notifyOnRecover=${checkDto.notifyOnRecover} shouldAlert=${shouldAlert}`);
+  const shouldAlert = !runError && (!passed || (isRecovery && checkDto.notifyOnRecover));
+  console.log(`🔍 runner.execute: alert check — passed=${passed} runError=${runError ?? "none"} isRecovery=${isRecovery} notifyOnRecover=${checkDto.notifyOnRecover} shouldAlert=${shouldAlert}`);
 
   if (shouldAlert) {
     console.log(`⚠️ runner.execute: alerting — reason=${passed ? "recovery" : "failure"}`);

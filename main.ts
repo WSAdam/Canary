@@ -79,6 +79,13 @@ let lastCronTick: string | null = null;
 
 Deno.cron("canary-runner", "* * * * *", async () => {
   const now = new Date();
+  // Deduplicate across isolates: only one isolate should run per minute
+  const tickKey = ["cron-tick", `${now.getUTCFullYear()}-${now.getUTCMonth()}-${now.getUTCDate()}-${now.getUTCHours()}-${now.getUTCMinutes()}`];
+  const lock = await kv.atomic().check({ key: tickKey, versionstamp: null }).set(tickKey, 1).commit();
+  if (!lock.ok) {
+    console.log("🔍 cron tick: skipped (another isolate already running this minute)");
+    return;
+  }
   lastCronTick = now.toISOString();
   console.log("🔍 cron tick:", now.toISOString());
   for await (const entry of kv.list<CheckDto>({ prefix: ["check"] })) {
