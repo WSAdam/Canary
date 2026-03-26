@@ -429,12 +429,12 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
       <div class="form-row col3">
         <div>
           <label for="w-expr">Response path *</label>
-          <input type="text" id="w-expr" placeholder="data.value">
+          <input type="text" id="w-expr" placeholder="data.value" oninput="updateComparatorHint()">
           <div class="hint">Dot-notation path into the response JSON</div>
         </div>
         <div>
           <label for="w-op">Comparator</label>
-          <select id="w-op">
+          <select id="w-op" onchange="updateComparatorHint()">
             <option value="gt">gt (&gt;)</option>
             <option value="lt">lt (&lt;)</option>
             <option value="gte">gte (&ge;)</option>
@@ -444,9 +444,10 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
         </div>
         <div>
           <label for="w-threshold">Threshold *</label>
-          <input type="number" id="w-threshold" placeholder="100">
+          <input type="number" id="w-threshold" placeholder="100" oninput="updateComparatorHint()">
         </div>
       </div>
+      <div id="comparator-hint" style="margin-top:10px;padding:10px 14px;background:#0f1a0f;border:1px solid #1a3a1a;border-radius:8px;font-size:13px;line-height:1.7;display:none"></div>
 
       <div class="form-group" style="margin-top:12px">
         <label>Response captures <span style="color:var(--m);text-transform:none;font-weight:400">(optional — use values in alert messages)</span></label>
@@ -1022,6 +1023,7 @@ async function prefillCheck(monitorId) {
     document.getElementById('w-op').value = d.comparatorOp || 'gt';
     document.getElementById('w-threshold').value = d.threshold ?? '';
     document.getElementById('w-recover').checked = !!d.notifyOnRecover;
+    updateComparatorHint();
     if (d.headers) {
       Object.entries(d.headers).forEach(([k, v]) => addHeaderRow(k, v));
     }
@@ -1123,6 +1125,26 @@ function buildTimeOptions() {
     }
   }
   sel.innerHTML = opts.join('');
+}
+
+function updateComparatorHint() {
+  const op = document.getElementById('w-op').value;
+  const threshold = document.getElementById('w-threshold').value;
+  const expr = document.getElementById('w-expr').value.trim() || 'value';
+  const el = document.getElementById('comparator-hint');
+  if (!threshold) { el.style.display = 'none'; return; }
+  const t = parseFloat(threshold);
+  const opLabels = { gt: '>', lt: '<', gte: '>=', lte: '<=', eq: '=' };
+  const sym = opLabels[op];
+  // Alert fires when check FAILS — check passes when condition is true
+  // So we need the INVERSE condition for when alert fires
+  const inverseLabel = { gt: '<=', lt: '>=', gte: '<', lte: '>', eq: '!=' }[op];
+  const exampleFail = { gt: t - 1, lt: t + 1, gte: t - 1, lte: t + 1, eq: t + 1 }[op];
+  const examplePass = { gt: t + 1, lt: t - 1, gte: t, lte: t, eq: t }[op];
+  el.style.display = 'block';
+  el.innerHTML =
+    \`<div style="color:#ff6b6b">📱 <strong>Text sent</strong> when <code style="background:#1a0f0f;padding:1px 5px;border-radius:3px">\${expr}</code> is \${inverseLabel} \${t} &nbsp;—&nbsp; e.g. value is <strong>\${exampleFail}</strong></div>\` +
+    \`<div style="color:#6bcb77;margin-top:4px">✅ <strong>No text</strong> when <code style="background:#0f1a0f;padding:1px 5px;border-radius:3px">\${expr}</code> is \${sym} \${t} &nbsp;—&nbsp; e.g. value is <strong>\${examplePass}</strong></div>\`;
 }
 
 function updateSimpleSched() {
