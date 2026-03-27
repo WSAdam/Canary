@@ -1,15 +1,15 @@
 /**
  * End-to-end alert send test.
  * Sends a real email and a real SMS using the configured Postmark and Zapier credentials.
- *
+
  * Usage:
  *   deno run --allow-net --allow-env --env-file e2e.ts
  */
 
+import type { AlertDto } from "./dist.rune/dto/alert-dto.ts";
+import type { RunResultDto } from "./dist.rune/dto/run-result-dto.ts";
 import { Email } from "./dist.rune/impure/alertChannel/implementations/email/mod.ts";
 import { Sms } from "./dist.rune/impure/alertChannel/implementations/sms/mod.ts";
-import type { RunResultDto } from "./dist.rune/dto/run-result-dto.ts";
-import type { AlertDto } from "./dist.rune/dto/alert-dto.ts";
 
 const fakeRun: RunResultDto = {
   runId: "e2e-" + Date.now(),
