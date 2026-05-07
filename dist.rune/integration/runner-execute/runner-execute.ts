@@ -1,5 +1,6 @@
 import type { MonitorIdDto } from "../../dto/monitor-id-dto.ts";
 import type { RunResultDto } from "../../dto/run-result-dto.ts";
+import type { AlertDto } from "../../dto/alert-dto.ts";
 import { Monitor } from "../../impure/monitor/monitor.ts";
 import { Check } from "../../impure/check/check.ts";
 import { Alert } from "../../impure/alert/alert.ts";
@@ -45,7 +46,7 @@ export async function executeRunner(input: MonitorIdDto): Promise<RunResultDto> 
     const source = Source.fromCheck(checkDto);
     console.log(`🔍 runner.execute: fetching ${checkDto.method} ${checkDto.url}`);
     const responseDto = await source.fetch(checkDto);
-    console.log(`🔍 runner.execute: response received — status=${responseDto.status} bodyLength=${JSON.stringify(responseDto.body ?? "").length}`);
+    console.log(`🔍 runner.execute: response received — payloadLength=${responseDto.payload?.length ?? 0}`);
     observed = Extractor.apply(checkDto, responseDto);
     console.log(`🔍 runner.execute: extractor applied — observed=${observed}`);
     passed = Comparator.evaluate(checkDto, observed);
@@ -75,16 +76,32 @@ export async function executeRunner(input: MonitorIdDto): Promise<RunResultDto> 
 
   if (shouldAlert) {
     console.log(`⚠️ runner.execute: alerting — reason=${passed ? "recovery" : "failure"}`);
+    let alertDto: AlertDto | null = null;
     try {
       const alert = new Alert();
-      const alertDto = await alert.get(input.monitorId);
+      alertDto = await alert.get(input.monitorId);
       console.log(`🔍 runner.execute: alert config loaded, recipients=${alertDto.recipients.length}`);
-      const alertChannel = AlertChannel.fromAlert(alertDto);
-      console.log(`🔍 runner.execute: sending alert via channel`);
-      await alertChannel.send(runResultDto);
-      console.log(`✅ runner.execute: alert sent successfully`);
     } catch (e) {
-      console.log(`⚠️ runner.execute: alert failed (non-fatal) — ${(e as Error).message}`, (e as Error).stack);
+      const err = e as Error & { fault?: string };
+      if (err.fault === "not-found") {
+        console.log(`⚠️ runner.execute: no alert configured for monitor ${input.monitorId} — skipping (configure via POST /monitors/${input.monitorId}/alert)`);
+      } else {
+        console.log(`⚠️ runner.execute: alert config load failed (non-fatal) — ${err.message}`, err.stack);
+      }
+    }
+
+    if (alertDto && alertDto.recipients.length === 0) {
+      console.log(`⚠️ runner.execute: alert configured for ${input.monitorId} but recipients=[] — skipping`);
+    } else if (alertDto) {
+      try {
+        const alertChannel = AlertChannel.fromAlert(alertDto);
+        console.log(`🔍 runner.execute: dispatching alert to ${alertDto.recipients.length} recipient(s) — channels=[${alertDto.recipients.map((r) => r.channel).join(", ")}]`);
+        await alertChannel.send(runResultDto);
+        console.log(`✅ runner.execute: alert sent successfully`);
+      } catch (e) {
+        const err = e as Error;
+        console.log(`❌ runner.execute: alert dispatch failed (non-fatal) — ${err.message}`, err.stack);
+      }
     }
   } else {
     console.log(`🔍 runner.execute: no alert needed`);

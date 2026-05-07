@@ -218,6 +218,53 @@ POST /run/:monitorId
 
 ---
 
+## Verifying it works
+
+Run these against your deployed URL (or `http://localhost:8000` locally) to confirm the full alert pipeline is wired up. Replace `$URL`, `$USER`, `$PASS` accordingly.
+
+```bash
+# 1. Log in and grab a session token
+TOKEN=$(curl -s -X POST $URL/auth/login \
+  -H 'Content-Type: application/json' \
+  -d "{\"username\":\"$USER\",\"password\":\"$PASS\"}" | jq -r .token)
+
+# 2. Confirm Postmark creds (sends a real email)
+curl -s -X POST $URL/test-alert \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"channel":"email","address":"you@example.com"}'
+
+# 3. Confirm Zapier creds (sends a real SMS)
+curl -s -X POST $URL/test-alert \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"channel":"sms","address":"+15555550100"}'
+
+# 4. Snapshot KV state — what monitors/checks/alerts exist, env presence, last cron tick
+curl -s $URL/api/debug -H "Authorization: Bearer $TOKEN" | jq
+```
+
+If `checks: []` in step 4, no monitor is wired to a check yet — that's why the cron tick fires with nothing to do. Configure one:
+
+```bash
+# Create a monitor that's guaranteed to fail (1 < 0 is false → comparator fails → alert)
+MID=$(curl -s -X POST $URL/monitors \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"Smoke Test","description":"deliberately failing"}' | jq -r .monitorId)
+
+curl -s -X POST $URL/monitors/$MID/check \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"url":"https://httpbin.org/json","method":"GET","headers":{},"expression":"slideshow.slides.length","comparatorOp":"lt","threshold":0,"cron":"* * * * *","notifyOnRecover":true}'
+
+curl -s -X POST $URL/monitors/$MID/alert \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"recipients":[{"channel":"email","address":"you@example.com"}]}'
+```
+
+Wait one minute, then re-fetch `/api/debug`. `latestRuns[*].passed` for the smoke-test monitor should be `false`, and an alert email should land. To trigger immediately without waiting, `POST /run/$MID`.
+
+In Deno Deploy logs, you should see exactly one `🔍 cron tick:` per minute followed by `⏰ scheduling run for monitor: ...` and `📧 email.send: ...`.
+
+---
+
 ## Deploying to Deno Deploy
 
 1. Push this repository to GitHub

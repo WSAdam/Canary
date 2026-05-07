@@ -27,6 +27,7 @@ import { deleteSecret } from "./dist.rune/integration/secret-delete/secret-delet
 import { executeRunner } from "./dist.rune/integration/runner-execute/runner-execute.ts";
 import { Email } from "./dist.rune/impure/alertChannel/implementations/email/mod.ts";
 import { Sms } from "./dist.rune/impure/alertChannel/implementations/sms/mod.ts";
+import { RunResult } from "./dist.rune/impure/runResult/runResult.ts";
 import type { RunResultDto } from "./dist.rune/dto/run-result-dto.ts";
 import type { AlertDto } from "./dist.rune/dto/alert-dto.ts";
 
@@ -76,26 +77,53 @@ function cronMatchesNow(cron: string, now: Date): boolean {
 
 const startedAt = new Date().toISOString();
 let lastCronTick: string | null = null;
+let lastTickMinuteKey: string | null = null;
+
+const FIVE_MIN_MS = 5 * 60 * 1000;
 
 Deno.cron("canary-runner", "* * * * *", async () => {
   const now = new Date();
-  // Deduplicate across isolates: only one isolate should run per minute
-  const tickKey = ["cron-tick", `${now.getUTCFullYear()}-${now.getUTCMonth()}-${now.getUTCDate()}-${now.getUTCHours()}-${now.getUTCMinutes()}`];
-  const lock = await kv.atomic().check({ key: tickKey, versionstamp: null }).set(tickKey, 1).commit();
+  const minuteKey = `${now.getUTCFullYear()}-${now.getUTCMonth()}-${now.getUTCDate()}-${now.getUTCHours()}-${now.getUTCMinutes()}`;
+
+  // In-process guard: same isolate firing twice in one minute (rare but possible if cron rescheduled mid-run)
+  if (lastTickMinuteKey === minuteKey) {
+    console.log("🔍 cron tick: skipped (this isolate already ran this minute)");
+    return;
+  }
+  lastTickMinuteKey = minuteKey;
+
+  // Cross-isolate KV lock with auto-expiry so old keys clean themselves
+  const tickKey = ["cron-tick", minuteKey];
+  const lock = await kv.atomic()
+    .check({ key: tickKey, versionstamp: null })
+    .set(tickKey, 1, { expireIn: FIVE_MIN_MS })
+    .commit();
   if (!lock.ok) {
     console.log("🔍 cron tick: skipped (another isolate already running this minute)");
     return;
   }
   lastCronTick = now.toISOString();
   console.log("🔍 cron tick:", now.toISOString());
+
   for await (const entry of kv.list<CheckDto>({ prefix: ["check"] })) {
     const checkDto = entry.value;
-    if (cronMatchesNow(checkDto.cron, now)) {
-      console.log("⏰ scheduling run for monitor:", checkDto.monitorId);
-      executeRunner({ monitorId: checkDto.monitorId }).catch((e) => {
-        console.error("❌ runner failed for", checkDto.monitorId, ":", (e as Error).message);
-      });
+    if (!cronMatchesNow(checkDto.cron, now)) continue;
+
+    // Per-monitor-per-minute lock: belt-and-suspenders against regional KV non-linearizability
+    const runLockKey = ["run-lock", checkDto.monitorId, minuteKey];
+    const runLock = await kv.atomic()
+      .check({ key: runLockKey, versionstamp: null })
+      .set(runLockKey, 1, { expireIn: FIVE_MIN_MS })
+      .commit();
+    if (!runLock.ok) {
+      console.log(`🔍 run skipped for ${checkDto.monitorId} (another isolate already ran this minute)`);
+      continue;
     }
+
+    console.log("⏰ scheduling run for monitor:", checkDto.monitorId);
+    executeRunner({ monitorId: checkDto.monitorId }).catch((e) => {
+      console.error("❌ runner failed for", checkDto.monitorId, ":", (e as Error).message);
+    });
   }
 });
 
@@ -649,6 +677,13 @@ async function api(method, path, body) {
   clearTimeout(timer);
   console.log('✅ api:', method, path, '→', res.status);
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401) {
+    console.warn('⚠️ api: 401 — clearing token and redirecting to login');
+    localStorage.removeItem('canary_token');
+    S.token = null;
+    showView('login');
+    throw new Error('Session expired — please log in again');
+  }
   if (!res.ok) throw new Error(data.message || 'Request failed (' + res.status + ')');
   return data;
 }
@@ -734,12 +769,18 @@ async function loadDashboard() {
     document.getElementById('d-monitors').textContent = status.monitors ?? '—';
     document.getElementById('d-tick').textContent = status.lastCronTick
       ? new Date(status.lastCronTick).toLocaleString() : 'Not yet ticked';
-  } catch {}
+  } catch (e) {
+    console.error('❌ loadDashboard: /api/status failed:', e.message);
+  }
 
   try {
     const data = await api('GET', '/monitors');
     renderMonitorList(data.monitors || []);
-  } catch {}
+  } catch (e) {
+    console.error('❌ loadDashboard: /monitors failed:', e.message);
+    const el = document.getElementById('d-monitor-list');
+    if (el) el.innerHTML = '<div class="empty-state"><div style="font-size:32px">⚠️</div><p>Could not load monitors: ' + esc(e.message) + '</p></div>';
+  }
 }
 
 function renderMonitorList(monitors) {
@@ -1478,6 +1519,75 @@ Deno.serve(async (req: Request): Promise<Response> => {
       await logout(token);
       console.log(`✅ POST /auth/logout → 200`);
       return json({ ok: true });
+    }
+
+    // Diagnostic snapshot — auth-gated dump of KV state for triage
+    if (method === "GET" && pathname === "/api/debug") {
+      const now = new Date();
+      const monitorsResult = await listMonitors();
+
+      const checks: Array<Record<string, unknown>> = [];
+      for await (const entry of kv.list<CheckDto>({ prefix: ["check"] })) {
+        const c = entry.value;
+        checks.push({
+          monitorId: c.monitorId,
+          url: c.url,
+          method: c.method,
+          expression: c.expression,
+          comparatorOp: c.comparatorOp,
+          threshold: c.threshold,
+          cron: c.cron,
+          notifyOnRecover: c.notifyOnRecover,
+          matchesNow: cronMatchesNow(c.cron, now),
+        });
+      }
+
+      const alerts: Array<Record<string, unknown>> = [];
+      for await (const entry of kv.list<AlertDto>({ prefix: ["alert"] })) {
+        const a = entry.value;
+        alerts.push({
+          monitorId: a.monitorId,
+          recipientCount: a.recipients.length,
+          channels: a.recipients.map((r) => r.channel),
+          hasCustomEmailSubject: !!a.emailSubject,
+          hasCustomEmailMessage: !!a.emailMessage,
+          hasCustomSmsMessage: !!a.smsMessage,
+        });
+      }
+
+      const latestRuns: Array<Record<string, unknown>> = [];
+      for (const m of monitorsResult.monitors) {
+        const latest = await RunResult.getLatest(m.monitorId);
+        latestRuns.push({
+          monitorId: m.monitorId,
+          monitorName: m.name,
+          hasRun: latest !== null,
+          passed: latest?.passed ?? null,
+          observed: latest?.observed ?? null,
+          timestamp: latest?.timestamp ?? null,
+          error: latest?.error ?? null,
+        });
+      }
+
+      return json({
+        now: now.toISOString(),
+        startedAt,
+        lastCronTick,
+        monitors: monitorsResult.monitors.map((m) => ({
+          monitorId: m.monitorId,
+          name: m.name,
+          description: m.description,
+        })),
+        checks,
+        alerts,
+        latestRuns,
+        env: {
+          ZAPIER_SMS_URL: !!Deno.env.get("ZAPIER_SMS_URL"),
+          POSTMARK_SERVER_TOKEN: !!Deno.env.get("POSTMARK_SERVER_TOKEN"),
+          POSTMARK_FROM_EMAIL: Deno.env.get("POSTMARK_FROM_EMAIL") ?? null,
+          ADMIN_USERNAME: Deno.env.get("ADMIN_USERNAME") ?? null,
+        },
+      });
     }
 
     // Users
