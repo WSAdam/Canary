@@ -1065,32 +1065,26 @@ async function wizardStep3() {
   const ntfyTitle = document.getElementById('w-ntfy-title').value.trim() || undefined;
   const ntfyMessage = document.getElementById('w-ntfy-message').value.trim() || undefined;
 
+  const showErr = (msg) => {
+    const el = document.getElementById('ws3-err');
+    el.textContent = msg;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+
   if (!emailAddr && !smsAddr && !ntfyAddr) {
-    document.getElementById('ws3-err').textContent = 'Add at least one email, phone number, or ntfy topic.';
+    showErr('Add at least one email, phone number, or ntfy topic.');
     return;
   }
   if (emailAddr && !emailAddr.includes('@')) {
-    document.getElementById('ws3-err').textContent = 'Email address must contain @.';
-    return;
-  }
-  if ((emailSubject || emailMessage) && !emailAddr) {
-    document.getElementById('ws3-err').textContent = 'Add an email address or clear the email subject/message.';
+    showErr('Email address must contain @.');
     return;
   }
   if (smsAddr) {
     const digits = smsAddr.replace(/\D/g, '');
     if (digits.length < 10 || digits.length > 11) {
-      document.getElementById('ws3-err').textContent = 'Phone number must be 10 or 11 digits (e.g. 18432222986).';
+      showErr('Phone number must be 10 or 11 digits (e.g. 18432222986).');
       return;
     }
-  }
-  if (smsMessage && !smsAddr) {
-    document.getElementById('ws3-err').textContent = 'Add a phone number or clear the SMS message.';
-    return;
-  }
-  if ((ntfyTitle || ntfyMessage) && !ntfyAddr) {
-    document.getElementById('ws3-err').textContent = 'Add an ntfy topic or clear the ntfy title/message.';
-    return;
   }
 
   const recipients = [];
@@ -1110,7 +1104,7 @@ async function wizardStep3() {
     setTimeout(() => { console.log('🔍 wizardStep3: navigating to dashboard'); showView('dashboard'); }, 1200);
   } catch (e) {
     console.error('❌ wizardStep3: error', e.message);
-    document.getElementById('ws3-err').textContent = e.message;
+    showErr(e.message);
     btn.disabled = false; btn.textContent = isEditAlert ? 'Save alert' : 'Save monitor';
   }
 }
