@@ -190,6 +190,11 @@ textarea{resize:vertical;min-height:72px}
 .btn-danger:hover{border-color:var(--red);opacity:1}
 .btn-full{width:100%}
 .btn-sm{padding:6px 14px;font-size:12px}
+.var-chips{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-top:6px}
+.var-chips-label{font-size:11px;color:#666;margin-right:2px}
+.var-chip{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:4px;font-size:11px;font-family:ui-monospace,Menlo,Monaco,monospace;color:#FFD700;cursor:pointer;transition:.1s}
+.var-chip:hover{background:#222;border-color:#FFD700}
+.var-chip-example{color:#666;font-style:italic;font-family:inherit}
 
 /* Cards */
 .card{background:var(--s);border:1px solid var(--b);border-radius:10px;padding:20px}
@@ -561,11 +566,23 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
         <div class="form-group">
           <label>EMAIL SUBJECT <span style="color:#555;font-weight:400">(optional)</span></label>
           <input type="text" id="w-email-subject" placeholder="Canary Alert: {monitor} {status}">
-          <p class="help-text">Variables: {monitor} {status}</p>
+          <div class="var-chips">
+            <span class="var-chips-label">Insert:</span>
+            <button type="button" class="var-chip" onclick="insertVar('w-email-subject','{monitor}')">{monitor}<span class="var-chip-example">Conf Alert</span></button>
+            <button type="button" class="var-chip" onclick="insertVar('w-email-subject','{status}')">{status}<span class="var-chip-example">FAILED</span></button>
+          </div>
         </div>
         <div class="form-group" style="margin-bottom:0">
           <label>EMAIL MESSAGE <span style="color:#555;font-weight:400">(optional)</span></label>
-          <textarea id="w-email-message" rows="3" placeholder="Leave blank for default. Variables: {monitor} {status} {observed} {timestamp} + any captures" style="width:100%;background:#111;border:1px solid #2a2a2a;border-radius:6px;padding:10px 12px;color:#e0e0e0;font-size:13px;resize:vertical;box-sizing:border-box"></textarea>
+          <textarea id="w-email-message" rows="3" placeholder="Leave blank for default" style="width:100%;background:#111;border:1px solid #2a2a2a;border-radius:6px;padding:10px 12px;color:#e0e0e0;font-size:13px;resize:vertical;box-sizing:border-box"></textarea>
+          <div class="var-chips">
+            <span class="var-chips-label">Insert:</span>
+            <button type="button" class="var-chip" onclick="insertVar('w-email-message','{monitor}')">{monitor}<span class="var-chip-example">Conf Alert</span></button>
+            <button type="button" class="var-chip" onclick="insertVar('w-email-message','{status}')">{status}<span class="var-chip-example">FAILED</span></button>
+            <button type="button" class="var-chip" onclick="insertVar('w-email-message','{observed}')">{observed}<span class="var-chip-example">141</span></button>
+            <button type="button" class="var-chip" onclick="insertVar('w-email-message','{timestamp}')">{timestamp}<span class="var-chip-example">2026-06-01T18:44Z</span></button>
+            <span class="var-chips-label">+ any capture names you defined</span>
+          </div>
         </div>
       </div>
       <div style="padding-bottom:20px;margin-bottom:20px;border-bottom:1px solid #2a2a2a">
@@ -577,7 +594,15 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
         </div>
         <div class="form-group" style="margin-bottom:0">
           <label>SMS MESSAGE <span style="color:#555;font-weight:400">(optional)</span></label>
-          <input type="text" id="w-sms-message" placeholder="Leave blank for default. Variables: {monitor} {status} {observed} {timestamp} + any captures">
+          <input type="text" id="w-sms-message" placeholder="Leave blank for default">
+          <div class="var-chips">
+            <span class="var-chips-label">Insert:</span>
+            <button type="button" class="var-chip" onclick="insertVar('w-sms-message','{monitor}')">{monitor}<span class="var-chip-example">Conf Alert</span></button>
+            <button type="button" class="var-chip" onclick="insertVar('w-sms-message','{status}')">{status}<span class="var-chip-example">FAILED</span></button>
+            <button type="button" class="var-chip" onclick="insertVar('w-sms-message','{observed}')">{observed}<span class="var-chip-example">141</span></button>
+            <button type="button" class="var-chip" onclick="insertVar('w-sms-message','{timestamp}')">{timestamp}<span class="var-chip-example">2026-06-01T18:44Z</span></button>
+            <span class="var-chips-label">+ captures</span>
+          </div>
         </div>
       </div>
       <div>
@@ -590,15 +615,26 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
         <div class="form-group">
           <label>NTFY TITLE <span style="color:#555;font-weight:400">(optional)</span></label>
           <input type="text" id="w-ntfy-title" placeholder="Canary: {monitor} {status}">
-          <p class="help-text">Variables: {monitor} {status}</p>
+          <div class="var-chips">
+            <span class="var-chips-label">Insert:</span>
+            <button type="button" class="var-chip" onclick="insertVar('w-ntfy-title','{monitor}')">{monitor}<span class="var-chip-example">Conf Alert</span></button>
+            <button type="button" class="var-chip" onclick="insertVar('w-ntfy-title','{status}')">{status}<span class="var-chip-example">FAILED</span></button>
+          </div>
         </div>
         <div class="form-group" style="margin-bottom:0">
           <label style="display:flex;justify-content:space-between;align-items:center">
             <span>NTFY MESSAGE <span style="color:#555;font-weight:400">(optional)</span></span>
             <button type="button" class="btn btn-ghost btn-sm" onclick="insertDefaultNtfyMessage()" style="font-size:11px;padding:4px 10px">Insert default</button>
           </label>
-          <textarea id="w-ntfy-message" rows="5" placeholder="Leave blank for default. Variables: {monitor} {status} {observed} {timestamp} + any captures" style="width:100%;background:#111;border:1px solid #2a2a2a;border-radius:6px;padding:10px 12px;color:#e0e0e0;font-size:13px;font-family:monospace;resize:vertical;box-sizing:border-box"></textarea>
-          <p class="help-text">Multi-line OK. {monitor} {status} {observed} {timestamp} + any captures</p>
+          <textarea id="w-ntfy-message" rows="5" placeholder="Leave blank for default. Multi-line OK." style="width:100%;background:#111;border:1px solid #2a2a2a;border-radius:6px;padding:10px 12px;color:#e0e0e0;font-size:13px;font-family:monospace;resize:vertical;box-sizing:border-box"></textarea>
+          <div class="var-chips">
+            <span class="var-chips-label">Insert:</span>
+            <button type="button" class="var-chip" onclick="insertVar('w-ntfy-message','{monitor}')">{monitor}<span class="var-chip-example">Conf Alert</span></button>
+            <button type="button" class="var-chip" onclick="insertVar('w-ntfy-message','{status}')">{status}<span class="var-chip-example">FAILED</span></button>
+            <button type="button" class="var-chip" onclick="insertVar('w-ntfy-message','{observed}')">{observed}<span class="var-chip-example">141</span></button>
+            <button type="button" class="var-chip" onclick="insertVar('w-ntfy-message','{timestamp}')">{timestamp}<span class="var-chip-example">2026-06-01T18:44Z</span></button>
+            <span class="var-chips-label">+ captures</span>
+          </div>
         </div>
       </div>
     </div>
@@ -1347,6 +1383,17 @@ function insertDefaultNtfyMessage() {
   const ta = document.getElementById('w-ntfy-message');
   ta.value = '{status}\\nMonitor: {monitor}\\nObserved: {observed}\\nTimestamp: {timestamp}';
   ta.focus();
+}
+
+function insertVar(targetId, varText) {
+  const el = document.getElementById(targetId);
+  if (!el) return;
+  el.focus();
+  const start = typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length;
+  const end = typeof el.selectionEnd === 'number' ? el.selectionEnd : el.value.length;
+  el.value = el.value.slice(0, start) + varText + el.value.slice(end);
+  const pos = start + varText.length;
+  if (el.setSelectionRange) el.setSelectionRange(pos, pos);
 }
 
 // ─── Test request ─────────────────────────────────────────────────────────────
