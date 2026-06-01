@@ -593,8 +593,12 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
           <p class="help-text">Variables: {monitor} {status}</p>
         </div>
         <div class="form-group" style="margin-bottom:0">
-          <label>NTFY MESSAGE <span style="color:#555;font-weight:400">(optional)</span></label>
-          <input type="text" id="w-ntfy-message" placeholder="Leave blank for default. Variables: {monitor} {status} {observed} {timestamp} + any captures">
+          <label style="display:flex;justify-content:space-between;align-items:center">
+            <span>NTFY MESSAGE <span style="color:#555;font-weight:400">(optional)</span></span>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="insertDefaultNtfyMessage()" style="font-size:11px;padding:4px 10px">Insert default</button>
+          </label>
+          <textarea id="w-ntfy-message" rows="5" placeholder="Leave blank for default. Variables: {monitor} {status} {observed} {timestamp} + any captures" style="width:100%;background:#111;border:1px solid #2a2a2a;border-radius:6px;padding:10px 12px;color:#e0e0e0;font-size:13px;font-family:monospace;resize:vertical;box-sizing:border-box"></textarea>
+          <p class="help-text">Multi-line OK. {monitor} {status} {observed} {timestamp} + any captures</p>
         </div>
       </div>
     </div>
@@ -1337,6 +1341,12 @@ function updateBodyVisibility() {
   const method = document.getElementById('w-method').value;
   const show = ['POST','PUT','PATCH'].includes(method);
   document.getElementById('w-body-group').style.display = show ? 'block' : 'none';
+}
+
+function insertDefaultNtfyMessage() {
+  const ta = document.getElementById('w-ntfy-message');
+  ta.value = '{status}\\nMonitor: {monitor}\\nObserved: {observed}\\nTimestamp: {timestamp}';
+  ta.focus();
 }
 
 // ─── Test request ─────────────────────────────────────────────────────────────
