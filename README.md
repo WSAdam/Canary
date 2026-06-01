@@ -221,6 +221,61 @@ POST /run/:monitorId
 
 ---
 
+### Push Alerts (Webhooks)
+
+Let other projects push alerts into a monitor with a per-monitor bearer secret. Canary verifies the secret, writes a run result, and dispatches alerts through the same SMS/email/ntfy recipients configured on the Configuration tab — same recovery semantics as cron.
+
+**Generate a key** (admin, in the dashboard or via API):
+
+```bash
+curl -X POST $URL/monitors/$MID/webhook -H "Authorization: Bearer $ADMIN_TOKEN"
+# { "secret": "cnry_v1_...", "fingerprint": "cnry_v1_abcd", "createdAt": "...", "warning": "..." }
+```
+
+The plaintext is shown **exactly once**. Save it. Rotating generates a new one; the old one immediately stops working.
+
+**Fire an alert** (from another project):
+
+```bash
+curl -X POST $URL/webhook/$MID/fire \
+  -H "Authorization: Bearer cnry_v1_..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "passed": false,
+    "observed": 0,
+    "error": "Stripe webhook handler 500",
+    "captures": { "service": "payments-link", "env": "prod" }
+  }'
+# { "runId": "...", "fired": true, "channels": ["sms","ntfy"] }
+```
+
+All body fields are optional:
+
+| Field | Type | Default | Effect |
+|-------|------|---------|--------|
+| `passed` | boolean | `false` | `false` fires a failure alert; `true` fires a recovery alert (only when prior run was a failure and the monitor's `notifyOnRecover` is true) |
+| `observed` | number | `0` | Surfaced as `{observed}` in templates |
+| `error` | string | — | Surfaced as `{error}` and in the default body |
+| `captures` | object | — | Merged into the `{var}` table for template expansion (e.g. `{service}`) |
+| `message` | string | — | Overrides every channel's message template for this fire only |
+| `title` | string | — | Overrides ntfy title / email subject for this fire only |
+
+**Management:**
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/monitors/:id/webhook` | Generate or rotate (returns plaintext once) |
+| `GET`  | `/monitors/:id/webhook` | Returns `{ exists, fingerprint, createdAt }` |
+| `DELETE` | `/monitors/:id/webhook` | Revoke |
+
+**Security notes:**
+
+- Secrets are stored hashed (SHA-256). The plaintext cannot be recovered — only rotated.
+- Rotation is the response to leakage. There is no rate limiting in v1, so a leaked secret can be used to fire arbitrary alerts until rotated.
+- The `cnry_v1_` prefix makes leaked keys easy to grep for in logs and git history.
+
+---
+
 ## Verifying it works
 
 Run these against your deployed URL (or `http://localhost:8000` locally) to confirm the full alert pipeline is wired up. Replace `$URL`, `$USER`, `$PASS` accordingly.

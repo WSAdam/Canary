@@ -25,6 +25,9 @@ import { setSecret } from "./dist.rune/integration/secret-set/secret-set.ts";
 import { listSecrets } from "./dist.rune/integration/secret-list/secret-list.ts";
 import { deleteSecret } from "./dist.rune/integration/secret-delete/secret-delete.ts";
 import { executeRunner } from "./dist.rune/integration/runner-execute/runner-execute.ts";
+import { webhookFire } from "./dist.rune/integration/webhook-fire/webhook-fire.ts";
+import { WebhookSecret } from "./dist.rune/impure/webhookSecret/webhookSecret.ts";
+import type { FireAlertDto } from "./dist.rune/dto/fire-alert-dto.ts";
 import { Email } from "./dist.rune/impure/alertChannel/implementations/email/mod.ts";
 import { Sms } from "./dist.rune/impure/alertChannel/implementations/sms/mod.ts";
 import { Ntfy } from "./dist.rune/impure/alertChannel/implementations/ntfy/mod.ts";
@@ -553,6 +556,7 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
     <div style="display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid #2a2a2a">
       <button id="ws3-tab-config" class="sched-tab active" onclick="ws3Tab('config')" style="padding:8px 20px">Configuration</button>
       <button id="ws3-tab-examples" class="sched-tab" onclick="ws3Tab('examples')" style="padding:8px 20px">Examples &amp; Try it</button>
+      <button id="ws3-tab-webhook" class="sched-tab" onclick="ws3Tab('webhook')" style="padding:8px 20px">Webhook (push)</button>
     </div>
 
     <!-- Configuration tab -->
@@ -686,6 +690,47 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
             <button class="btn btn-ghost btn-sm" id="ex-ntfy-btn" onclick="sendTestAlert('ntfy')">Send test</button>
           </div>
           <div id="ex-ntfy-result" style="font-size:12px;margin-top:8px"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Webhook (push) tab -->
+    <div id="ws3-webhook" style="display:none">
+      <div class="card" style="margin-bottom:16px">
+        <p style="font-size:11px;color:#FFD700;font-weight:600;letter-spacing:.08em;margin-bottom:14px">HOW IT WORKS</p>
+        <p style="font-size:13px;color:var(--m);margin-bottom:0;line-height:1.6">
+          Other projects POST to canary with a per-monitor bearer secret. Canary verifies it, writes a run result, and dispatches alerts through the SMS / email / ntfy recipients configured on the Configuration tab — same templating, same recovery semantics as a cron-driven check. Use this as a single alert hub for your whole stack: one place to manage who gets paged, every project pipes its events through.
+        </p>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <p style="font-size:11px;color:#FFD700;font-weight:600;letter-spacing:.08em;margin-bottom:8px">EXAMPLE FIRE</p>
+        <p style="font-size:12px;color:#666;margin-bottom:10px" id="wh-curl-label">Generate a key below to fill in the real secret. Until then this shows the call shape with a placeholder.</p>
+        <pre id="wh-curl-pre" style="background:#111;border:1px solid #2a2a2a;border-radius:6px;padding:12px;color:#e0e0e0;font-family:ui-monospace,Menlo,monospace;font-size:11px;line-height:1.5;overflow-x:auto;margin:0;white-space:pre-wrap;word-break:break-all"></pre>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <p style="font-size:11px;color:#FFD700;font-weight:600;letter-spacing:.08em;margin-bottom:10px">PAYLOAD FIELDS (all optional)</p>
+        <div style="font-size:12px;color:#e0e0e0;line-height:1.7;font-family:ui-monospace,Menlo,monospace">
+          <div><span style="color:#FFD700">passed</span> <span style="color:#666">bool, default false</span> — false fires failure, true fires recovery (only if prior was failure)</div>
+          <div><span style="color:#FFD700">observed</span> <span style="color:#666">number, default 0</span> — surfaces as <span style="color:#FFD700">{observed}</span> in templates</div>
+          <div><span style="color:#FFD700">error</span> <span style="color:#666">string</span> — surfaces as <span style="color:#FFD700">{error}</span> and in default body</div>
+          <div><span style="color:#FFD700">captures</span> <span style="color:#666">object</span> — merged into <span style="color:#FFD700">{var}</span> table, e.g. <span style="color:#FFD700">{"service":"auth-api"}</span> → <span style="color:#FFD700">{service}</span></div>
+          <div><span style="color:#FFD700">message</span> <span style="color:#666">string</span> — overrides every channel's message for this fire</div>
+          <div><span style="color:#FFD700">title</span> <span style="color:#666">string</span> — overrides ntfy title / email subject for this fire</div>
+        </div>
+        <p style="font-size:12px;color:#666;margin-top:12px;margin-bottom:0">Response: <span style="color:#e0e0e0;font-family:ui-monospace,Menlo,monospace">{ runId, fired, channels }</span> on success, <span style="color:#e0e0e0;font-family:ui-monospace,Menlo,monospace">401</span> on bad secret, <span style="color:#e0e0e0;font-family:ui-monospace,Menlo,monospace">404</span> on unknown monitor.</p>
+      </div>
+
+      <div class="card">
+        <p style="font-size:11px;color:#FFD700;font-weight:600;letter-spacing:.08em;margin-bottom:14px">WEBHOOK KEY</p>
+        <div id="wh-state" style="margin-bottom:0">
+          <p style="font-size:12px;color:#666;margin:0">Save the alert first, then come back here to generate a key.</p>
+        </div>
+        <div id="wh-secret-display" style="display:none;margin-top:14px">
+          <div class="success-msg" style="display:block;margin-bottom:10px">⚠️ Save this secret now — it will not be shown again.</div>
+          <pre id="wh-secret-pre" style="background:#111;border:1px solid #FFD700;border-radius:6px;padding:12px;color:#FFD700;font-family:ui-monospace,Menlo,monospace;font-size:12px;word-break:break-all;white-space:pre-wrap;margin:0"></pre>
+          <button type="button" class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="copyWebhookSecret()">Copy to clipboard</button>
         </div>
       </div>
     </div>
@@ -1290,11 +1335,107 @@ function updateSimpleSched() {
 
 // ─── Alert config tabs ────────────────────────────────────────────────────────
 function ws3Tab(tab) {
-  const isConfig = tab === 'config';
-  document.getElementById('ws3-config').style.display = isConfig ? 'block' : 'none';
-  document.getElementById('ws3-examples').style.display = isConfig ? 'none' : 'block';
-  document.getElementById('ws3-tab-config').className = 'sched-tab' + (isConfig ? ' active' : '');
-  document.getElementById('ws3-tab-examples').className = 'sched-tab' + (!isConfig ? ' active' : '');
+  const tabs = ['config', 'examples', 'webhook'];
+  tabs.forEach((t) => {
+    document.getElementById('ws3-' + t).style.display = (t === tab) ? 'block' : 'none';
+    document.getElementById('ws3-tab-' + t).className = 'sched-tab' + (t === tab ? ' active' : '');
+  });
+  if (tab === 'webhook') loadWebhookState();
+}
+
+// ─── Webhook (push) management ───────────────────────────────────────────────
+let _lastWebhookSecret = null;
+
+async function loadWebhookState() {
+  const stateEl = document.getElementById('wh-state');
+  const monitorId = S.wizardMonitorId;
+
+  // Always render the example curl so users can see how to call it before generating.
+  // Use real values where known, placeholders otherwise.
+  const curlMonitorId = monitorId || '<monitor-id>';
+  const curlSecret = _lastWebhookSecret || 'cnry_v1_<your-saved-secret>';
+  renderWebhookCurl(curlSecret, curlMonitorId);
+
+  if (!monitorId) {
+    stateEl.innerHTML = '<p style="font-size:12px;color:#666;margin:0">Save the alert first, then come back here to generate a key.</p>';
+    document.getElementById('wh-secret-display').style.display = 'none';
+    return;
+  }
+  try {
+    const d = await api('GET', '/monitors/' + monitorId + '/webhook');
+    if (d.exists) {
+      stateEl.innerHTML = '<p style="font-size:13px;color:#e0e0e0;margin-bottom:10px">Active key: <code style="color:#FFD700;font-family:ui-monospace,Menlo,monospace;font-size:12px;background:#111;padding:2px 6px;border-radius:4px">' + esc(d.fingerprint) + '…</code></p>' +
+        '<p style="font-size:11px;color:#666;margin-bottom:14px">Created ' + new Date(d.createdAt).toLocaleString() + '</p>' +
+        '<div style="display:flex;gap:8px">' +
+        '<button type="button" class="btn btn-ghost btn-sm" onclick="generateWebhookKey(true)">Rotate</button>' +
+        '<button type="button" class="btn btn-danger btn-sm" onclick="revokeWebhookKey()">Revoke</button>' +
+        '</div>';
+      if (!_lastWebhookSecret) {
+        document.getElementById('wh-secret-display').style.display = 'none';
+      }
+    } else {
+      stateEl.innerHTML = '<p style="font-size:13px;color:var(--m);margin-bottom:14px;margin-top:0">No webhook key yet.</p>' +
+        '<button type="button" class="btn btn-primary btn-sm" onclick="generateWebhookKey(false)">Generate webhook key</button>';
+      document.getElementById('wh-secret-display').style.display = 'none';
+    }
+  } catch (e) {
+    stateEl.innerHTML = '<p style="font-size:13px;color:var(--red);margin:0">Could not load webhook state: ' + esc(e.message) + '</p>';
+  }
+}
+
+async function generateWebhookKey(isRotate) {
+  const monitorId = S.wizardMonitorId;
+  if (!monitorId) return;
+  if (isRotate && !confirm('Rotate the webhook key? Any project still using the old key will start receiving 401s immediately.')) return;
+  try {
+    const d = await api('POST', '/monitors/' + monitorId + '/webhook');
+    _lastWebhookSecret = d.secret;
+    document.getElementById('wh-secret-pre').textContent = d.secret;
+    document.getElementById('wh-secret-display').style.display = 'block';
+    renderWebhookCurl(d.secret, monitorId);
+    await loadWebhookState();
+  } catch (e) {
+    alert('Generate failed: ' + e.message);
+  }
+}
+
+async function revokeWebhookKey() {
+  const monitorId = S.wizardMonitorId;
+  if (!monitorId) return;
+  if (!confirm('Revoke the webhook key? Anything using it will start getting 401s.')) return;
+  try {
+    await api('DELETE', '/monitors/' + monitorId + '/webhook');
+    _lastWebhookSecret = null;
+    document.getElementById('wh-secret-display').style.display = 'none';
+    await loadWebhookState();
+  } catch (e) {
+    alert('Revoke failed: ' + e.message);
+  }
+}
+
+function renderWebhookCurl(secret, monitorId) {
+  const base = location.origin;
+  const url = base + '/webhook/' + monitorId + '/fire';
+  const body = '{"passed":false,"observed":0,"error":"something broke","captures":{"service":"my-app"}}';
+  const curl = 'curl -X POST ' + url +
+    ' -H "Authorization: Bearer ' + secret + '"' +
+    ' -H "Content-Type: application/json"' +
+    " -d '" + body + "'";
+  document.getElementById('wh-curl-pre').textContent = curl;
+  const label = document.getElementById('wh-curl-label');
+  if (label) {
+    label.textContent = (secret.startsWith('cnry_v1_<') || monitorId.startsWith('<'))
+      ? 'Generate a key below to fill in the real secret. Until then this shows the call shape with a placeholder.'
+      : 'Live example using this monitor and (if just generated) your real secret.';
+  }
+}
+
+function copyWebhookSecret() {
+  if (!_lastWebhookSecret) return;
+  navigator.clipboard.writeText(_lastWebhookSecret).then(
+    () => { /* no-op success */ },
+    () => alert('Could not copy — select the text manually'),
+  );
 }
 
 async function sendTestAlert(channel) {
@@ -1619,6 +1760,25 @@ Deno.serve(async (req: Request): Promise<Response> => {
       return json(session);
     }
 
+    // Public: webhook fire (external projects push alerts via per-monitor bearer secret)
+    const fireMatch = pathname.match(/^\/webhook\/([^/]+)\/fire$/);
+    if (fireMatch && method === "POST") {
+      const monitorId = fireMatch[1];
+      const auth = req.headers.get("Authorization") ?? "";
+      const plaintextSecret = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+      if (!plaintextSecret) {
+        throw new CanaryError("unauthorized", "Missing Authorization: Bearer cnry_v1_... header", 401);
+      }
+      const payload = await req.json().catch(() => ({})) as FireAlertDto;
+      console.log(`🪝 POST /webhook/${monitorId}/fire passed=${payload.passed ?? false} observed=${payload.observed ?? 0} hasError=${!!payload.error} hasOverride=${!!(payload.message || payload.title)}`);
+      const result = await webhookFire({ monitorId, plaintextSecret, payload });
+      return json({
+        runId: result.runResult.runId,
+        fired: result.fired,
+        channels: result.channels,
+      });
+    }
+
     // ── All routes below require auth ────────────────────────────────────────
     const token = extractToken(req);
     await validateSession(token);
@@ -1667,6 +1827,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       }
 
       const latestRuns: Array<Record<string, unknown>> = [];
+      const webhooks: Array<Record<string, unknown>> = [];
       for (const m of monitorsResult.monitors) {
         const latest = await RunResult.getLatest(m.monitorId);
         latestRuns.push({
@@ -1677,6 +1838,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
           observed: latest?.observed ?? null,
           timestamp: latest?.timestamp ?? null,
           error: latest?.error ?? null,
+        });
+        const wh = await WebhookSecret.peek(m.monitorId);
+        webhooks.push({
+          monitorId: m.monitorId,
+          monitorName: m.name,
+          exists: wh.exists,
+          fingerprint: wh.fingerprint ?? null,
+          createdAt: wh.createdAt ?? null,
         });
       }
 
@@ -1692,6 +1861,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         checks,
         alerts,
         latestRuns,
+        webhooks,
         env: {
           ZAPIER_SMS_URL: !!Deno.env.get("ZAPIER_SMS_URL"),
           POSTMARK_SERVER_TOKEN: !!Deno.env.get("POSTMARK_SERVER_TOKEN"),
@@ -1699,6 +1869,33 @@ Deno.serve(async (req: Request): Promise<Response> => {
           ADMIN_USERNAME: Deno.env.get("ADMIN_USERNAME") ?? null,
         },
       });
+    }
+
+    // Webhook key management — admin-only, scoped by monitorId
+    const webhookKeyMatch = pathname.match(/^\/monitors\/([^/]+)\/webhook$/);
+    if (webhookKeyMatch) {
+      const monitorId = webhookKeyMatch[1];
+      if (method === "POST") {
+        // Ensure monitor exists before issuing a key
+        await getMonitor({ monitorId });
+        const result = await WebhookSecret.generate(monitorId);
+        console.log(`✅ POST /monitors/${monitorId}/webhook → 200 fingerprint=${result.fingerprint}`);
+        return json({
+          secret: result.plaintext,
+          fingerprint: result.fingerprint,
+          createdAt: result.createdAt,
+          warning: "Save this secret now — it will not be shown again.",
+        });
+      }
+      if (method === "GET") {
+        const wh = await WebhookSecret.peek(monitorId);
+        return json(wh);
+      }
+      if (method === "DELETE") {
+        await WebhookSecret.revoke(monitorId);
+        console.log(`✅ DELETE /monitors/${monitorId}/webhook → 200`);
+        return json({ revoked: true });
+      }
     }
 
     // Users
