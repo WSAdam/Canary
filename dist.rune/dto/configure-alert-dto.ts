@@ -7,4 +7,6 @@ export interface ConfigureAlertDto {
   emailSubject?: string;
   emailMessage?: string;
   smsMessage?: string;
+  ntfyTitle?: string;
+  ntfyMessage?: string;
 }

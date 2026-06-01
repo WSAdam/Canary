@@ -27,6 +27,7 @@ import { deleteSecret } from "./dist.rune/integration/secret-delete/secret-delet
 import { executeRunner } from "./dist.rune/integration/runner-execute/runner-execute.ts";
 import { Email } from "./dist.rune/impure/alertChannel/implementations/email/mod.ts";
 import { Sms } from "./dist.rune/impure/alertChannel/implementations/sms/mod.ts";
+import { Ntfy } from "./dist.rune/impure/alertChannel/implementations/ntfy/mod.ts";
 import { RunResult } from "./dist.rune/impure/runResult/runResult.ts";
 import type { RunResultDto } from "./dist.rune/dto/run-result-dto.ts";
 import type { AlertDto } from "./dist.rune/dto/alert-dto.ts";
@@ -567,7 +568,7 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
           <textarea id="w-email-message" rows="3" placeholder="Leave blank for default. Variables: {monitor} {status} {observed} {timestamp} + any captures" style="width:100%;background:#111;border:1px solid #2a2a2a;border-radius:6px;padding:10px 12px;color:#e0e0e0;font-size:13px;resize:vertical;box-sizing:border-box"></textarea>
         </div>
       </div>
-      <div>
+      <div style="padding-bottom:20px;margin-bottom:20px;border-bottom:1px solid #2a2a2a">
         <p style="font-size:11px;color:#FFD700;font-weight:600;letter-spacing:.08em;margin-bottom:14px">SMS</p>
         <div class="form-group">
           <label>PHONE NUMBER <span style="color:#555;font-weight:400">(leave blank to skip SMS alerts)</span></label>
@@ -579,11 +580,28 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
           <input type="text" id="w-sms-message" placeholder="Leave blank for default. Variables: {monitor} {status} {observed} {timestamp} + any captures">
         </div>
       </div>
+      <div>
+        <p style="font-size:11px;color:#FFD700;font-weight:600;letter-spacing:.08em;margin-bottom:14px">NTFY (PUSH)</p>
+        <div class="form-group">
+          <label>NTFY TOPIC OR URL <span style="color:#555;font-weight:400">(leave blank to skip ntfy alerts)</span></label>
+          <input type="text" id="w-ntfy-addr" placeholder="adam-code-alerts or ntfy.sh/adam-code-alerts">
+          <p class="help-text">Topic name (assumes ntfy.sh) or full URL for self-hosted</p>
+        </div>
+        <div class="form-group">
+          <label>NTFY TITLE <span style="color:#555;font-weight:400">(optional)</span></label>
+          <input type="text" id="w-ntfy-title" placeholder="Canary: {monitor} {status}">
+          <p class="help-text">Variables: {monitor} {status}</p>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label>NTFY MESSAGE <span style="color:#555;font-weight:400">(optional)</span></label>
+          <input type="text" id="w-ntfy-message" placeholder="Leave blank for default. Variables: {monitor} {status} {observed} {timestamp} + any captures">
+        </div>
+      </div>
     </div>
 
     <!-- Examples & Try it tab -->
     <div id="ws3-examples" style="display:none">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
         <div class="card">
           <p style="font-size:11px;color:#FFD700;font-weight:600;letter-spacing:.08em;margin-bottom:12px">EMAIL EXAMPLE</p>
           <div style="background:#111;border:1px solid #2a2a2a;border-radius:8px;padding:14px;font-size:12px;color:#999;font-family:monospace;margin-bottom:16px;line-height:1.8">
@@ -611,6 +629,23 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
             <button class="btn btn-ghost btn-sm" id="ex-sms-btn" onclick="sendTestAlert('sms')">Send test</button>
           </div>
           <div id="ex-sms-result" style="font-size:12px;margin-top:8px"></div>
+        </div>
+        <div class="card">
+          <p style="font-size:11px;color:#FFD700;font-weight:600;letter-spacing:.08em;margin-bottom:12px">NTFY EXAMPLE</p>
+          <div style="background:#111;border:1px solid #2a2a2a;border-radius:8px;padding:14px;font-size:12px;color:#999;font-family:monospace;margin-bottom:16px;line-height:1.8">
+            <span style="color:#e0e0e0">Title:</span> Canary: Example Monitor FAILED<br>
+            <span style="color:#e0e0e0">Priority:</span> high<br>
+            <br>
+            FAILED<br>
+            Monitor: Example Monitor<br>
+            Observed: 42<br>
+            Timestamp: 2026-03-17T11:00:00.000Z
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="text" id="ex-ntfy-addr" placeholder="adam-code-alerts" style="flex:1">
+            <button class="btn btn-ghost btn-sm" id="ex-ntfy-btn" onclick="sendTestAlert('ntfy')">Send test</button>
+          </div>
+          <div id="ex-ntfy-result" style="font-size:12px;margin-top:8px"></div>
         </div>
       </div>
     </div>
@@ -868,9 +903,12 @@ function resetWizard() {
   document.getElementById('captures-list').innerHTML = '';
   document.getElementById('w-email-addr').value = '';
   document.getElementById('w-sms-addr').value = '';
+  document.getElementById('w-ntfy-addr').value = '';
   document.getElementById('w-email-subject').value = '';
   document.getElementById('w-email-message').value = '';
   document.getElementById('w-sms-message').value = '';
+  document.getElementById('w-ntfy-title').value = '';
+  document.getElementById('w-ntfy-message').value = '';
   ws3Tab('config');
   document.getElementById('test-result').style.display = 'none';
   document.getElementById('test-error').style.display = 'none';
@@ -980,12 +1018,15 @@ async function wizardStep2() {
 async function wizardStep3() {
   const emailAddr = document.getElementById('w-email-addr').value.trim();
   const smsAddr = document.getElementById('w-sms-addr').value.trim();
+  const ntfyAddr = document.getElementById('w-ntfy-addr').value.trim();
   const emailSubject = document.getElementById('w-email-subject').value.trim() || undefined;
   const emailMessage = document.getElementById('w-email-message').value.trim() || undefined;
   const smsMessage = document.getElementById('w-sms-message').value.trim() || undefined;
+  const ntfyTitle = document.getElementById('w-ntfy-title').value.trim() || undefined;
+  const ntfyMessage = document.getElementById('w-ntfy-message').value.trim() || undefined;
 
-  if (!emailAddr && !smsAddr) {
-    document.getElementById('ws3-err').textContent = 'Add at least one email address or phone number.';
+  if (!emailAddr && !smsAddr && !ntfyAddr) {
+    document.getElementById('ws3-err').textContent = 'Add at least one email, phone number, or ntfy topic.';
     return;
   }
   if (emailAddr && !emailAddr.includes('@')) {
@@ -1007,10 +1048,15 @@ async function wizardStep3() {
     document.getElementById('ws3-err').textContent = 'Add a phone number or clear the SMS message.';
     return;
   }
+  if ((ntfyTitle || ntfyMessage) && !ntfyAddr) {
+    document.getElementById('ws3-err').textContent = 'Add an ntfy topic or clear the ntfy title/message.';
+    return;
+  }
 
   const recipients = [];
   if (emailAddr) recipients.push({ channel: 'email', address: emailAddr });
   if (smsAddr) recipients.push({ channel: 'sms', address: smsAddr });
+  if (ntfyAddr) recipients.push({ channel: 'ntfy', address: ntfyAddr });
 
   const btn = document.getElementById('ws3-btn');
   const isEditAlert = S.wizardMode === 'edit-alert';
@@ -1018,7 +1064,7 @@ async function wizardStep3() {
   clearErr();
   console.log('🚀 wizardStep3: saving alert monitorId=' + S.wizardMonitorId + ' recipients=' + JSON.stringify(recipients));
   try {
-    const result = await api('POST', '/monitors/' + S.wizardMonitorId + '/alert', { recipients, emailSubject, emailMessage, smsMessage });
+    const result = await api('POST', '/monitors/' + S.wizardMonitorId + '/alert', { recipients, emailSubject, emailMessage, smsMessage, ntfyTitle, ntfyMessage });
     console.log('✅ wizardStep3: alert saved', JSON.stringify(result));
     document.getElementById('ws3-ok').textContent = isEditAlert ? 'Alert saved!' : 'Monitor saved!';
     setTimeout(() => { console.log('🔍 wizardStep3: navigating to dashboard'); showView('dashboard'); }, 1200);
@@ -1094,11 +1140,15 @@ async function prefillAlert(monitorId) {
     const list = d.recipients || [];
     const emailRec = list.find(r => r.channel === 'email');
     const smsRec = list.find(r => r.channel === 'sms');
+    const ntfyRec = list.find(r => r.channel === 'ntfy');
     if (emailRec) document.getElementById('w-email-addr').value = emailRec.address;
     if (smsRec) document.getElementById('w-sms-addr').value = smsRec.address;
+    if (ntfyRec) document.getElementById('w-ntfy-addr').value = ntfyRec.address;
     if (d.emailSubject) document.getElementById('w-email-subject').value = d.emailSubject;
     if (d.emailMessage) document.getElementById('w-email-message').value = d.emailMessage;
     if (d.smsMessage) document.getElementById('w-sms-message').value = d.smsMessage;
+    if (d.ntfyTitle) document.getElementById('w-ntfy-title').value = d.ntfyTitle;
+    if (d.ntfyMessage) document.getElementById('w-ntfy-message').value = d.ntfyMessage;
   } catch (e) {
     // 404 = no alert configured yet, not an error worth showing
     if (!e.message || (!e.message.includes('not found') && !e.message.includes('not-found') && !e.message.includes('404'))) {
@@ -1552,6 +1602,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
           hasCustomEmailSubject: !!a.emailSubject,
           hasCustomEmailMessage: !!a.emailMessage,
           hasCustomSmsMessage: !!a.smsMessage,
+          hasCustomNtfyTitle: !!a.ntfyTitle,
+          hasCustomNtfyMessage: !!a.ntfyMessage,
         });
       }
 
@@ -1746,9 +1798,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
       return json(result);
     }
 
-    // Test alert (send a real email or SMS to verify config)
+    // Test alert (send a real email, SMS, or ntfy push to verify config)
     if (method === "POST" && pathname === "/test-alert") {
-      const body = await parseBody(req) as { channel: string; address: string; emailSubject?: string; emailMessage?: string; smsMessage?: string };
+      const body = await parseBody(req) as { channel: string; address: string; emailSubject?: string; emailMessage?: string; smsMessage?: string; ntfyTitle?: string; ntfyMessage?: string };
       if (!body.channel || !body.address) throw new CanaryError("validation-error", "channel and address are required", 400);
       const fakeRun: RunResultDto = {
         runId: "test-" + Date.now(),
@@ -1764,6 +1816,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
         emailSubject: body.emailSubject,
         emailMessage: body.emailMessage,
         smsMessage: body.smsMessage,
+        ntfyTitle: body.ntfyTitle,
+        ntfyMessage: body.ntfyMessage,
       };
       if (body.channel === "email") {
         console.log(`📧 test-alert: sending email to ${body.address}`);
@@ -1772,6 +1826,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
       } else if (body.channel === "sms") {
         console.log(`📱 test-alert: sending SMS to ${body.address}`);
         const ch = new Sms(body.address);
+        await ch.send(fakeRun, fakeAlert);
+      } else if (body.channel === "ntfy") {
+        console.log(`🔔 test-alert: sending ntfy to ${body.address}`);
+        const ch = new Ntfy(body.address);
         await ch.send(fakeRun, fakeAlert);
       } else {
         throw new CanaryError("validation-error", `Unknown channel: ${body.channel}`, 400);

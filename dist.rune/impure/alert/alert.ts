@@ -15,6 +15,8 @@ export class Alert {
       emailSubject: dto.emailSubject,
       emailMessage: dto.emailMessage,
       smsMessage: dto.smsMessage,
+      ntfyTitle: dto.ntfyTitle,
+      ntfyMessage: dto.ntfyMessage,
     };
     return alert;
   }

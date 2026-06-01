@@ -11,7 +11,7 @@ Canary polls your HTTP endpoints on a cron schedule, extracts numeric values fro
 - **Flexible scheduling**: configure monitors with a human-readable schedule or a raw cron expression
 - **JSON metric extraction**: dot-notation path extraction from any JSON response
 - **Threshold comparisons**: `gt`, `lt`, `gte`, `lte`, `eq`
-- **Multi-channel alerts**: SMS via Zapier webhook or email via Postmark; mix recipients per monitor
+- **Multi-channel alerts**: SMS via Zapier webhook, email via Postmark, or push via [ntfy.sh](https://ntfy.sh); mix recipients per monitor
 - **Recovery notifications**: optional alert when a failing monitor returns to a healthy state
 - **Secret management**: store sensitive values (API keys, bearer tokens) in Deno KV and reference them in monitor headers
 - **Manual trigger**: fire any monitor on demand via `POST /run/:monitorId`
@@ -147,10 +147,13 @@ POST /monitors/:id/alert
 {
   "recipients": [
     { "channel": "sms", "address": "+15555550100" },
-    { "channel": "email", "address": "oncall@example.com" }
+    { "channel": "email", "address": "oncall@example.com" },
+    { "channel": "ntfy", "address": "adam-code-alerts" }
   ]
 }
 ```
+
+The `ntfy` address can be a bare topic name (`adam-code-alerts` → `https://ntfy.sh/adam-code-alerts`), `ntfy.sh/<topic>`, or a full URL to a self-hosted ntfy server. Failing checks send with `Priority: high` + `Tags: warning`; recoveries send with `Priority: default` + `Tags: white_check_mark`.
 
 ---
 
