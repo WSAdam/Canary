@@ -1106,10 +1106,12 @@ async function prefillCheck(monitorId) {
     console.log('✅ prefillCheck: got check', JSON.stringify(d));
     document.getElementById('w-url').value = d.url || '';
     document.getElementById('w-method').value = d.method || 'GET';
+    document.getElementById('w-body').value = d.body || '';
     document.getElementById('w-expr').value = d.expression || '';
     document.getElementById('w-op').value = d.comparatorOp || 'gt';
     document.getElementById('w-threshold').value = d.threshold ?? '';
     document.getElementById('w-recover').checked = !!d.notifyOnRecover;
+    updateBodyVisibility();
     updateComparatorHint();
     if (d.headers) {
       Object.entries(d.headers).forEach(([k, v]) => addHeaderRow(k, v));
