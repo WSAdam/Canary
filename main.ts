@@ -371,6 +371,7 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
       <h1>Canary</h1>
     </div>
     <div class="dash-actions">
+      <button class="btn btn-ghost btn-sm" onclick="showView('reports')">Reports</button>
       <button class="btn btn-ghost btn-sm" onclick="openInviteModal()">+ Invite member</button>
       <button class="btn btn-ghost btn-sm" onclick="doLogout()">Sign out</button>
     </div>
@@ -413,6 +414,27 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
   </div>
   <div class="error-msg" id="sec-err"></div>
   <div id="d-secret-list"></div>
+</div>
+</div>
+
+<!-- ============================================================ REPORTS ============================================================ -->
+<div id="view-reports" style="display:none">
+<div class="wide">
+  <div class="dash-header">
+    <div class="dash-title">
+      <button class="wizard-back" onclick="showView('dashboard')" title="Back to dashboard">&#8592;</button>
+      <h1>Reports</h1>
+    </div>
+    <div class="dash-actions" id="rep-window">
+      <button class="btn btn-sm btn-primary" id="rep-win-24h" onclick="setReportWindow('24h')">24h</button>
+      <button class="btn btn-sm btn-ghost" id="rep-win-7d" onclick="setReportWindow('7d')">7d</button>
+      <button class="btn btn-sm btn-ghost" id="rep-win-30d" onclick="setReportWindow('30d')">30d</button>
+    </div>
+  </div>
+  <p style="font-size:12px;color:#666;margin:-4px 0 16px">Recent fired checks for each configured monitor, newest first.</p>
+  <div id="reports-list">
+    <div class="empty-state"><div style="font-size:32px">📊</div><p>Loading…</p></div>
+  </div>
 </div>
 </div>
 
@@ -801,6 +823,7 @@ const S = {
   wizardMonitorId: null,
   wizardMode: 'create', // 'create' | 'edit-check' | 'edit-alert'
   schedMode: 'simple',
+  reportWindow: '24h', // '24h' | '7d' | '30d'
 };
 
 // ─── API ─────────────────────────────────────────────────────────────────────
@@ -839,13 +862,14 @@ async function api(method, path, body) {
 
 // ─── View router ─────────────────────────────────────────────────────────────
 function showView(name) {
-  ['login','invite-accept','dashboard','wizard'].forEach(v => {
+  ['login','invite-accept','dashboard','wizard','reports'].forEach(v => {
     const el = document.getElementById('view-' + v);
     if (el) el.style.display = 'none';
   });
   const el = document.getElementById('view-' + name);
   if (el) el.style.display = name === 'login' || name === 'invite-accept' ? 'flex' : 'block';
   if (name === 'dashboard') loadDashboard();
+  if (name === 'reports') loadReports();
 }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -1003,6 +1027,80 @@ function renderMonitorList(monitors) {
       </div>
     </div>
   \`).join('');
+}
+
+// ─── Reports ───────────────────────────────────────────────────────────────────
+function setReportWindow(w) {
+  S.reportWindow = w;
+  ['24h','7d','30d'].forEach(x => {
+    const b = document.getElementById('rep-win-' + x);
+    if (b) b.className = 'btn btn-sm ' + (x === w ? 'btn-primary' : 'btn-ghost');
+  });
+  loadReports();
+}
+
+async function loadReports() {
+  const el = document.getElementById('reports-list');
+  if (!el) return;
+  el.innerHTML = '<div class="empty-state"><div style="font-size:32px">📊</div><p>Loading…</p></div>';
+  try {
+    const data = await api('GET', '/api/reports?window=' + encodeURIComponent(S.reportWindow));
+    renderReports(data.reports || []);
+  } catch (e) {
+    console.error('❌ loadReports failed:', e.message);
+    el.innerHTML = '<div class="empty-state"><div style="font-size:32px">⚠️</div><p>Could not load reports: ' + esc(e.message) + '</p></div>';
+  }
+}
+
+function renderReports(reports) {
+  const el = document.getElementById('reports-list');
+  if (!reports.length) {
+    el.innerHTML = '<div class="empty-state"><div style="font-size:32px">🐦</div><p>No monitors yet. Add one to start collecting check history.</p></div>';
+    return;
+  }
+  el.innerHTML = reports.map(rep => {
+    const total = rep.total || 0;
+    const rate = total ? Math.round((rep.passed / total) * 100) : 0;
+    const summary = total
+      ? '<span style="color:var(--green)">' + rep.passed + '/' + total + ' passed</span>'
+        + (rep.failed ? ' · <span style="color:var(--red)">' + rep.failed + ' failed</span>' : '')
+        + ' · ' + rate + '%'
+      : '<span style="color:var(--m)">No runs in this window</span>';
+    const ctx = rep.expression
+      ? '<div style="font-size:12px;color:var(--m);font-family:ui-monospace,Menlo,monospace;margin-top:4px">' + esc(rep.expression) + ' ' + esc(rep.comparatorOp) + ' ' + esc(rep.threshold) + '</div>'
+      : '<div style="font-size:12px;color:var(--m);margin-top:4px">No check configured</div>';
+
+    const rows = (rep.runs || []).map(r => {
+      const badge = r.passed
+        ? '<span style="color:var(--green);font-weight:600">● PASS</span>'
+        : '<span style="color:var(--red);font-weight:600">● FAIL</span>';
+      const when = new Date(r.timestamp).toLocaleString();
+      let detail = '<span style="color:var(--m)">observed</span> ' + esc(r.observed);
+      if (r.error) detail += ' · <span style="color:var(--red)">' + esc(r.error) + '</span>';
+      if (r.captures && Object.keys(r.captures).length) {
+        const caps = Object.entries(r.captures).map(kv => esc(kv[0]) + '=' + esc(kv[1])).join(', ');
+        detail += ' · <span style="color:var(--m)">' + caps + '</span>';
+      }
+      return '<div style="display:flex;gap:12px;align-items:baseline;padding:6px 0;border-top:1px solid #1d1d1d;font-size:13px">'
+        + '<span style="white-space:nowrap;min-width:160px;color:var(--m)">' + esc(when) + '</span>'
+        + '<span style="white-space:nowrap;min-width:64px">' + badge + '</span>'
+        + '<span style="flex:1">' + detail + '</span>'
+        + '</div>';
+    }).join('');
+
+    const body = total
+      ? '<div style="max-height:320px;overflow:auto;margin-top:10px">' + rows + '</div>'
+        + (rep.capped ? '<div style="font-size:11px;color:var(--m);margin-top:8px">Showing the most recent 500 runs in this window.</div>' : '')
+      : '';
+
+    return '<div class="card" style="margin-bottom:16px">'
+      + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">'
+      + '<div><h3 style="margin:0;font-size:15px">' + esc(rep.name) + '</h3>' + ctx + '</div>'
+      + '<div style="font-size:13px;text-align:right">' + summary + '</div>'
+      + '</div>'
+      + body
+      + '</div>';
+  }).join('');
 }
 
 async function runNow(monitorId, btn) {
@@ -1210,7 +1308,11 @@ async function wizardStep3() {
     return;
   }
   if (smsAddr) {
-    const digits = smsAddr.replace(/\D/g, '');
+    // NB: this runs inside the INDEX_HTML template literal, so a "\d"/"\D" escape
+    // would be silently stripped to "d"/"D" at runtime. Use [^0-9] (no backslash)
+    // to strip non-digits reliably — otherwise formatted numbers (+, spaces,
+    // dashes) fail the length check and a saved alert can't be re-saved.
+    const digits = smsAddr.replace(/[^0-9]/g, '');
     if (digits.length < 10 || digits.length > 11) {
       showErr('Phone number must be 10 or 11 digits (e.g. 18432222986).');
       return;
@@ -1988,6 +2090,72 @@ Deno.serve(async (req: Request): Promise<Response> => {
           ADMIN_USERNAME: Deno.env.get("ADMIN_USERNAME") ?? null,
         },
       });
+    }
+
+    // Reports — recent fired checks grouped by configured check (bounded query).
+    // KV timestamps are ISO-8601 UTC, so they sort lexicographically = chronologically.
+    if (method === "GET" && pathname === "/api/reports") {
+      const WINDOWS: Record<string, number> = { "24h": 864e5, "7d": 6048e5, "30d": 2592e6 };
+      const windowKey = url.searchParams.get("window") ?? "24h";
+      if (!(windowKey in WINDOWS)) {
+        throw new CanaryError("validation-error", `Unknown window "${windowKey}" — use 24h, 7d, or 30d`, 400);
+      }
+      const PER_CHECK_CAP = 500; // safety cap so a per-minute monitor can't return thousands of rows
+      const cutoff = new Date(Date.now() - WINDOWS[windowKey]).toISOString();
+      console.log(`🔍 GET /api/reports window=${windowKey} cutoff=${cutoff}`);
+
+      const monitorsResult = await listMonitors();
+      const reports: Array<Record<string, unknown>> = [];
+
+      for (const m of monitorsResult.monitors) {
+        // Check config supplies the observed-vs-threshold context; may not exist yet.
+        let check: CheckDto | null = null;
+        try {
+          check = await getCheck({ monitorId: m.monitorId });
+        } catch {
+          check = null;
+        }
+
+        const runs: Array<Record<string, unknown>> = [];
+        let passed = 0;
+        const iter = kv.list<RunResultDto>(
+          { prefix: ["run", m.monitorId] },
+          { reverse: true, limit: PER_CHECK_CAP },
+        );
+        for await (const entry of iter) {
+          const r = entry.value;
+          if (r.timestamp < cutoff) break; // reached the window edge — older runs follow
+          if (r.passed) passed++;
+          runs.push({
+            timestamp: r.timestamp,
+            passed: r.passed,
+            observed: r.observed,
+            error: r.error,
+            captures: r.captures,
+          });
+        }
+        // If we filled the cap and the oldest kept run is still inside the window,
+        // there may be more runs we didn't read.
+        const capped = runs.length === PER_CHECK_CAP &&
+          (runs[runs.length - 1].timestamp as string) >= cutoff;
+
+        reports.push({
+          monitorId: m.monitorId,
+          name: m.name,
+          description: m.description,
+          expression: check?.expression ?? null,
+          comparatorOp: check?.comparatorOp ?? null,
+          threshold: check?.threshold ?? null,
+          total: runs.length,
+          passed,
+          failed: runs.length - passed,
+          capped,
+          runs,
+        });
+      }
+
+      console.log(`✅ GET /api/reports → 200 window=${windowKey} checks=${reports.length}`);
+      return json({ window: windowKey, generatedAt: new Date().toISOString(), reports });
     }
 
     // Webhook key management — admin-only, scoped by monitorId
