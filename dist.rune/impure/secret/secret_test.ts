@@ -1,55 +1,32 @@
+import { assertEquals, assertRejects } from "jsr:@std/assert";
 import { Secret } from "./secret.ts";
-import { assertEquals, assertRejects } from "@std/assert";
+import { CanaryError } from "../../dto/_shared.ts";
 
-Deno.test("Secret upsert happy path", async () => {
-  // const instance = new Secret(/* TODO: constructor args */);
-  // const result = await instance.upsert(/* TODO: provide test inputs */);
-  // assertEquals(result, expectedValue);
-  throw new Error("Test not implemented");
+// Exercises the real (local) Deno KV store. Keys are unique per run so repeated
+// runs don't collide.
+Deno.test("Secret - upsert, resolve, list, delete roundtrip", async () => {
+  const secret = new Secret();
+  const key = "TEST_" + crypto.randomUUID().replace(/-/g, "_");
+
+  await secret.upsert({ secretKey: key, secretValue: "s3cr3t-value" });
+
+  // resolve returns the raw value (server-side only)
+  assertEquals(await secret.resolve(key), "s3cr3t-value");
+
+  // list returns key names only (never values)
+  const listed = await secret.list();
+  const entry = listed.secrets.find((s) => s.secretKey === key);
+  assertEquals(entry, { secretKey: key });
+
+  await secret.delete(key);
+  await assertRejects(() => secret.resolve(key), CanaryError, "not found");
 });
 
-Deno.test("Secret upsert throws on timed-out", async () => {
-  // const instance = new Secret(/* TODO: constructor args */);
-  await assertRejects(() => instance.upsert(/* TODO: inputs that trigger timed-out */), Error);
-});
-
-Deno.test("Secret list happy path", async () => {
-  // const instance = new Secret(/* TODO: constructor args */);
-  // const result = await instance.list(/* TODO: provide test inputs */);
-  // assertEquals(result, expectedValue);
-  throw new Error("Test not implemented");
-});
-
-Deno.test("Secret list throws on timed-out", async () => {
-  // const instance = new Secret(/* TODO: constructor args */);
-  await assertRejects(() => instance.list(/* TODO: inputs that trigger timed-out */), Error);
-});
-
-Deno.test("Secret get happy path", async () => {
-  // const instance = new Secret(/* TODO: constructor args */);
-  // const result = await instance.get(/* TODO: provide test inputs */);
-  // assertEquals(result, expectedValue);
-  throw new Error("Test not implemented");
-});
-
-Deno.test("Secret get throws on not-found", async () => {
-  // const instance = new Secret(/* TODO: constructor args */);
-  await assertRejects(() => instance.get(/* TODO: inputs that trigger not-found */), Error);
-});
-
-Deno.test("Secret get throws on timed-out", async () => {
-  // const instance = new Secret(/* TODO: constructor args */);
-  await assertRejects(() => instance.get(/* TODO: inputs that trigger timed-out */), Error);
-});
-
-Deno.test("Secret delete happy path", async () => {
-  // const instance = new Secret(/* TODO: constructor args */);
-  // const result = await instance.delete(/* TODO: provide test inputs */);
-  // assertEquals(result, expectedValue);
-  throw new Error("Test not implemented");
-});
-
-Deno.test("Secret delete throws on timed-out", async () => {
-  // const instance = new Secret(/* TODO: constructor args */);
-  await assertRejects(() => instance.delete(/* TODO: inputs that trigger timed-out */), Error);
+Deno.test("Secret.resolve - throws not-found for unknown key", async () => {
+  const secret = new Secret();
+  await assertRejects(
+    () => secret.resolve("DEFINITELY_MISSING_" + crypto.randomUUID().replace(/-/g, "")),
+    CanaryError,
+    "not found",
+  );
 });

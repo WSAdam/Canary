@@ -1,5 +1,5 @@
 import { kv } from "../_kv.ts";
-import { CanaryError } from "../../dto/_shared.ts";
+import { CanaryError, constantTimeEqual } from "../../dto/_shared.ts";
 
 interface UserRecord {
   username: string;
@@ -13,24 +13,53 @@ const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 // HMAC-signed stateless tokens — no KV read needed for validation
 // ---------------------------------------------------------------------------
 
-async function signingKey(): Promise<CryptoKey> {
-  // Derive a secret from existing env vars so no new config is required.
-  const raw = [
-    Deno.env.get("POSTMARK_SERVER_TOKEN"),
-    Deno.env.get("ADMIN_PASSWORD"),
-    "canary-v1",
-  ].filter(Boolean).join("|");
+const SIGNING_KEY_KV = ["config", "session-signing-key"] as const;
+let cachedSigningKey: Promise<CryptoKey> | null = null;
+
+function importHmacKey(raw: Uint8Array): Promise<CryptoKey> {
   return crypto.subtle.importKey(
     "raw",
-    new TextEncoder().encode(raw),
+    raw,
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign", "verify"],
   );
 }
 
-function b64u(buf: ArrayBuffer): string {
-  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+// The session signing key is a random 256-bit secret persisted in Deno KV. It
+// is generated once on first use (no env var required) and never falls back to
+// a predictable constant. Cached per-isolate so it isn't re-read every request.
+async function loadOrCreateSigningKey(): Promise<CryptoKey> {
+  const existing = await kv.get<Uint8Array>(SIGNING_KEY_KV, { consistency: "strong" });
+  if (existing.value) {
+    console.log("🔑 signingKey: loaded existing key from KV");
+    return importHmacKey(existing.value);
+  }
+  const fresh = crypto.getRandomValues(new Uint8Array(32));
+  const res = await kv.atomic()
+    .check({ key: SIGNING_KEY_KV, versionstamp: null })
+    .set(SIGNING_KEY_KV, fresh)
+    .commit();
+  if (res.ok) {
+    console.log("🔑 signingKey: generated and persisted new key");
+    return importHmacKey(fresh);
+  }
+  // Lost the first-boot race with another isolate — adopt the winning key.
+  const winner = await kv.get<Uint8Array>(SIGNING_KEY_KV, { consistency: "strong" });
+  if (!winner.value) {
+    throw new CanaryError("internal-error", "Failed to establish session signing key", 500);
+  }
+  console.log("🔑 signingKey: adopted key written by another instance");
+  return importHmacKey(winner.value);
+}
+
+function signingKey(): Promise<CryptoKey> {
+  return (cachedSigningKey ??= loadOrCreateSigningKey());
+}
+
+function b64u(buf: ArrayBuffer | Uint8Array): string {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  return btoa(String.fromCharCode(...bytes))
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
 }
 
@@ -87,7 +116,7 @@ async function verifyPassword(password: string, hash: string, salt: string): Pro
   const saltBytes = Uint8Array.from(atob(salt), (c) => c.charCodeAt(0));
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
   const buf = await crypto.subtle.deriveBits({ name: "PBKDF2", salt: saltBytes, iterations: 100000, hash: "SHA-256" }, key, 256);
-  return btoa(String.fromCharCode(...new Uint8Array(buf))) === hash;
+  return constantTimeEqual(btoa(String.fromCharCode(...new Uint8Array(buf))), hash);
 }
 
 // ---------------------------------------------------------------------------

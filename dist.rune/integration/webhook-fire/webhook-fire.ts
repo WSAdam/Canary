@@ -41,7 +41,6 @@ export async function webhookFire(input: WebhookFireInput): Promise<PersistAndAl
     error,
     captures,
     notifyOnRecover,
-    suppressAlertOnError: false,                      // caller is asking us to alert; error is content not a reason to skip
     source: "webhook",
     alertOverrides: (message || title) ? { message, title } : undefined,
   });

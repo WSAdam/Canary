@@ -1,20 +1,27 @@
 # Canary
 
-Lightweight HTTP monitoring and alerting built on [Deno Deploy](https://deno.com/deploy).
+Lightweight HTTP monitoring **and** push-alert hub built on [Deno Deploy](https://deno.com/deploy).
 
-Canary polls your HTTP endpoints on a cron schedule, extracts numeric values from JSON responses, and fires SMS or email alerts the moment a threshold is breached. It alerts again when it recovers.
+Canary polls your HTTP endpoints on a cron schedule, extracts numeric values from JSON responses, and fires SMS / email / [ntfy](https://ntfy.sh) alerts the moment a threshold is breached. It alerts again when it recovers. It also accepts **inbound webhooks** so other projects can push alerts through the same recipients — one alert hub for your whole stack.
 
 ---
 
 ## Features
 
-- **Flexible scheduling**: configure monitors with a human-readable schedule or a raw cron expression
+- **Web dashboard + 3-step wizard** for creating monitors, configuring checks, and managing alert recipients & message templates
+- **Two alert sources, one pipeline**: cron-driven pull *or* webhook-driven push, both using the same recipients/templates/recovery logic
+- **Flexible scheduling**: human-readable (every day at 9 AM weekdays) or raw cron expression
 - **JSON metric extraction**: dot-notation path extraction from any JSON response
 - **Threshold comparisons**: `gt`, `lt`, `gte`, `lte`, `eq`
 - **Multi-channel alerts**: SMS via Zapier webhook, email via Postmark, or push via [ntfy.sh](https://ntfy.sh); mix recipients per monitor
-- **Recovery notifications**: optional alert when a failing monitor returns to a healthy state
-- **Secret management**: store sensitive values (API keys, bearer tokens) in Deno KV and reference them in monitor headers
+- **Message templating**: `{monitor}` `{status}` `{observed}` `{timestamp}` plus user-defined captures from the response
+- **Recovery notifications**: optional alert when a failing monitor returns to healthy
+- **Stateless HMAC auth**: admin + invited users, 24-hour sessions, no per-request DB lookup
+- **Push webhooks**: per-monitor `cnry_v1_…` bearer secrets, hashed at rest, rotate/revoke from the UI
+- **Secret management**: store API keys / bearer tokens in Deno KV and reference them in monitor headers as `{{KEY}}`
 - **Manual trigger**: fire any monitor on demand via `POST /run/:monitorId`
+- **Diagnostic snapshot**: `GET /api/debug` returns the full KV state — what monitors/checks/alerts/webhooks exist, last cron tick, env presence
+- **Test-fire endpoint**: `POST /test-alert` sends one real SMS/email/ntfy push to verify creds without setting up a monitor
 - **Zero dependencies**: plain Deno with no third-party frameworks
 
 ---
@@ -55,6 +62,11 @@ cd canary
 Create a `.env` file in the project root:
 
 ```env
+# Admin login (seeded on first boot — required to access the dashboard)
+ADMIN_USERNAME=you@example.com
+ADMIN_PASSWORD=changeme
+
+# Alert delivery (each is only required if you actually use that channel)
 ZAPIER_SMS_URL=https://hooks.zapier.com/hooks/catch/...
 POSTMARK_SERVER_TOKEN=your-postmark-server-token
 POSTMARK_FROM_EMAIL=alerts@yourdomain.com
@@ -76,9 +88,32 @@ deno task start
 deno task test
 ```
 
+### 4. Open the dashboard
+
+Visit [http://localhost:8000](http://localhost:8000) and log in with the `ADMIN_USERNAME` / `ADMIN_PASSWORD` from your `.env`. The dashboard lets you create monitors, configure checks/alerts, invite teammates, manage webhook keys, and fire one-off test alerts — everything below is also doable via the API.
+
 ---
 
 ## API Reference
+
+All routes return JSON. Every admin route requires `Authorization: Bearer <session-token>` (obtained from `POST /auth/login`). The webhook-fire route uses its own per-monitor bearer secret instead.
+
+### Auth & Users
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/auth/login` | `{username, password}` → `{token}`. Sessions are stateless HMAC tokens, 24-hour TTL. |
+| `POST` | `/auth/logout` | No-op (client clears the token). |
+| `POST` | `/users` | Create a user (admin). |
+| `GET`  | `/users` | List usernames (admin). |
+| `DELETE` | `/users/:username` | Delete a user (admin). |
+| `POST` | `/invites` | `{emails: [...]}` — sends invite links via Postmark; each recipient sets their own password on accept. |
+| `GET`  | `/invite/info?token=...` | Public — returns the invite's email so the accept page can show who it's for. |
+| `POST` | `/invite/accept` | Public — `{token, password}` consumes the invite, creates the user, returns a session token. |
+
+`ADMIN_USERNAME` + `ADMIN_PASSWORD` are seeded into the user table on first boot (idempotent).
+
+---
 
 ### Monitors
 
@@ -190,24 +225,33 @@ POST /schedule/build
 
 ### Secrets
 
-Store sensitive strings in Deno KV and reference them in monitor headers.
+Store sensitive strings in Deno KV and reference them anywhere in a monitor's
+check — URL, header values, or request body — as `{{KEY}}`. Values are injected
+server-side just before the request is sent; they are never returned by the API,
+written to run results, or printed to logs (logs strip the query string and any
+resolved value is redacted from error text). Keys may contain letters, numbers,
+and underscores. Manage them in the **Secrets** panel on the dashboard.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/secrets` | Set a secret |
-| `GET` | `/secrets` | List secret keys |
+| `POST` | `/secrets` | Set a secret (upsert) |
+| `GET` | `/secrets` | List secret **keys** (never values) |
 | `DELETE` | `/secrets/:key` | Delete a secret |
 
 ```json
 POST /secrets
-{ "key": "MY_API_KEY", "value": "sk-..." }
+{ "secretKey": "MY_API_KEY", "secretValue": "sk-..." }
 ```
 
-Use a secret in a monitor's headers:
+Reference a secret in the check's URL, headers, or body:
 
 ```json
 "headers": { "Authorization": "Bearer {{MY_API_KEY}}" }
 ```
+
+If a check references a secret that doesn't exist, the run fails with a clear
+`secret-not-found` error (naming the key, never a value) — which, like any
+failure, fires an alert.
 
 ---
 
@@ -218,6 +262,30 @@ Fire a monitor immediately without waiting for its cron schedule:
 ```bash
 POST /run/:monitorId
 ```
+
+---
+
+### Diagnostics
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/status` | Public — `{ status, startedAt, lastCronTick, monitors: count }`. |
+| `GET` | `/api/debug` | Admin — full KV snapshot: monitors, checks (with `matchesNow`), alerts (with channel list + custom-template flags), latest run per monitor, webhooks (existence + fingerprint), env-var presence booleans. The first place to look when "alerts aren't arriving." |
+
+---
+
+### Test alert
+
+Fire one real SMS / email / ntfy push without setting up a monitor — useful for confirming the underlying provider credentials work end-to-end.
+
+```bash
+POST /test-alert
+{ "channel": "email", "address": "you@example.com" }
+{ "channel": "sms",   "address": "15555550100" }
+{ "channel": "ntfy",  "address": "adam-code-alerts" }
+```
+
+Optional fields per channel: `emailSubject`, `emailMessage`, `smsMessage`, `ntfyTitle`, `ntfyMessage` (same `{var}` templating as the saved monitor alerts).
 
 ---
 
@@ -329,9 +397,9 @@ In Deno Deploy logs, you should see exactly one `🔍 cron tick:` per minute fol
 2. Create a new project at [dash.deno.com](https://dash.deno.com)
 3. Set the entrypoint to `main.ts`
 4. Add environment variables in the project settings:
-   - `ZAPIER_SMS_URL`
-   - `POSTMARK_SERVER_TOKEN`
-   - `POSTMARK_FROM_EMAIL`
+   - `ADMIN_USERNAME` + `ADMIN_PASSWORD` (required — seeds the admin user on first boot)
+   - `POSTMARK_SERVER_TOKEN` + `POSTMARK_FROM_EMAIL` (for email alerts and invite emails)
+   - `ZAPIER_SMS_URL` (for SMS alerts)
 
 Deno Deploy provides Deno KV out of the box. No additional database setup required.
 
@@ -341,9 +409,19 @@ Deno Deploy provides Deno KV out of the box. No additional database setup requir
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `ZAPIER_SMS_URL` | For SMS alerts | Zapier webhook URL |
-| `POSTMARK_SERVER_TOKEN` | For email alerts | Postmark server API token |
-| `POSTMARK_FROM_EMAIL` | For email alerts | Verified sender address |
+| `ADMIN_USERNAME` | Yes | Seeded into the user table on first boot; used to log into the dashboard. |
+| `ADMIN_PASSWORD` | Yes | Seeded with the admin user (dashboard login). |
+| `POSTMARK_SERVER_TOKEN` | For email alerts + invites | Postmark server API token. |
+| `POSTMARK_FROM_EMAIL` | For email alerts + invites | Verified sender address. |
+| `ZAPIER_SMS_URL` | For SMS alerts | Zapier webhook URL that forwards to Textmagic (or your SMS provider). |
+| `FETCH_TIMEOUT_MS` | No (default `10000`) | Per-check request timeout in milliseconds. A check exceeding it fails with a `timed-out` error (which alerts). |
+
+ntfy doesn't need any env vars — the topic is configured per-recipient on each monitor.
+
+**Session signing key:** the HMAC key that signs login sessions is generated
+automatically on first boot and stored in Deno KV (`["config", "session-signing-key"]`).
+No env var is required, and there is no predictable fallback. Deleting that KV
+entry rotates the key and invalidates every live session (a clean "log everyone out").
 
 ---
 

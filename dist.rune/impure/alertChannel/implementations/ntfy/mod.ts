@@ -1,10 +1,21 @@
-import { BaseAlertChannel } from "../../shared/mod.ts";
+import { applyVars, BaseAlertChannel, buildVars } from "../../shared/mod.ts";
 import type { RunResultDto } from "../../../../dto/run-result-dto.ts";
 import type { AlertDto } from "../../../../dto/alert-dto.ts";
 import { CanaryError } from "../../../../dto/_shared.ts";
 
-function applyVars(template: string, vars: Record<string, string>): string {
-  return Object.entries(vars).reduce((s, [k, v]) => s.replace(new RegExp(`\\{${k}\\}`, "g"), v), template);
+/**
+ * ntfy reads the notification title from an HTTP header. Header values cannot
+ * contain CR/LF or other control characters (fetch throws "Invalid header
+ * value"), and a captured/user title may contain newlines — so drop control
+ * chars (C0 range + DEL) to keep the alert from being dropped.
+ */
+function sanitizeHeaderValue(value: string): string {
+  let out = "";
+  for (const ch of value) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code >= 0x20 && code !== 0x7f) out += ch;
+  }
+  return out.trim();
 }
 
 function normalizeNtfyUrl(address: string): string {
@@ -23,10 +34,10 @@ export class Ntfy extends BaseAlertChannel {
     const url = normalizeNtfyUrl(this.address);
     const status = run.passed ? "RECOVERED" : "FAILED";
     const monitorLabel = run.monitorName || run.monitorId;
-    const vars = { status, monitor: monitorLabel, observed: String(run.observed), timestamp: run.timestamp, ...run.captures };
+    const vars = buildVars(run);
 
     const defaultTitle = `Canary: ${monitorLabel} ${status}`;
-    const title = alert.ntfyTitle ? applyVars(alert.ntfyTitle, vars) : defaultTitle;
+    const title = sanitizeHeaderValue(alert.ntfyTitle ? applyVars(alert.ntfyTitle, vars) : defaultTitle);
 
     const defaultBody = [
       `${status}`,

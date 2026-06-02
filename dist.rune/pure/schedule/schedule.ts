@@ -35,6 +35,25 @@ function parseTime(timeOfDay: string): { hour: number; minute: number } {
   return { hour, minute };
 }
 
+// Reject out-of-range field values (e.g. weekday 8, month 13, minute 60) and
+// zero steps (*/0) that the structural regex alone would let through and that
+// would otherwise silently never fire.
+function validateFieldRange(field: string, lo: number, hi: number, cron: string): void {
+  for (const token of field.split(",")) {
+    const [rangePart, stepPart] = token.split("/");
+    if (stepPart !== undefined && !(parseInt(stepPart, 10) >= 1)) {
+      throw new CanaryError("invalid-cron", `Cron step must be >= 1 in "${cron}"`, 400);
+    }
+    if (rangePart === "*") continue;
+    for (const n of rangePart.split("-")) {
+      const v = parseInt(n, 10);
+      if (v < lo || v > hi) {
+        throw new CanaryError("invalid-cron", `Cron value ${v} out of range ${lo}-${hi} in "${cron}"`, 400);
+      }
+    }
+  }
+}
+
 function parseDays(daysOfWeek: string): string {
   const lower = daysOfWeek.toLowerCase().trim();
   if (DAY_MAP[lower] !== undefined) return DAY_MAP[lower];
@@ -61,11 +80,14 @@ export class Schedule {
       );
     }
     const fieldPattern = /^(\*|\d+(-\d+)?(\/\d+)?|\*\/\d+)(,(\*|\d+(-\d+)?(\/\d+)?|\*\/\d+))*$/;
-    for (const part of parts) {
+    // minute, hour, day-of-month, month, day-of-week (7 = Sunday, like 0)
+    const ranges: [number, number][] = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 7]];
+    parts.forEach((part, i) => {
       if (!fieldPattern.test(part)) {
         throw new CanaryError("invalid-cron", `Invalid cron field: "${part}" in "${dto.cron}"`, 400);
       }
-    }
+      validateFieldRange(part, ranges[i][0], ranges[i][1], dto.cron);
+    });
   }
 
   static fromInput(dto: ScheduleInputDto): Schedule {
@@ -75,13 +97,13 @@ export class Schedule {
       return new Schedule("0 * * * *");
     }
 
-    if (frequency === "once" || frequency === "daily") {
+    if (frequency === "daily") {
       const { hour, minute } = parseTime(timeOfDay);
       const days = parseDays(daysOfWeek);
       return new Schedule(`${minute} ${hour} * * ${days}`);
     }
 
-    throw new CanaryError("invalid-frequency", `Unknown frequency: "${frequency}" — expected once, hourly, or daily`, 400);
+    throw new CanaryError("invalid-frequency", `Unknown frequency: "${frequency}" — expected hourly or daily`, 400);
   }
 
   toCron(): ScheduleDto {

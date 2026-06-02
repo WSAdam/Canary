@@ -25,7 +25,10 @@ export class RunResult {
   }
 
   async save(dto: RunResultDto): Promise<void> {
-    await kv.set(["run", dto.monitorId, dto.timestamp], dto);
+    // runId is the final key segment so two runs in the same millisecond don't
+    // overwrite each other; timestamp stays primary so reverse-order still
+    // returns the newest run.
+    await kv.set(["run", dto.monitorId, dto.timestamp, dto.runId], dto);
   }
 
   static async getLatest(monitorId: string): Promise<RunResultDto | null> {

@@ -26,6 +26,19 @@ export class Secret {
     return { secretKey };
   }
 
+  /**
+   * Resolve a secret to its raw value for server-side interpolation into an
+   * outbound check. Never expose this over the HTTP API — only `get`/`list`
+   * (which return key names only) are safe to surface.
+   */
+  async resolve(secretKey: string): Promise<string> {
+    const result = await kv.get<string>(["secret", secretKey], { consistency: "strong" });
+    if (result.value === null) {
+      throw new CanaryError("not-found", `Secret "${secretKey}" not found`, 404);
+    }
+    return result.value;
+  }
+
   async delete(secretKey: string): Promise<void> {
     await kv.delete(["secret", secretKey]);
   }

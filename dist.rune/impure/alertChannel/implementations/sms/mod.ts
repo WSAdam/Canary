@@ -1,11 +1,7 @@
-import { BaseAlertChannel } from "../../shared/mod.ts";
+import { applyVars, BaseAlertChannel, buildVars } from "../../shared/mod.ts";
 import type { RunResultDto } from "../../../../dto/run-result-dto.ts";
 import type { AlertDto } from "../../../../dto/alert-dto.ts";
 import { CanaryError } from "../../../../dto/_shared.ts";
-
-function applyVars(template: string, vars: Record<string, string>): string {
-  return Object.entries(vars).reduce((s, [k, v]) => s.replace(new RegExp(`\\{${k}\\}`, "g"), v), template);
-}
 
 export class Sms extends BaseAlertChannel {
   constructor(private readonly phoneNumber: string) {
@@ -18,10 +14,10 @@ export class Sms extends BaseAlertChannel {
 
     const status = run.passed ? "RECOVERED" : "FAILED";
     const monitorLabel = run.monitorName || run.monitorId;
-    const defaultMessage = `Canary ${status}: ${monitorLabel} — observed: ${run.observed} at ${run.timestamp}`;
-    const message = alert.smsMessage
-      ? applyVars(alert.smsMessage, { status, monitor: monitorLabel, observed: String(run.observed), timestamp: run.timestamp, ...run.captures })
-      : defaultMessage;
+    const vars = buildVars(run);
+    const detail = run.error ? `error: ${run.error}` : `observed: ${run.observed}`;
+    const defaultMessage = `Canary ${status}: ${monitorLabel} — ${detail} at ${run.timestamp}`;
+    const message = alert.smsMessage ? applyVars(alert.smsMessage, vars) : defaultMessage;
 
     const number = this.phoneNumber.replace(/^\+/, "");
     console.log(`📱 sms.send: to=${number}`);

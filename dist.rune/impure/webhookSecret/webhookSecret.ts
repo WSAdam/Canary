@@ -1,5 +1,5 @@
 import { kv } from "../_kv.ts";
-import { CanaryError } from "../../dto/_shared.ts";
+import { CanaryError, constantTimeEqual } from "../../dto/_shared.ts";
 import type { WebhookSecretDto } from "../../dto/webhook-secret-dto.ts";
 
 const PREFIX = "cnry_v1_";
@@ -48,7 +48,7 @@ export class WebhookSecret {
       throw new CanaryError("unauthorized", "Invalid webhook key", 401);
     }
     const incoming = await sha256Hex(plaintext);
-    if (incoming !== stored.value.hash) {
+    if (!constantTimeEqual(incoming, stored.value.hash)) {
       console.log(`❌ webhookSecret.verify: key mismatch for monitorId=${monitorId}`);
       throw new CanaryError("unauthorized", "Invalid webhook key", 401);
     }

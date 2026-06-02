@@ -12,12 +12,15 @@ export class AlertChannel {
   ) {}
 
   static fromAlert(dto: AlertDto): AlertChannel {
-    const channels = dto.recipients.map((r) => {
-      if (r.channel === "sms") return new Sms(r.address);
-      if (r.channel === "email") return new Email(r.address);
-      if (r.channel === "ntfy") return new Ntfy(r.address);
-      throw new Error(`Unknown channel: "${r.channel}" — expected "sms", "email", or "ntfy"`);
-    });
+    const channels: BaseAlertChannel[] = [];
+    for (const r of dto.recipients) {
+      if (r.channel === "sms") channels.push(new Sms(r.address));
+      else if (r.channel === "email") channels.push(new Email(r.address));
+      else if (r.channel === "ntfy") channels.push(new Ntfy(r.address));
+      // Skip an unknown channel rather than throwing — a single bad recipient
+      // must not block the valid ones from being notified.
+      else console.log(`⚠️ AlertChannel.fromAlert: skipping unknown channel "${r.channel}"`);
+    }
     return new AlertChannel(channels, dto);
   }
 

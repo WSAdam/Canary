@@ -35,6 +35,42 @@ Deno.test("Schedule.validate - throws on invalid field", () => {
   );
 });
 
+Deno.test("Schedule.validate - weekday 7 (Sunday) is accepted", () => {
+  Schedule.validate({ ...baseCheck, cron: "0 9 * * 7" });
+});
+
+Deno.test("Schedule.validate - throws on out-of-range weekday 8", () => {
+  assertThrows(
+    () => Schedule.validate({ ...baseCheck, cron: "0 9 * * 8" }),
+    Error,
+    "out of range",
+  );
+});
+
+Deno.test("Schedule.validate - throws on out-of-range minute 60", () => {
+  assertThrows(
+    () => Schedule.validate({ ...baseCheck, cron: "60 9 * * *" }),
+    Error,
+    "out of range",
+  );
+});
+
+Deno.test("Schedule.validate - throws on out-of-range month 13", () => {
+  assertThrows(
+    () => Schedule.validate({ ...baseCheck, cron: "0 9 1 13 *" }),
+    Error,
+    "out of range",
+  );
+});
+
+Deno.test("Schedule.validate - throws on zero step */0", () => {
+  assertThrows(
+    () => Schedule.validate({ ...baseCheck, cron: "*/0 * * * *" }),
+    Error,
+    "step must be >= 1",
+  );
+});
+
 Deno.test("Schedule.fromInput - daily at 4:00 PM on weekdays", () => {
   const s = Schedule.fromInput({ timeOfDay: "4:00 PM", daysOfWeek: "weekdays", frequency: "daily" });
   assertEquals(s.toCron(), { cron: "0 16 * * 1-5" });
@@ -45,9 +81,12 @@ Deno.test("Schedule.fromInput - hourly ignores time/days", () => {
   assertEquals(s.toCron(), { cron: "0 * * * *" });
 });
 
-Deno.test("Schedule.fromInput - once at 9:30 AM daily", () => {
-  const s = Schedule.fromInput({ timeOfDay: "9:30 AM", daysOfWeek: "daily", frequency: "once" });
-  assertEquals(s.toCron(), { cron: "30 9 * * *" });
+Deno.test("Schedule.fromInput - 'once' is rejected (cron can't express one-shot)", () => {
+  const err = assertThrows(
+    () => Schedule.fromInput({ timeOfDay: "9:30 AM", daysOfWeek: "daily", frequency: "once" }),
+    CanaryError,
+  );
+  assertEquals((err as CanaryError).fault, "invalid-frequency");
 });
 
 Deno.test("Schedule.fromInput - 12:00 PM (noon)", () => {

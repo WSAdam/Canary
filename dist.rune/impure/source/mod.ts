@@ -11,7 +11,7 @@ export class Source {
     return new Source(new Http());
   }
 
-  async fetch(dto: CheckDto): Promise<ResponseDto> {
-    return await this.impl.fetch(dto);
+  async fetch(dto: CheckDto, secretValues?: string[]): Promise<ResponseDto> {
+    return await this.impl.fetch(dto, secretValues);
   }
 }

@@ -23,10 +23,11 @@ export class Monitor {
       .set(["monitor", monitorId], monitor)
       .set(["monitor_name", dto.name], monitorId)
       .commit();
-    console.log(`🔍 monitor.insert: atomic commit ok=${res.ok} versionstamp=${res.versionstamp}`);
     if (!res.ok) {
+      console.log(`🔍 monitor.insert: atomic commit failed (name taken)`);
       throw new CanaryError("duplicate-name", `Monitor with name "${dto.name}" already exists`, 409);
     }
+    console.log(`🔍 monitor.insert: atomic commit ok versionstamp=${res.versionstamp}`);
     // Immediate read-back to verify KV persistence
     const verify = await kv.get<MonitorDto>(["monitor", monitorId], { consistency: "strong" });
     if (verify.value === null) {

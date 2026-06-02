@@ -12,7 +12,6 @@ export interface PersistAndAlertInput {
   error?: string;
   captures?: Record<string, string>;
   notifyOnRecover: boolean;
-  suppressAlertOnError: boolean;
   source: "cron" | "webhook";
   alertOverrides?: { message?: string; title?: string };
 }
@@ -35,9 +34,10 @@ export async function persistRunAndAlert(input: PersistAndAlertInput): Promise<P
   console.log(`✅ ${tag}: saved runId=${runResultDto.runId}`);
 
   const isRecovery = previousRun !== null && !previousRun.passed && input.passed;
-  const errorSuppresses = input.suppressAlertOnError && !!input.error;
-  const shouldAlert = !errorSuppresses && (!input.passed || (isRecovery && input.notifyOnRecover));
-  console.log(`🔍 ${tag}: passed=${input.passed} error=${input.error ?? "none"} isRecovery=${isRecovery} notifyOnRecover=${input.notifyOnRecover} suppressAlertOnError=${input.suppressAlertOnError} shouldAlert=${shouldAlert}`);
+  // Alert on ANY failure (down endpoint, non-2xx, timeout, extraction failure,
+  // or threshold breach), and on recovery when the monitor opts in.
+  const shouldAlert = !input.passed || (isRecovery && input.notifyOnRecover);
+  console.log(`🔍 ${tag}: passed=${input.passed} error=${input.error ?? "none"} isRecovery=${isRecovery} notifyOnRecover=${input.notifyOnRecover} shouldAlert=${shouldAlert}`);
 
   if (!shouldAlert) {
     console.log(`🔍 ${tag}: no alert needed`);

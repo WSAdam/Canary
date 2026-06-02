@@ -1,7 +1,7 @@
 /** request body for POST /webhook/:monitorId/fire — all fields optional */
 export interface FireAlertDto {
-  message?: string;                    // raw override of the alert body (no var expansion)
-  title?: string;                      // raw override of the ntfy/email title
+  message?: string;                    // overrides the alert body; {var} tokens are still expanded
+  title?: string;                      // overrides the ntfy/email title; {var} tokens are still expanded
   passed?: boolean;                    // default false (treats fire as a failure)
   observed?: number;                   // default 0, surfaced as {observed}
   error?: string;                      // surfaced as {error} and included in default body

@@ -57,6 +57,7 @@ function matchField(field: string, value: number): boolean {
   if (field.includes("/")) {
     const [range, step] = field.split("/");
     const s = parseInt(step);
+    if (!(s > 0)) return false; // guard against */0 (rejected at config time, defensive here)
     if (range === "*") return value % s === 0;
     const [start, end] = range.split("-").map(Number);
     return value >= start && value <= end && (value - start) % s === 0;
@@ -70,12 +71,17 @@ function matchField(field: string, value: number): boolean {
 
 function cronMatchesNow(cron: string, now: Date): boolean {
   const [min, hour, day, month, weekday] = cron.trim().split(/\s+/);
+  // Use UTC throughout so schedule matching agrees with the UTC dedup key and
+  // Deno Deploy's UTC clock. getUTCDay() is 0 (Sun)–6 (Sat); also treat 7 as
+  // Sunday so the common "7 = Sunday" cron convention fires.
+  const dow = now.getUTCDay();
+  const weekdayMatches = matchField(weekday, dow) || (dow === 0 && matchField(weekday, 7));
   return (
-    matchField(min, now.getMinutes()) &&
-    matchField(hour, now.getHours()) &&
-    matchField(day, now.getDate()) &&
-    matchField(month, now.getMonth() + 1) &&
-    matchField(weekday, now.getDay())
+    matchField(min, now.getUTCMinutes()) &&
+    matchField(hour, now.getUTCHours()) &&
+    matchField(day, now.getUTCDate()) &&
+    matchField(month, now.getUTCMonth() + 1) &&
+    weekdayMatches
   );
 }
 
@@ -109,6 +115,7 @@ Deno.cron("canary-runner", "* * * * *", async () => {
   lastCronTick = now.toISOString();
   console.log("🔍 cron tick:", now.toISOString());
 
+  const due: string[] = [];
   for await (const entry of kv.list<CheckDto>({ prefix: ["check"] })) {
     const checkDto = entry.value;
     if (!cronMatchesNow(checkDto.cron, now)) continue;
@@ -123,11 +130,21 @@ Deno.cron("canary-runner", "* * * * *", async () => {
       console.log(`🔍 run skipped for ${checkDto.monitorId} (another isolate already ran this minute)`);
       continue;
     }
+    due.push(checkDto.monitorId);
+  }
 
-    console.log("⏰ scheduling run for monitor:", checkDto.monitorId);
-    executeRunner({ monitorId: checkDto.monitorId }).catch((e) => {
-      console.error("❌ runner failed for", checkDto.monitorId, ":", (e as Error).message);
-    });
+  // Run due monitors in bounded batches so a busy minute can't fan out into an
+  // unbounded burst of simultaneous outbound fetches.
+  console.log(`⏰ cron tick: ${due.length} monitor(s) due`);
+  const CONCURRENCY = 10;
+  for (let i = 0; i < due.length; i += CONCURRENCY) {
+    const batch = due.slice(i, i + CONCURRENCY);
+    await Promise.all(batch.map((monitorId) => {
+      console.log("⏰ scheduling run for monitor:", monitorId);
+      return executeRunner({ monitorId }).catch((e) => {
+        console.error("❌ runner failed for", monitorId, ":", (e as Error).message);
+      });
+    }));
   }
 });
 
@@ -384,6 +401,18 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
       <p>No monitors yet. Add one to get started.</p>
     </div>
   </div>
+
+  <div class="section-header" style="margin-top:36px">
+    <span class="section-title">Secrets</span>
+  </div>
+  <p style="font-size:12px;color:#666;margin:-4px 0 12px">Reference a secret in a check's URL, headers, or body as <span style="font-family:ui-monospace,Menlo,monospace;color:#FFD700">{{KEY}}</span>. Values are write-only — injected server-side at request time, never shown again or written to logs.</p>
+  <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+    <input id="sec-key" placeholder="KEY (letters, numbers, _)" style="flex:1;min-width:160px">
+    <input id="sec-val" type="password" placeholder="value" style="flex:2;min-width:200px">
+    <button class="btn btn-primary btn-sm" onclick="addSecret()">Save secret</button>
+  </div>
+  <div class="error-msg" id="sec-err"></div>
+  <div id="d-secret-list"></div>
 </div>
 </div>
 
@@ -440,6 +469,7 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
           <input type="text" id="w-url" placeholder="https://api.example.com/health">
         </div>
       </div>
+      <p style="font-size:12px;color:#666;margin:-6px 0 4px">Tip: inject a stored secret anywhere in the URL, headers, or body with <span style="font-family:ui-monospace,Menlo,monospace;color:#FFD700">{{KEY}}</span> — manage keys in the Secrets section on the dashboard.</p>
 
       <div class="form-group">
         <label>Headers <span style="color:var(--m);text-transform:none;font-weight:400">(optional)</span></label>
@@ -510,7 +540,6 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
             <select id="w-freq" onchange="updateSimpleSched()">
               <option value="daily">Daily</option>
               <option value="hourly">Hourly</option>
-              <option value="once">Once</option>
             </select>
           </div>
           <div id="sched-time-col">
@@ -545,7 +574,7 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
       </div>
     </div>
     <div class="wizard-footer">
-      <button class="btn btn-ghost" onclick="wizardGoStep(1)">Back</button>
+      <button class="btn btn-ghost" onclick="wizardBack()">Back</button>
       <button class="btn btn-primary" onclick="wizardStep2()">Next: Alert config</button>
     </div>
     <div class="error-msg" id="ws2-err"></div>
@@ -901,6 +930,58 @@ async function loadDashboard() {
     const el = document.getElementById('d-monitor-list');
     if (el) el.innerHTML = '<div class="empty-state"><div style="font-size:32px">⚠️</div><p>Could not load monitors: ' + esc(e.message) + '</p></div>';
   }
+
+  loadSecrets();
+}
+
+async function loadSecrets() {
+  const listEl = document.getElementById('d-secret-list');
+  if (!listEl) return;
+  try {
+    const data = await api('GET', '/secrets');
+    const secrets = data.secrets || [];
+    if (!secrets.length) {
+      listEl.innerHTML = '<div class="stat-sub" style="padding:6px 0">No secrets yet.</div>';
+      return;
+    }
+    // Delete buttons use data-* + delegation (keys are user-controlled).
+    listEl.innerHTML = secrets.map(s =>
+      '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border:1px solid #222;border-radius:6px;margin-bottom:6px">'
+      + '<span style="font-family:ui-monospace,Menlo,monospace;color:#FFD700">{{' + esc(s.secretKey) + '}}</span>'
+      + '<button class="btn btn-ghost btn-sm" data-del-secret="' + esc(s.secretKey) + '">Delete</button>'
+      + '</div>'
+    ).join('');
+  } catch (e) {
+    listEl.innerHTML = '<div class="error-msg" style="display:block">' + esc(e.message) + '</div>';
+  }
+}
+
+async function addSecret() {
+  const key = document.getElementById('sec-key').value.trim();
+  const val = document.getElementById('sec-val').value;
+  const err = document.getElementById('sec-err');
+  err.textContent = ''; err.style.display = 'none';
+  const fail = (m) => { err.textContent = m; err.style.display = 'block'; };
+  if (!key) return fail('Secret key is required.');
+  if (!/^[A-Za-z0-9_]+$/.test(key)) return fail('Key may only contain letters, numbers, and underscores.');
+  if (!val) return fail('Secret value is required.');
+  try {
+    await api('POST', '/secrets', { secretKey: key, secretValue: val });
+    document.getElementById('sec-key').value = '';
+    document.getElementById('sec-val').value = '';
+    loadSecrets();
+  } catch (e) { fail(e.message); }
+}
+
+async function deleteSecret(key) {
+  if (!confirm('Delete secret {{' + key + '}}? Checks referencing it will fail until it is replaced.')) return;
+  try {
+    await api('DELETE', '/secrets/' + encodeURIComponent(key));
+    loadSecrets();
+  } catch (e) {
+    const err = document.getElementById('sec-err');
+    err.textContent = e.message; err.style.display = 'block';
+  }
 }
 
 function renderMonitorList(monitors) {
@@ -995,6 +1076,7 @@ function resetWizard() {
   document.getElementById('w-ntfy-title').value = '';
   document.getElementById('w-ntfy-message').value = '';
   ws3Tab('config');
+  document.getElementById('ws3-btn').textContent = 'Save monitor';
   document.getElementById('test-result').style.display = 'none';
   document.getElementById('test-error').style.display = 'none';
   setSchedMode('simple');
@@ -1033,6 +1115,9 @@ async function wizardStep1() {
   const description = document.getElementById('w-desc').value.trim();
   if (!name) { document.getElementById('ws1-err').textContent = 'Monitor name is required.'; return; }
   clearErr();
+  // Only create a monitor in create mode — never re-POST while editing an
+  // existing one (would orphan the edit onto a brand-new monitor).
+  if (S.wizardMode !== 'create') { wizardGoStep(2); return; }
   try {
     const data = await api('POST', '/monitors', { name, description });
     S.wizardMonitorId = data.monitorId;
@@ -1275,7 +1360,10 @@ function setSchedMode(mode) {
 function buildLocalCron(freq, timeValue, days) {
   if (freq === 'hourly') return '0 * * * *';
   const [hh, mm] = timeValue.split(':').map(Number);
-  // Convert local time to UTC (cron runs in UTC on Deno Deploy)
+  // Convert local time to UTC (cron runs in UTC on Deno Deploy).
+  // NB: this uses the offset *now*, baked into a static UTC cron — so a fixed
+  // local time drifts by ±1h across a DST transition. Acceptable for a monitor;
+  // true DST-aware scheduling would require storing the zone and recomputing.
   const offsetMin = new Date().getTimezoneOffset(); // minutes west of UTC
   const totalMin = hh * 60 + mm + offsetMin;
   const utcHh = ((Math.floor(totalMin / 60)) % 24 + 24) % 24;
@@ -1570,17 +1658,20 @@ async function testRequest() {
 }
 
 function renderClickableJson(val, path) {
+  // NB: response data is attacker-influenced (we render whatever the tested
+  // endpoint returns), so every value/key is esc()'d and clicks are handled via
+  // data-* attributes + delegation rather than inline onclick (no script injection).
   if (val === null) return '<span style="color:var(--m)">null</span>';
   if (typeof val === 'boolean') return \`<span style="color:#a78bfa">\${val}</span>\`;
   if (typeof val === 'number') {
-    return \`<span class="json-leaf" style="color:var(--y);cursor:pointer" title="Click to use this value" onclick="selectJsonValue('\${path}', \${val})">\${val}</span>\`;
+    return \`<span class="json-leaf" data-path="\${esc(path)}" data-num="\${val}" style="color:var(--y);cursor:pointer" title="Click to use this value">\${val}</span>\`;
   }
   if (typeof val === 'string') {
     const display = val.length > 80 ? val.slice(0,80) + '…' : val;
     const isNum = !isNaN(Number(val)) && val !== '';
     const style = isNum ? 'color:var(--y);cursor:pointer' : 'color:#86efac';
-    const click = isNum ? \`onclick="selectJsonValue('\${path}', \${Number(val)})"\` : '';
-    return \`<span class="json-leaf" style="\${style}" \${click} title="\${isNum?'Click to use this value':''}">&quot;\${display}&quot;</span>\`;
+    const attrs = isNum ? \` data-path="\${esc(path)}" data-num="\${Number(val)}"\` : '';
+    return \`<span class="json-leaf" style="\${style}"\${attrs} title="\${isNum?'Click to use this value':''}">&quot;\${esc(display)}&quot;</span>\`;
   }
   if (Array.isArray(val)) {
     if (!val.length) return '<span style="color:var(--m)">[]</span>';
@@ -1593,11 +1684,11 @@ function renderClickableJson(val, path) {
   if (typeof val === 'object') {
     const entries = Object.entries(val).map(([k, v]) => {
       const p = path ? path+'.'+k : k;
-      return \`<div style="padding-left:16px"><span style="color:#93c5fd">&quot;\${k}&quot;</span><span style="color:var(--m)">: </span>\${renderClickableJson(v, p)}</div>\`;
+      return \`<div style="padding-left:16px"><span style="color:#93c5fd">&quot;\${esc(k)}&quot;</span><span style="color:var(--m)">: </span>\${renderClickableJson(v, p)}</div>\`;
     }).join('');
     return '<span style="color:var(--m)">{</span>' + entries + '<span style="color:var(--m)">}</span>';
   }
-  return String(val);
+  return esc(String(val));
 }
 
 function selectJsonValue(path, num) {
@@ -1644,6 +1735,19 @@ document.getElementById('li-user').addEventListener('keydown', e => { if (e.key 
     showView('login');
   }
   document.getElementById('w-method').addEventListener('change', updateBodyVisibility);
+  // Delegated click for clickable JSON leaves in the Test-request viewer
+  // (replaces inline onclick so injected response content can't run script).
+  const tri = document.getElementById('test-result-inner');
+  if (tri) tri.addEventListener('click', (e) => {
+    const leaf = e.target.closest('.json-leaf[data-path]');
+    if (leaf) selectJsonValue(leaf.dataset.path, Number(leaf.dataset.num));
+  });
+  // Delegated delete for secret rows (keys are user-controlled — no inline JS).
+  const sl = document.getElementById('d-secret-list');
+  if (sl) sl.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-del-secret]');
+    if (b) deleteSecret(b.getAttribute('data-del-secret'));
+  });
   buildTimeOptions();
 })();
 </script>
@@ -1667,6 +1771,20 @@ function html(content: string): Response {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store, no-cache, must-revalidate",
       "Pragma": "no-cache",
+      // The SPA is built on inline handlers/styles so 'unsafe-inline' is
+      // required, but we still block externally-loaded/injected scripts,
+      // framing (clickjacking) and base/object vectors as defense-in-depth.
+      "Content-Security-Policy": [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data:",
+        "connect-src 'self'",
+        "object-src 'none'",
+        "base-uri 'none'",
+        "frame-ancestors 'none'",
+      ].join("; "),
+      "X-Content-Type-Options": "nosniff",
     },
   });
 }
@@ -1678,7 +1796,8 @@ function errorResponse(e: unknown): Response {
   }
   const msg = e instanceof Error ? e.message : String(e);
   console.error("❌ errorResponse: unhandled error:", msg, (e instanceof Error ? e.stack : ""));
-  return json({ error: "internal-error", message: msg }, 500);
+  // Don't leak internal error details (KV internals, dependency text) to clients.
+  return json({ error: "internal-error", message: "An unexpected error occurred" }, 500);
 }
 
 async function parseBody<T>(req: Request): Promise<T> {
@@ -1769,7 +1888,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       if (!plaintextSecret) {
         throw new CanaryError("unauthorized", "Missing Authorization: Bearer cnry_v1_... header", 401);
       }
-      const payload = await req.json().catch(() => ({})) as FireAlertDto;
+      const payload = await parseBody<FireAlertDto>(req);
       console.log(`🪝 POST /webhook/${monitorId}/fire passed=${payload.passed ?? false} observed=${payload.observed ?? 0} hasError=${!!payload.error} hasOverride=${!!(payload.message || payload.title)}`);
       const result = await webhookFire({ monitorId, plaintextSecret, payload });
       return json({
@@ -1908,7 +2027,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     }
     if (method === "GET" && pathname === "/users") {
       const users = await listUsers();
-      console.log(`✅ GET /users → 200 count=${users.length}`);
+      console.log(`✅ GET /users → 200 count=${users.users.length}`);
       return json(users);
     }
     const userMatch = pathname.match(/^\/users\/([^/]+)$/);
