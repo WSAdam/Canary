@@ -9,6 +9,7 @@ Canary polls your HTTP endpoints on a cron schedule, extracts numeric values fro
 ## Features
 
 - **Web dashboard + 3-step wizard** for creating monitors, configuring checks, and managing alert recipients & message templates
+- **One-step integrations**: for a project that exposes the Canary health contract, `POST /integrations` (or the **+ Add integration** button) provisions monitor + secret + check + alert and runs an immediate verification check
 - **Two alert sources, one pipeline**: cron-driven pull *or* webhook-driven push, both using the same recipients/templates/recovery logic
 - **Flexible scheduling**: human-readable (every day at 9 AM weekdays) or raw cron expression
 - **JSON metric extraction**: dot-notation path extraction from any JSON response
@@ -100,6 +101,43 @@ Visit [http://localhost:8000](http://localhost:8000) and log in with the `ADMIN_
 ## API Reference
 
 All routes return JSON. Every admin route requires `Authorization: Bearer <session-token>` (obtained from `POST /auth/login`). The webhook-fire route uses its own per-monitor bearer secret instead.
+
+### Integrations (one-step setup)
+
+The fastest way to monitor another project. If the project exposes the **Canary health contract**, a single call — or the dashboard's **+ Add integration** button — stands up the monitor, secret, check, and alert, then runs an immediate verification check so you know right away it's wired up.
+
+**The health contract.** The project exposes `POST /canary/errors`, authenticated with a bearer secret, returning at least a numeric `totalErrors` for an ET calendar day (default: the previous full day):
+
+```json
+{ "ok": true, "timezone": "America/New_York", "date": "2026-06-02",
+  "window": { "since": 1780372800000, "until": 1780459200000 },
+  "totalErrors": 0, "findingIds": [], "errors": [] }
+```
+
+Canary reads `totalErrors`; **healthy = 0**. Because the shape is identical for every project, the check config is boilerplate — you supply only what varies.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/integrations` | Provision monitor + secret + check + alert in one call, then verify. |
+
+```json
+POST /integrations
+{
+  "name": "autobottom",
+  "baseUrl": "https://autobottom.thetechgoose.deno.net",
+  "secret": "<the project's CANARY_SECRET>",
+  "recipients": [{ "channel": "ntfy", "address": "adam-code-alerts" }],
+  "cron": "0 13 * * *"
+}
+```
+
+`cron` is optional (defaults to a daily run ~09:00 ET, which reports the full previous ET day). Returns `{ monitorId, secretKey, firstRun }`. Behind the scenes the check is created as `POST <baseUrl>/canary/errors` with header `Authorization: Bearer {{<NAME>_CANARY_SECRET}}`, `expression: "totalErrors"`, pass-when-`≤ 0`, `notifyOnRecover: true`; the secret is stored under `<NAME>_CANARY_SECRET` (referenced via `{{…}}` substitution, never returned).
+
+`firstRun` is the immediate verification run: if `firstRun.error` is set you have a **wiring problem** (unreachable / bad secret / wrong shape) to fix; otherwise `firstRun.passed` reflects the project's prior-day health.
+
+Pull (not push) is deliberate — Canary polling the endpoint detects both reported errors **and** a down/unreachable project (a failed fetch alerts on its own), which push can't. Need a fully custom monitor? Use the 3-step **+ Add monitor** wizard or the `/monitors` → `/check` → `/alert` calls below.
+
+---
 
 ### Auth & Users
 

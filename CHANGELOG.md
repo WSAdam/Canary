@@ -7,6 +7,17 @@ versioned yet, so entries are grouped by date. Format loosely follows
 ## 2026-06-03
 
 ### Added
+- **One-step integrations.** New `POST /integrations` endpoint and a dashboard
+  **+ Add integration** button provision a full health-check monitor (monitor +
+  secret + check + alert) in a single call against any project that exposes the
+  Canary health contract (`POST /canary/errors → { totalErrors }`). The check is
+  standardized — poll the endpoint, healthy when `totalErrors ≤ 0`, alert when it
+  rises or the endpoint is unreachable — so you supply only name, base URL,
+  secret, and recipients. Provisioning fires an immediate verification run
+  (returned as `firstRun`) so wiring problems surface instantly, and a partial
+  failure rolls back. New orchestrator
+  `dist.rune/integration/integration-create/integration-create.ts`; see the
+  README "Integrations (one-step setup)" section.
 - **Structured leveled logging** (`dist.rune/impure/_log.ts`). All server-side
   logging now flows through a central logger gated by the `LOG_LEVEL` env var
   (default `info`). Bootstrap and idle-cron chatter is demoted to `debug`, so a

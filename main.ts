@@ -25,6 +25,7 @@ import { setSecret } from "./dist.rune/integration/secret-set/secret-set.ts";
 import { listSecrets } from "./dist.rune/integration/secret-list/secret-list.ts";
 import { deleteSecret } from "./dist.rune/integration/secret-delete/secret-delete.ts";
 import { executeRunner } from "./dist.rune/integration/runner-execute/runner-execute.ts";
+import { createIntegration } from "./dist.rune/integration/integration-create/integration-create.ts";
 import { webhookFire } from "./dist.rune/integration/webhook-fire/webhook-fire.ts";
 import { WebhookSecret } from "./dist.rune/impure/webhookSecret/webhookSecret.ts";
 import type { FireAlertDto } from "./dist.rune/dto/fire-alert-dto.ts";
@@ -401,7 +402,10 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
 
   <div class="section-header">
     <span class="section-title">Monitors</span>
-    <button class="btn btn-primary btn-sm" onclick="startWizard()">+ Add monitor</button>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-ghost btn-sm" onclick="openIntegrationModal()">+ Add integration</button>
+      <button class="btn btn-primary btn-sm" onclick="startWizard()">+ Add monitor</button>
+    </div>
   </div>
   <div id="d-monitor-list">
     <div class="empty-state">
@@ -820,6 +824,51 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
   </div>
   <div class="error-msg" id="invite-err"></div>
   <div class="success-msg" id="invite-ok"></div>
+</div>
+</div>
+
+<!-- ============================================================ INTEGRATION MODAL ============================================================ -->
+<div class="modal-overlay" id="integration-modal">
+<div class="modal" style="max-width:520px">
+  <div class="modal-header">
+    <h2>Add integration</h2>
+    <button class="modal-close" onclick="closeIntegrationModal()">&#x2715;</button>
+  </div>
+  <p style="font-size:13px;color:var(--m);margin-bottom:20px">Monitor a project that exposes the Canary health contract (<code>POST &lt;base URL&gt;/canary/errors</code> → <code>{ totalErrors }</code>). Canary polls it on a schedule and alerts when <code>totalErrors &gt; 0</code> or the endpoint is unreachable.</p>
+  <div class="form-group">
+    <label for="ig-name">Project name *</label>
+    <input type="text" id="ig-name" placeholder="autobottom">
+  </div>
+  <div class="form-group">
+    <label for="ig-url">Base URL *</label>
+    <input type="text" id="ig-url" placeholder="https://autobottom.thetechgoose.deno.net">
+  </div>
+  <div class="form-group">
+    <label for="ig-secret">Bearer secret *</label>
+    <input type="password" id="ig-secret" placeholder="the project's CANARY_SECRET" autocomplete="off">
+  </div>
+  <div class="form-group">
+    <label for="ig-cron">Schedule (cron, optional)</label>
+    <input type="text" id="ig-cron" placeholder="default: 0 13 * * * (daily ~9am ET)">
+  </div>
+  <label>Alert recipients * (at least one)</label>
+  <div class="form-group">
+    <input type="text" id="ig-email" placeholder="Email address">
+  </div>
+  <div class="form-group">
+    <input type="text" id="ig-sms" placeholder="SMS number">
+  </div>
+  <div class="form-group">
+    <input type="text" id="ig-ntfy" placeholder="ntfy topic">
+  </div>
+  <hr class="divider">
+  <div style="display:flex;gap:10px;justify-content:flex-end">
+    <button class="btn btn-ghost" onclick="closeIntegrationModal()">Cancel</button>
+    <button class="btn btn-primary" id="ig-submit-btn" onclick="submitIntegration()">Create &amp; verify</button>
+  </div>
+  <div class="error-msg" id="ig-err"></div>
+  <div class="success-msg" id="ig-ok"></div>
+  <div id="ig-result" style="margin-top:12px"></div>
 </div>
 </div>
 
@@ -1859,6 +1908,69 @@ async function sendInvites() {
   finally { btn.disabled = false; btn.textContent = 'Send invitations'; }
 }
 
+// ─── Add integration (one-step health-check provisioning) ─────────────────────
+function openIntegrationModal() {
+  ['ig-name','ig-url','ig-secret','ig-cron','ig-email','ig-sms','ig-ntfy'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('ig-err').textContent = '';
+  document.getElementById('ig-ok').textContent = '';
+  document.getElementById('ig-result').innerHTML = '';
+  document.getElementById('integration-modal').classList.add('open');
+  document.getElementById('ig-name').focus();
+}
+
+function closeIntegrationModal() {
+  document.getElementById('integration-modal').classList.remove('open');
+}
+
+async function submitIntegration() {
+  const name = document.getElementById('ig-name').value.trim();
+  const baseUrl = document.getElementById('ig-url').value.trim();
+  const secret = document.getElementById('ig-secret').value.trim();
+  const cron = document.getElementById('ig-cron').value.trim();
+  const recipients = [];
+  const email = document.getElementById('ig-email').value.trim();
+  const sms = document.getElementById('ig-sms').value.trim();
+  const ntfy = document.getElementById('ig-ntfy').value.trim();
+  if (email) recipients.push({ channel: 'email', address: email });
+  if (sms) recipients.push({ channel: 'sms', address: sms });
+  if (ntfy) recipients.push({ channel: 'ntfy', address: ntfy });
+
+  const btn = document.getElementById('ig-submit-btn');
+  const err = document.getElementById('ig-err');
+  const ok = document.getElementById('ig-ok');
+  const result = document.getElementById('ig-result');
+  err.textContent = ''; ok.textContent = ''; result.innerHTML = '';
+  if (!name || !baseUrl || !secret) { err.textContent = 'Name, base URL, and secret are required.'; return; }
+  if (!recipients.length) { err.textContent = 'Add at least one alert recipient.'; return; }
+
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Creating & verifying...';
+  try {
+    const payload = { name, baseUrl, secret, recipients };
+    if (cron) payload.cron = cron;
+    const res = await api('POST', '/integrations', payload);
+    ok.textContent = 'Integration created!';
+    const fr = res.firstRun || {};
+    const badge = fr.error
+      ? '<span style="color:var(--red);font-weight:600">● wiring problem</span>'
+      : (fr.passed
+          ? '<span style="color:var(--green);font-weight:600">● healthy</span>'
+          : '<span style="color:var(--red);font-weight:600">● errors reported</span>');
+    result.innerHTML = '<div style="font-size:13px;border:1px solid var(--b);border-radius:8px;padding:12px">'
+      + '<div style="margin-bottom:6px">First check: ' + badge + '</div>'
+      + (fr.error
+          ? '<div style="color:var(--red);font-size:12px">' + esc(fr.error) + '</div>'
+            + '<div style="color:var(--m);font-size:12px;margin-top:6px">Double-check the base URL and secret, then re-run from the Reports tab.</div>'
+          : '<div style="color:var(--m);font-size:12px">Observed totalErrors = ' + esc(String(fr.observed)) + '. Monitoring is live.</div>')
+      + '</div>';
+    loadDashboard();
+    setTimeout(closeIntegrationModal, fr.error ? 6000 : 2500);
+  } catch (e) {
+    err.textContent = e.message;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Create & verify';
+  }
+}
+
 // ─── Body visibility ─────────────────────────────────────────────────────────
 function updateBodyVisibility() {
   const method = document.getElementById('w-method').value;
@@ -1980,6 +2092,11 @@ function clearErr() {
 // Close invite modal on overlay click
 document.getElementById('invite-modal').addEventListener('click', function(e) {
   if (e.target === this) closeInviteModal();
+});
+
+// Close integration modal on overlay click
+document.getElementById('integration-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeIntegrationModal();
 });
 
 // Close run-detail modal on overlay click
@@ -2453,6 +2570,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
       const result = await getMonitor({ monitorId });
       log.debug(`✅ GET /monitors/${monitorId} → 200 name="${result.name}"`);
       return json(result);
+    }
+
+    // Integrations — one-step provisioning of a standard health-check monitor
+    // (monitor + secret + check + alert) plus an immediate verification run.
+    if (method === "POST" && pathname === "/integrations") {
+      const body = await parseBody(req) as Parameters<typeof createIntegration>[0];
+      log.info(`🔌 POST /integrations: name="${(body as { name?: string }).name ?? ""}"`);
+      const result = await createIntegration(body);
+      log.info(`✅ POST /integrations → 201 monitorId=${result.monitorId} firstRunPassed=${result.firstRun.passed}`);
+      return json(result, 201);
     }
 
     // Check
