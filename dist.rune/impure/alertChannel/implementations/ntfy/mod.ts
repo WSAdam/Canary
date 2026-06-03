@@ -9,7 +9,7 @@ import { CanaryError } from "../../../../dto/_shared.ts";
  * value"), and a captured/user title may contain newlines — so drop control
  * chars (C0 range + DEL) to keep the alert from being dropped.
  */
-function sanitizeHeaderValue(value: string): string {
+export function sanitizeHeaderValue(value: string): string {
   let out = "";
   for (const ch of value) {
     const code = ch.codePointAt(0) ?? 0;
@@ -18,11 +18,38 @@ function sanitizeHeaderValue(value: string): string {
   return out.trim();
 }
 
-function normalizeNtfyUrl(address: string): string {
+/**
+ * Turn a user-supplied ntfy address into a request URL, accepting a bare topic
+ * (`alerts` → ntfy.sh/alerts), `ntfy.sh/alerts`, `host/topic`, or a full URL
+ * (incl. self-hosted servers on any host). Throws on input that can't yield a
+ * real topic — empty/whitespace, scheme-only (`https://`), or no topic path
+ * (`ntfy.sh/`, `/`) — so a misconfigured recipient fails loudly instead of
+ * silently POSTing to the ntfy.sh root.
+ */
+export function normalizeNtfyUrl(address: string): string {
   const trimmed = address.trim();
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  if (trimmed.includes("/")) return "https://" + trimmed;
-  return "https://ntfy.sh/" + trimmed;
+  if (!trimmed) {
+    throw new CanaryError("validation-error", "ntfy address is empty", 400);
+  }
+
+  let candidate: string;
+  if (/^https?:\/\//i.test(trimmed)) candidate = trimmed;
+  else if (trimmed.includes("/")) candidate = "https://" + trimmed;
+  else candidate = "https://ntfy.sh/" + trimmed;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw new CanaryError("validation-error", `ntfy address "${address}" is not a valid topic or URL`, 400);
+  }
+  // Host stays unrestricted (self-hosted ntfy uses arbitrary domains), but there
+  // must be a non-empty topic in the path.
+  const topic = parsed.pathname.replace(/^\/+|\/+$/g, "");
+  if (!topic) {
+    throw new CanaryError("validation-error", `ntfy address "${address}" has no topic`, 400);
+  }
+  return candidate;
 }
 
 export class Ntfy extends BaseAlertChannel {

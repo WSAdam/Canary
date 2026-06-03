@@ -1318,6 +1318,21 @@ async function wizardStep3() {
       return;
     }
   }
+  if (ntfyAddr) {
+    // Light client-side guard; the server does the authoritative check. Uses
+    // plain string ops, not regex — backslash escapes get mangled inside the
+    // INDEX_HTML template literal.
+    const lower = ntfyAddr.toLowerCase();
+    let topic = lower.startsWith('https://') ? ntfyAddr.slice(8)
+              : lower.startsWith('http://') ? ntfyAddr.slice(7)
+              : ntfyAddr;
+    while (topic.startsWith('/')) topic = topic.slice(1);
+    while (topic.endsWith('/')) topic = topic.slice(0, -1);
+    if (!topic || ntfyAddr.indexOf(' ') !== -1) {
+      showErr('ntfy topic looks invalid — use a topic name (e.g. my-alerts) or a full ntfy URL.');
+      return;
+    }
+  }
 
   const recipients = [];
   if (emailAddr) recipients.push({ channel: 'email', address: emailAddr });
