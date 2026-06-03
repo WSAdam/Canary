@@ -828,7 +828,10 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
 <div class="modal" style="max-width:760px">
   <div class="modal-header">
     <h2>Run detail</h2>
-    <button class="modal-close" onclick="closeRunDetail()">&#x2715;</button>
+    <div style="display:flex;align-items:center;gap:8px">
+      <button class="btn btn-ghost btn-sm" type="button" data-copy="all" id="run-detail-copy-all" style="display:none">Copy all</button>
+      <button class="modal-close" onclick="closeRunDetail()">&#x2715;</button>
+    </div>
   </div>
   <div id="run-detail-body">
     <div class="empty-state"><div style="font-size:32px">📊</div><p>Loading…</p></div>
@@ -1138,6 +1141,9 @@ function renderReports(reports) {
 async function openRunDetail(monitorId, timestamp, runId) {
   const modal = document.getElementById('run-detail-modal');
   const body = document.getElementById('run-detail-body');
+  const copyAll = document.getElementById('run-detail-copy-all');
+  _runDetailCopy = null;
+  if (copyAll) copyAll.style.display = 'none';
   body.innerHTML = '<div class="empty-state"><div style="font-size:32px">📊</div><p>Loading…</p></div>';
   modal.classList.add('open');
   try {
@@ -1146,6 +1152,7 @@ async function openRunDetail(monitorId, timestamp, runId) {
       + encodeURIComponent(timestamp) + '/'
       + encodeURIComponent(runId));
     body.innerHTML = renderRunDetail(run);
+    if (copyAll) copyAll.style.display = '';
   } catch (e) {
     body.innerHTML = '<div class="empty-state"><div style="font-size:32px">⚠️</div><p>Could not load run: ' + esc(e.message) + '</p></div>';
   }
@@ -1153,10 +1160,31 @@ async function openRunDetail(monitorId, timestamp, runId) {
 
 function closeRunDetail() {
   document.getElementById('run-detail-modal').classList.remove('open');
+  const copyAll = document.getElementById('run-detail-copy-all');
+  if (copyAll) copyAll.style.display = 'none';
 }
 
+function copyRunPart(key, btn) {
+  const text = _runDetailCopy && _runDetailCopy[key];
+  if (!text) return;
+  navigator.clipboard.writeText(text).then(
+    () => {
+      if (!btn) return;
+      const prev = btn.textContent;
+      btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = prev; }, 1400);
+    },
+    () => alert('Could not copy — select the text manually'),
+  );
+}
+
+var _runDetailCopy = null;
+
 function renderRunDetail(run) {
-  const sectionTitle = t => '<h3 style="font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--m);margin:18px 0 8px">' + esc(t) + '</h3>';
+  const sectionTitle = (t, copyKey) => '<div style="display:flex;align-items:center;justify-content:space-between;margin:18px 0 8px">'
+    + '<h3 style="font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--m);margin:0">' + esc(t) + '</h3>'
+    + (copyKey ? '<button class="btn btn-ghost btn-sm" type="button" data-copy="' + copyKey + '">Copy</button>' : '')
+    + '</div>';
   const pre = s => '<pre style="background:#0d0d0d;border:1px solid var(--b);border-radius:8px;padding:12px;overflow:auto;font-size:12px;max-height:300px;white-space:pre-wrap;word-break:break-word;margin:0">' + s + '</pre>';
 
   const status = run.passed
@@ -1167,9 +1195,19 @@ function renderRunDetail(run) {
     + status + ' · <span style="color:var(--m)">observed</span> ' + esc(run.observed) + '</div>';
   if (run.error) html += '<div style="font-size:13px;color:var(--red);margin-bottom:8px">' + esc(run.error) + '</div>';
 
+  // Plain-text payloads mirroring what's displayed, for the copy buttons.
+  let reqText = '', resText = '';
+
   const req = run.request;
   if (req) {
-    html += sectionTitle('Request');
+    const reqLines = [req.method + ' ' + req.url];
+    if (req.headers && Object.keys(req.headers).length) {
+      reqLines.push('', Object.entries(req.headers).map(h => h[0] + ': ' + h[1]).join('\\n'));
+    }
+    if (req.body) reqLines.push('', req.body);
+    reqText = reqLines.join('\\n');
+
+    html += sectionTitle('Request', 'request');
     html += '<div style="font-family:ui-monospace,Menlo,monospace;font-size:12px;margin-bottom:6px;word-break:break-all">'
       + '<span style="color:var(--y)">' + esc(req.method) + '</span> ' + esc(req.url) + '</div>';
     if (req.headers && Object.keys(req.headers).length) {
@@ -1181,11 +1219,18 @@ function renderRunDetail(run) {
   const res = run.response;
   if (res) {
     const statusStr = (res.status !== undefined && res.status !== null) ? ' · ' + res.status : '';
-    html += sectionTitle('Response' + statusStr);
+    let bodyText = '';
     if (res.body !== undefined && res.body !== null && res.body !== '') {
       let parsed = null, ok = true;
       try { parsed = JSON.parse(res.body); } catch (_) { ok = false; }
-      html += ok ? pre(esc(JSON.stringify(parsed, null, 2))) : pre(esc(res.body));
+      bodyText = ok ? JSON.stringify(parsed, null, 2) : res.body;
+    }
+    const resHead = (res.status !== undefined && res.status !== null) ? String(res.status) : '';
+    resText = [resHead, bodyText].filter(Boolean).join('\\n\\n');
+
+    html += sectionTitle('Response' + statusStr, bodyText ? 'response' : null);
+    if (bodyText) {
+      html += pre(esc(bodyText));
     } else {
       html += '<p style="font-size:12px;color:var(--m)">No response body captured.</p>';
     }
@@ -1193,6 +1238,15 @@ function renderRunDetail(run) {
   }
 
   if (!req && !res) html += '<p style="font-size:13px;color:var(--m)">No request/response detail was captured for this run.</p>';
+
+  // "Copy all" payload — same pieces, one block.
+  const metaLine = new Date(run.timestamp).toLocaleString() + ' · ' + (run.passed ? 'PASS' : 'FAIL') + ' · observed ' + run.observed;
+  const allParts = ['Run detail — ' + metaLine];
+  if (run.error) allParts.push('Error: ' + run.error);
+  if (reqText) allParts.push('', '=== REQUEST ===', reqText);
+  if (resText) allParts.push('', '=== RESPONSE ===', resText);
+  _runDetailCopy = { request: reqText, response: resText, all: allParts.join('\\n') };
+
   return html;
 }
 
@@ -1930,6 +1984,8 @@ document.getElementById('invite-modal').addEventListener('click', function(e) {
 
 // Close run-detail modal on overlay click
 document.getElementById('run-detail-modal').addEventListener('click', function(e) {
+  const copyBtn = e.target.closest('[data-copy]');
+  if (copyBtn) { copyRunPart(copyBtn.dataset.copy, copyBtn); return; }
   if (e.target === this) closeRunDetail();
 });
 
