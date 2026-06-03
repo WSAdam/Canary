@@ -1,5 +1,6 @@
 import { kv } from "../_kv.ts";
 import { CanaryError } from "../../dto/_shared.ts";
+import { log } from "../_log.ts";
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -57,7 +58,7 @@ export async function createInvites(
       throw new CanaryError("internal-error", `Failed to send invite to ${email}: ${body}`, 500);
     }
 
-    console.log("✅ invite sent:", email);
+    log.info("✅ invite sent:", email);
   }));
 }
 

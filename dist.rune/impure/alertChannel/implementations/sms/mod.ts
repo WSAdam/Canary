@@ -2,6 +2,7 @@ import { applyVars, BaseAlertChannel, buildVars } from "../../shared/mod.ts";
 import type { RunResultDto } from "../../../../dto/run-result-dto.ts";
 import type { AlertDto } from "../../../../dto/alert-dto.ts";
 import { CanaryError } from "../../../../dto/_shared.ts";
+import { log } from "../../../_log.ts";
 
 export class Sms extends BaseAlertChannel {
   constructor(private readonly phoneNumber: string) {
@@ -20,7 +21,7 @@ export class Sms extends BaseAlertChannel {
     const message = alert.smsMessage ? applyVars(alert.smsMessage, vars) : defaultMessage;
 
     const number = this.phoneNumber.replace(/^\+/, "");
-    console.log(`📱 sms.send: to=${number}`);
+    log.info(`📱 sms.send: to=${number}`);
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

@@ -1,6 +1,7 @@
 import { kv } from "../_kv.ts";
 import { CanaryError, constantTimeEqual } from "../../dto/_shared.ts";
 import type { WebhookSecretDto } from "../../dto/webhook-secret-dto.ts";
+import { log } from "../_log.ts";
 
 const PREFIX = "cnry_v1_";
 const SECRET_BYTES = 32;
@@ -37,22 +38,22 @@ export class WebhookSecret {
 
     const dto: WebhookSecretDto = { hash, fingerprint, createdAt };
     await kv.set(["webhook_secret", monitorId], dto);
-    console.log(`🪝 webhookSecret.generate: monitorId=${monitorId} fingerprint=${fingerprint}`);
+    log.debug(`🪝 webhookSecret.generate: monitorId=${monitorId} fingerprint=${fingerprint}`);
     return { plaintext, fingerprint, createdAt };
   }
 
   static async verify(monitorId: string, plaintext: string): Promise<void> {
     const stored = await kv.get<WebhookSecretDto>(["webhook_secret", monitorId], { consistency: "strong" });
     if (!stored.value) {
-      console.log(`❌ webhookSecret.verify: no key configured for monitorId=${monitorId}`);
+      log.warn(`❌ webhookSecret.verify: no key configured for monitorId=${monitorId}`);
       throw new CanaryError("unauthorized", "Invalid webhook key", 401);
     }
     const incoming = await sha256Hex(plaintext);
     if (!constantTimeEqual(incoming, stored.value.hash)) {
-      console.log(`❌ webhookSecret.verify: key mismatch for monitorId=${monitorId}`);
+      log.warn(`❌ webhookSecret.verify: key mismatch for monitorId=${monitorId}`);
       throw new CanaryError("unauthorized", "Invalid webhook key", 401);
     }
-    console.log(`✅ webhookSecret.verify: ok monitorId=${monitorId} fingerprint=${stored.value.fingerprint}`);
+    log.debug(`✅ webhookSecret.verify: ok monitorId=${monitorId} fingerprint=${stored.value.fingerprint}`);
   }
 
   static async peek(monitorId: string): Promise<{ exists: boolean; fingerprint?: string; createdAt?: string }> {
@@ -63,6 +64,6 @@ export class WebhookSecret {
 
   static async revoke(monitorId: string): Promise<void> {
     await kv.delete(["webhook_secret", monitorId]);
-    console.log(`🪝 webhookSecret.revoke: monitorId=${monitorId}`);
+    log.debug(`🪝 webhookSecret.revoke: monitorId=${monitorId}`);
   }
 }

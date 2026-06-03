@@ -2,6 +2,7 @@ import { applyVars, BaseAlertChannel, buildVars } from "../../shared/mod.ts";
 import type { RunResultDto } from "../../../../dto/run-result-dto.ts";
 import type { AlertDto } from "../../../../dto/alert-dto.ts";
 import { CanaryError } from "../../../../dto/_shared.ts";
+import { log } from "../../../_log.ts";
 
 export class Email extends BaseAlertChannel {
   constructor(private readonly emailAddress: string) {
@@ -23,7 +24,7 @@ export class Email extends BaseAlertChannel {
     const defaultBody = buildEmailBody(run);
     const body = alert.emailMessage ? applyVars(alert.emailMessage, vars) : defaultBody;
 
-    console.log(`📧 email.send: to=${this.emailAddress} subject="${subject}"`);
+    log.info(`📧 email.send: to=${this.emailAddress} subject="${subject}"`);
     const response = await fetch("https://api.postmarkapp.com/email", {
       method: "POST",
       headers: {

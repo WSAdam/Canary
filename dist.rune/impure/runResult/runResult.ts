@@ -1,13 +1,28 @@
 import { kv } from "../_kv.ts";
-import type { RunResultDto } from "../../dto/run-result-dto.ts";
+import type { RunResultDto, RunRequestDetailDto, RunResponseDetailDto } from "../../dto/run-result-dto.ts";
+
+export interface RunResultExtra {
+  // Reuse the run's correlation id so logs and stored history share one id.
+  runId?: string;
+  request?: RunRequestDetailDto;
+  response?: RunResponseDetailDto;
+}
 
 export class RunResult {
   private data?: RunResultDto;
 
-  static build(monitorId: string, observed: number, passed: boolean, monitorName?: string, error?: string, captures?: Record<string, string>): RunResult {
+  static build(
+    monitorId: string,
+    observed: number,
+    passed: boolean,
+    monitorName?: string,
+    error?: string,
+    captures?: Record<string, string>,
+    extra?: RunResultExtra,
+  ): RunResult {
     const rr = new RunResult();
     rr.data = {
-      runId: crypto.randomUUID(),
+      runId: extra?.runId ?? crypto.randomUUID(),
       monitorId,
       monitorName,
       observed,
@@ -15,6 +30,8 @@ export class RunResult {
       timestamp: new Date().toISOString(),
       error,
       captures,
+      request: extra?.request,
+      response: extra?.response,
     };
     return rr;
   }

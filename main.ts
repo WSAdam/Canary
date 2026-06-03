@@ -34,6 +34,8 @@ import { Ntfy } from "./dist.rune/impure/alertChannel/implementations/ntfy/mod.t
 import { RunResult } from "./dist.rune/impure/runResult/runResult.ts";
 import type { RunResultDto } from "./dist.rune/dto/run-result-dto.ts";
 import type { AlertDto } from "./dist.rune/dto/alert-dto.ts";
+import { log } from "./dist.rune/impure/_log.ts";
+import { redactHeaders } from "./dist.rune/integration/runner-execute/runner-execute.ts";
 
 // ---------------------------------------------------------------------------
 // Seed admin on startup
@@ -44,7 +46,7 @@ const adminPassword = Deno.env.get("ADMIN_PASSWORD");
 if (adminUsername && adminPassword) {
   await seedAdmin(adminUsername, adminPassword);
 } else {
-  console.warn("⚠️ ADMIN_USERNAME or ADMIN_PASSWORD not set — admin not seeded");
+  log.warn("⚠️ ADMIN_USERNAME or ADMIN_PASSWORD not set — admin not seeded");
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +99,7 @@ Deno.cron("canary-runner", "* * * * *", async () => {
 
   // In-process guard: same isolate firing twice in one minute (rare but possible if cron rescheduled mid-run)
   if (lastTickMinuteKey === minuteKey) {
-    console.log("🔍 cron tick: skipped (this isolate already ran this minute)");
+    log.debug("🔍 cron tick: skipped (this isolate already ran this minute)");
     return;
   }
   lastTickMinuteKey = minuteKey;
@@ -109,11 +111,11 @@ Deno.cron("canary-runner", "* * * * *", async () => {
     .set(tickKey, 1, { expireIn: FIVE_MIN_MS })
     .commit();
   if (!lock.ok) {
-    console.log("🔍 cron tick: skipped (another isolate already running this minute)");
+    log.debug("🔍 cron tick: skipped (another isolate already running this minute)");
     return;
   }
   lastCronTick = now.toISOString();
-  console.log("🔍 cron tick:", now.toISOString());
+  log.debug("🔍 cron tick:", now.toISOString());
 
   const due: string[] = [];
   for await (const entry of kv.list<CheckDto>({ prefix: ["check"] })) {
@@ -127,7 +129,7 @@ Deno.cron("canary-runner", "* * * * *", async () => {
       .set(runLockKey, 1, { expireIn: FIVE_MIN_MS })
       .commit();
     if (!runLock.ok) {
-      console.log(`🔍 run skipped for ${checkDto.monitorId} (another isolate already ran this minute)`);
+      log.debug(`🔍 run skipped for ${checkDto.monitorId} (another isolate already ran this minute)`);
       continue;
     }
     due.push(checkDto.monitorId);
@@ -135,14 +137,17 @@ Deno.cron("canary-runner", "* * * * *", async () => {
 
   // Run due monitors in bounded batches so a busy minute can't fan out into an
   // unbounded burst of simultaneous outbound fetches.
-  console.log(`⏰ cron tick: ${due.length} monitor(s) due`);
+  // Idle ticks (nothing due) are the dominant log noise — keep them at debug so
+  // the default info level only surfaces minutes that actually do work.
+  if (due.length > 0) log.info(`⏰ cron tick: ${due.length} monitor(s) due`);
+  else log.debug(`⏰ cron tick: 0 monitor(s) due`);
   const CONCURRENCY = 10;
   for (let i = 0; i < due.length; i += CONCURRENCY) {
     const batch = due.slice(i, i + CONCURRENCY);
     await Promise.all(batch.map((monitorId) => {
-      console.log("⏰ scheduling run for monitor:", monitorId);
+      log.info("⏰ scheduling run for monitor:", monitorId);
       return executeRunner({ monitorId }).catch((e) => {
-        console.error("❌ runner failed for", monitorId, ":", (e as Error).message);
+        log.error("❌ runner failed for", monitorId, ":", (e as Error).message);
       });
     }));
   }
@@ -297,6 +302,8 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
 .modal-header h2{font-size:18px;font-weight:600;margin:0}
 .modal-close{background:none;border:none;color:var(--m);cursor:pointer;font-size:22px;line-height:1;padding:2px}
 .modal-close:hover{color:var(--t)}
+.report-row-clickable{cursor:pointer}
+.report-row-clickable:hover{background:#161616}
 .invite-email-row{display:grid;grid-template-columns:1fr 32px;gap:8px;margin-bottom:8px;align-items:center}
 .invite-email-row input{margin:0}
 
@@ -816,6 +823,19 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
 </div>
 </div>
 
+<!-- ============================================================ RUN DETAIL MODAL ============================================================ -->
+<div class="modal-overlay" id="run-detail-modal">
+<div class="modal" style="max-width:760px">
+  <div class="modal-header">
+    <h2>Run detail</h2>
+    <button class="modal-close" onclick="closeRunDetail()">&#x2715;</button>
+  </div>
+  <div id="run-detail-body">
+    <div class="empty-state"><div style="font-size:32px">📊</div><p>Loading…</p></div>
+  </div>
+</div>
+</div>
+
 <script>
 // ─── State ───────────────────────────────────────────────────────────────────
 const S = {
@@ -1078,10 +1098,21 @@ function renderReports(reports) {
       let detail = '<span style="color:var(--m)">observed</span> ' + esc(r.observed);
       if (r.error) detail += ' · <span style="color:var(--red)">' + esc(r.error) + '</span>';
       if (r.captures && Object.keys(r.captures).length) {
-        const caps = Object.entries(r.captures).map(kv => esc(kv[0]) + '=' + esc(kv[1])).join(', ');
+        const caps = Object.entries(r.captures).map(kv => {
+          const v = String(kv[1]);
+          const shown = v.length > 80 ? v.slice(0, 80) + '…' : v; // full value lives in the drill-in
+          return esc(kv[0]) + '=' + esc(shown);
+        }).join(', ');
         detail += ' · <span style="color:var(--m)">' + caps + '</span>';
       }
-      return '<div style="display:flex;gap:12px;align-items:baseline;padding:6px 0;border-top:1px solid #1d1d1d;font-size:13px">'
+      // Failed runs carry captured request/response detail — make them drill-in-able.
+      const clickable = !r.passed && r.hasDetail && r.runId;
+      if (clickable) detail += ' · <span style="color:var(--y)">🔍 details</span>';
+      const dataAttrs = clickable
+        ? ' data-run-detail="1" data-monitorid="' + esc(rep.monitorId) + '" data-timestamp="' + esc(r.timestamp) + '" data-runid="' + esc(r.runId) + '"'
+        : '';
+      const cls = clickable ? 'report-row report-row-clickable' : 'report-row';
+      return '<div class="' + cls + '"' + dataAttrs + ' style="display:flex;gap:12px;align-items:baseline;padding:6px 0;border-top:1px solid #1d1d1d;font-size:13px">'
         + '<span style="white-space:nowrap;min-width:160px;color:var(--m)">' + esc(when) + '</span>'
         + '<span style="white-space:nowrap;min-width:64px">' + badge + '</span>'
         + '<span style="flex:1">' + detail + '</span>'
@@ -1101,6 +1132,68 @@ function renderReports(reports) {
       + body
       + '</div>';
   }).join('');
+}
+
+// ─── Run detail drill-in ───────────────────────────────────────────────────────
+async function openRunDetail(monitorId, timestamp, runId) {
+  const modal = document.getElementById('run-detail-modal');
+  const body = document.getElementById('run-detail-body');
+  body.innerHTML = '<div class="empty-state"><div style="font-size:32px">📊</div><p>Loading…</p></div>';
+  modal.classList.add('open');
+  try {
+    const run = await api('GET', '/api/runs/'
+      + encodeURIComponent(monitorId) + '/'
+      + encodeURIComponent(timestamp) + '/'
+      + encodeURIComponent(runId));
+    body.innerHTML = renderRunDetail(run);
+  } catch (e) {
+    body.innerHTML = '<div class="empty-state"><div style="font-size:32px">⚠️</div><p>Could not load run: ' + esc(e.message) + '</p></div>';
+  }
+}
+
+function closeRunDetail() {
+  document.getElementById('run-detail-modal').classList.remove('open');
+}
+
+function renderRunDetail(run) {
+  const sectionTitle = t => '<h3 style="font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--m);margin:18px 0 8px">' + esc(t) + '</h3>';
+  const pre = s => '<pre style="background:#0d0d0d;border:1px solid var(--b);border-radius:8px;padding:12px;overflow:auto;font-size:12px;max-height:300px;white-space:pre-wrap;word-break:break-word;margin:0">' + s + '</pre>';
+
+  const status = run.passed
+    ? '<span style="color:var(--green);font-weight:600">● PASS</span>'
+    : '<span style="color:var(--red);font-weight:600">● FAIL</span>';
+  let html = '<div style="font-size:13px;margin-bottom:6px">'
+    + '<span style="color:var(--m)">' + esc(new Date(run.timestamp).toLocaleString()) + '</span> · '
+    + status + ' · <span style="color:var(--m)">observed</span> ' + esc(run.observed) + '</div>';
+  if (run.error) html += '<div style="font-size:13px;color:var(--red);margin-bottom:8px">' + esc(run.error) + '</div>';
+
+  const req = run.request;
+  if (req) {
+    html += sectionTitle('Request');
+    html += '<div style="font-family:ui-monospace,Menlo,monospace;font-size:12px;margin-bottom:6px;word-break:break-all">'
+      + '<span style="color:var(--y)">' + esc(req.method) + '</span> ' + esc(req.url) + '</div>';
+    if (req.headers && Object.keys(req.headers).length) {
+      html += pre(Object.entries(req.headers).map(h => esc(h[0]) + ': ' + esc(h[1])).join('\\n'));
+    }
+    if (req.body) html += '<div style="margin-top:6px">' + pre(esc(req.body)) + '</div>';
+  }
+
+  const res = run.response;
+  if (res) {
+    const statusStr = (res.status !== undefined && res.status !== null) ? ' · ' + res.status : '';
+    html += sectionTitle('Response' + statusStr);
+    if (res.body !== undefined && res.body !== null && res.body !== '') {
+      let parsed = null, ok = true;
+      try { parsed = JSON.parse(res.body); } catch (_) { ok = false; }
+      html += ok ? pre(esc(JSON.stringify(parsed, null, 2))) : pre(esc(res.body));
+    } else {
+      html += '<p style="font-size:12px;color:var(--m)">No response body captured.</p>';
+    }
+    if (res.truncated) html += '<div style="font-size:11px;color:var(--m);margin-top:6px">Response body was truncated to keep history small.</div>';
+  }
+
+  if (!req && !res) html += '<p style="font-size:13px;color:var(--m)">No request/response detail was captured for this run.</p>';
+  return html;
 }
 
 async function runNow(monitorId, btn) {
@@ -1835,6 +1928,11 @@ document.getElementById('invite-modal').addEventListener('click', function(e) {
   if (e.target === this) closeInviteModal();
 });
 
+// Close run-detail modal on overlay click
+document.getElementById('run-detail-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeRunDetail();
+});
+
 // Enter key on login
 document.getElementById('li-pass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
 document.getElementById('li-user').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('li-pass').focus(); });
@@ -1852,6 +1950,12 @@ document.getElementById('li-user').addEventListener('keydown', e => { if (e.key 
     showView('login');
   }
   document.getElementById('w-method').addEventListener('change', updateBodyVisibility);
+  // Delegated click for drilling into a failed report row's request/response.
+  const rl = document.getElementById('reports-list');
+  if (rl) rl.addEventListener('click', (e) => {
+    const row = e.target.closest('[data-run-detail]');
+    if (row) openRunDetail(row.dataset.monitorid, row.dataset.timestamp, row.dataset.runid);
+  });
   // Delegated click for clickable JSON leaves in the Test-request viewer
   // (replaces inline onclick so injected response content can't run script).
   const tri = document.getElementById('test-result-inner');
@@ -1908,11 +2012,12 @@ function html(content: string): Response {
 
 function errorResponse(e: unknown): Response {
   if (e instanceof CanaryError) {
-    console.log(`❌ errorResponse: CanaryError fault=${e.fault} status=${e.status} message=${e.message}`);
+    // Handled client errors (4xx validation/not-found) are expected — debug only.
+    log.debug(`❌ errorResponse: CanaryError fault=${e.fault} status=${e.status} message=${e.message}`);
     return json({ error: e.fault, message: e.message }, e.status);
   }
   const msg = e instanceof Error ? e.message : String(e);
-  console.error("❌ errorResponse: unhandled error:", msg, (e instanceof Error ? e.stack : ""));
+  log.error("❌ errorResponse: unhandled error:", msg, (e instanceof Error ? e.stack : ""));
   // Don't leak internal error details (KV internals, dependency text) to clients.
   return json({ error: "internal-error", message: "An unexpected error occurred" }, 500);
 }
@@ -1944,7 +2049,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const tokenSnippet = authHeader.startsWith("Bearer ")
     ? authHeader.slice(7, 15) + "..."
     : "(no token)";
-  console.log(`🌐 ${method} ${pathname} | auth: ${tokenSnippet}`);
+  log.debug(`🌐 ${method} ${pathname} | auth: ${tokenSnippet}`);
 
   try {
     // SPA shell
@@ -1963,16 +2068,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
     if (method === "GET" && pathname === "/api/status") {
       const monitors = await listMonitors();
       const statusData = { status: "ok", startedAt, lastCronTick, monitors: monitors.monitors.length };
-      console.log(`✅ GET /api/status → 200 monitors=${statusData.monitors}`);
+      log.debug(`✅ GET /api/status → 200 monitors=${statusData.monitors}`);
       return json(statusData);
     }
 
     // Public: login
     if (method === "POST" && pathname === "/auth/login") {
       const body = await parseBody<{ username: string; password: string }>(req);
-      console.log(`🔍 POST /auth/login: username="${body.username}"`);
+      log.debug(`🔍 POST /auth/login: username="${body.username}"`);
       const session = await login(body.username, body.password);
-      console.log(`✅ POST /auth/login → 200 username="${body.username}"`);
+      log.debug(`✅ POST /auth/login → 200 username="${body.username}"`);
       return json(session);
     }
 
@@ -2006,7 +2111,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         throw new CanaryError("unauthorized", "Missing Authorization: Bearer cnry_v1_... header", 401);
       }
       const payload = await parseBody<FireAlertDto>(req);
-      console.log(`🪝 POST /webhook/${monitorId}/fire passed=${payload.passed ?? false} observed=${payload.observed ?? 0} hasError=${!!payload.error} hasOverride=${!!(payload.message || payload.title)}`);
+      log.info(`🪝 POST /webhook/${monitorId}/fire passed=${payload.passed ?? false} observed=${payload.observed ?? 0} hasError=${!!payload.error} hasOverride=${!!(payload.message || payload.title)}`);
       const result = await webhookFire({ monitorId, plaintextSecret, payload });
       return json({
         runId: result.runResult.runId,
@@ -2022,7 +2127,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // Logout
     if (method === "POST" && pathname === "/auth/logout") {
       await logout(token);
-      console.log(`✅ POST /auth/logout → 200`);
+      log.debug(`✅ POST /auth/logout → 200`);
       return json({ ok: true });
     }
 
@@ -2117,7 +2222,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       }
       const PER_CHECK_CAP = 500; // safety cap so a per-minute monitor can't return thousands of rows
       const cutoff = new Date(Date.now() - WINDOWS[windowKey]).toISOString();
-      console.log(`🔍 GET /api/reports window=${windowKey} cutoff=${cutoff}`);
+      log.debug(`🔍 GET /api/reports window=${windowKey} cutoff=${cutoff}`);
 
       const monitorsResult = await listMonitors();
       const reports: Array<Record<string, unknown>> = [];
@@ -2142,11 +2247,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
           if (r.timestamp < cutoff) break; // reached the window edge — older runs follow
           if (r.passed) passed++;
           runs.push({
+            runId: r.runId, // lets the SPA drill into a failed run's request/response
             timestamp: r.timestamp,
             passed: r.passed,
             observed: r.observed,
             error: r.error,
             captures: r.captures,
+            // Whether full request/response detail was captured (failed runs only).
+            hasDetail: !!(r.request || r.response),
           });
         }
         // If we filled the cap and the oldest kept run is still inside the window,
@@ -2169,8 +2277,18 @@ Deno.serve(async (req: Request): Promise<Response> => {
         });
       }
 
-      console.log(`✅ GET /api/reports → 200 window=${windowKey} checks=${reports.length}`);
+      log.debug(`✅ GET /api/reports → 200 window=${windowKey} checks=${reports.length}`);
       return json({ window: windowKey, generatedAt: new Date().toISOString(), reports });
+    }
+
+    // Single run detail — full request/response for drilling into a failed check.
+    const runDetailMatch = pathname.match(/^\/api\/runs\/([^/]+)\/([^/]+)\/([^/]+)$/);
+    if (runDetailMatch && method === "GET") {
+      const [, monitorId, timestamp, runId] = runDetailMatch.map((s, i) => i === 0 ? s : decodeURIComponent(s));
+      const entry = await kv.get<RunResultDto>(["run", monitorId, timestamp, runId]);
+      if (!entry.value) throw new CanaryError("not-found", "Run not found", 404);
+      log.debug(`✅ GET /api/runs/${monitorId}/${timestamp}/${runId} → 200`);
+      return json(entry.value);
     }
 
     // Webhook key management — admin-only, scoped by monitorId
@@ -2181,7 +2299,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         // Ensure monitor exists before issuing a key
         await getMonitor({ monitorId });
         const result = await WebhookSecret.generate(monitorId);
-        console.log(`✅ POST /monitors/${monitorId}/webhook → 200 fingerprint=${result.fingerprint}`);
+        log.info(`✅ POST /monitors/${monitorId}/webhook → 200 fingerprint=${result.fingerprint}`);
         return json({
           secret: result.plaintext,
           fingerprint: result.fingerprint,
@@ -2195,7 +2313,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       }
       if (method === "DELETE") {
         await WebhookSecret.revoke(monitorId);
-        console.log(`✅ DELETE /monitors/${monitorId}/webhook → 200`);
+        log.info(`✅ DELETE /monitors/${monitorId}/webhook → 200`);
         return json({ revoked: true });
       }
     }
@@ -2203,22 +2321,22 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // Users
     if (method === "POST" && pathname === "/users") {
       const body = await parseBody<{ username: string; password: string }>(req);
-      console.log(`🔍 POST /users: username="${body.username}"`);
+      log.debug(`🔍 POST /users: username="${body.username}"`);
       await createUser(body.username, body.password);
-      console.log(`✅ POST /users → 201 username="${body.username}"`);
+      log.debug(`✅ POST /users → 201 username="${body.username}"`);
       return json({ ok: true }, 201);
     }
     if (method === "GET" && pathname === "/users") {
       const users = await listUsers();
-      console.log(`✅ GET /users → 200 count=${users.users.length}`);
+      log.debug(`✅ GET /users → 200 count=${users.users.length}`);
       return json(users);
     }
     const userMatch = pathname.match(/^\/users\/([^/]+)$/);
     if (userMatch && method === "DELETE") {
       const username = decodeURIComponent(userMatch[1]);
-      console.log(`🔍 DELETE /users/${username}`);
+      log.debug(`🔍 DELETE /users/${username}`);
       await deleteUser(username);
-      console.log(`✅ DELETE /users/${username} → 200`);
+      log.debug(`✅ DELETE /users/${username} → 200`);
       return json({ ok: true });
     }
 
@@ -2237,9 +2355,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
       const body = await parseBody<{ url: string; method: string; headers?: Record<string, string>; body?: string }>(req);
       const forwardHeaders: Record<string, string> = { ...(body.headers ?? {}) };
       if (body.body) forwardHeaders["Content-Type"] = forwardHeaders["Content-Type"] ?? "application/json";
-      console.log(`🔍 test-request → ${body.method} ${body.url}`);
-      console.log(`🔍 test-request headers:`, JSON.stringify(forwardHeaders));
-      console.log(`🔍 test-request body:`, body.body ?? "(none)");
+      log.debug(`🔍 test-request → ${body.method} ${body.url}`);
+      log.debug(`🔍 test-request headers:`, JSON.stringify(redactHeaders(forwardHeaders)));
+      log.debug(`🔍 test-request body:`, body.body ?? "(none)");
       let res: Response;
       try {
         res = await fetch(body.url, {
@@ -2248,12 +2366,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
           body: body.body ?? undefined,
         });
       } catch (e) {
-        console.log(`❌ test-request fetch threw:`, (e as Error).message);
+        log.debug(`❌ test-request fetch threw:`, (e as Error).message);
         throw new CanaryError("request-failed", `Could not reach ${body.url}: ${(e as Error).message}`, 502);
       }
       const text = await res.text();
-      console.log(`🔍 test-request response status:`, res.status);
-      console.log(`🔍 test-request response body:`, text.slice(0, 500));
+      log.debug(`🔍 test-request response status:`, res.status);
+      log.debug(`🔍 test-request response body:`, text.slice(0, 500));
       let data: unknown;
       try { data = JSON.parse(text); } catch { data = text; }
       return json({ status: res.status, ok: res.ok, data });
@@ -2262,22 +2380,22 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // Monitors
     if (method === "POST" && pathname === "/monitors") {
       const body = await parseBody(req);
-      console.log(`🔍 POST /monitors: body=${JSON.stringify(body)}`);
+      log.debug(`🔍 POST /monitors: body=${JSON.stringify(body)}`);
       const result = await createMonitor(body as Parameters<typeof createMonitor>[0]);
-      console.log(`✅ POST /monitors → 201 monitorId=${result.monitorId} name="${result.name}"`);
+      log.info(`✅ POST /monitors → 201 monitorId=${result.monitorId} name="${result.name}"`);
       return json(result, 201);
     }
     if (method === "GET" && pathname === "/monitors") {
       const result = await listMonitors();
-      console.log(`✅ GET /monitors → 200 count=${result.monitors.length}`);
+      log.debug(`✅ GET /monitors → 200 count=${result.monitors.length}`);
       return json(result);
     }
     const monitorMatch = pathname.match(/^\/monitors\/([^/]+)$/);
     if (monitorMatch && method === "GET") {
       const monitorId = monitorMatch[1];
-      console.log(`🔍 GET /monitors/${monitorId}`);
+      log.debug(`🔍 GET /monitors/${monitorId}`);
       const result = await getMonitor({ monitorId });
-      console.log(`✅ GET /monitors/${monitorId} → 200 name="${result.name}"`);
+      log.debug(`✅ GET /monitors/${monitorId} → 200 name="${result.name}"`);
       return json(result);
     }
 
@@ -2287,15 +2405,21 @@ Deno.serve(async (req: Request): Promise<Response> => {
       const monitorId = checkMatch[1];
       if (method === "POST") {
         const body = await parseBody(req);
-        console.log(`🔍 POST /monitors/${monitorId}/check: body=${JSON.stringify(body)}`);
+        // Redact sensitive header values (e.g. a literal Authorization bearer)
+        // before logging the check config — the raw body must never hit the logs.
+        const safeBody = { ...(body as Record<string, unknown>) };
+        if (safeBody.headers && typeof safeBody.headers === "object") {
+          safeBody.headers = redactHeaders(safeBody.headers as Record<string, string>);
+        }
+        log.debug(`🔍 POST /monitors/${monitorId}/check: body=${JSON.stringify(safeBody)}`);
         const result = await configureCheck({ ...(body as object), monitorId } as Parameters<typeof configureCheck>[0]);
-        console.log(`✅ POST /monitors/${monitorId}/check → 200`);
+        log.debug(`✅ POST /monitors/${monitorId}/check → 200`);
         return json(result);
       }
       if (method === "GET") {
-        console.log(`🔍 GET /monitors/${monitorId}/check`);
+        log.debug(`🔍 GET /monitors/${monitorId}/check`);
         const result = await getCheck({ monitorId });
-        console.log(`✅ GET /monitors/${monitorId}/check → 200 url=${result.url}`);
+        log.debug(`✅ GET /monitors/${monitorId}/check → 200 url=${result.url}`);
         return json(result);
       }
     }
@@ -2306,15 +2430,15 @@ Deno.serve(async (req: Request): Promise<Response> => {
       const monitorId = alertMatch[1];
       if (method === "POST") {
         const body = await parseBody(req);
-        console.log(`🔍 POST /monitors/${monitorId}/alert: recipients=${(body as { recipients?: unknown[] }).recipients?.length ?? 0}`);
+        log.debug(`🔍 POST /monitors/${monitorId}/alert: recipients=${(body as { recipients?: unknown[] }).recipients?.length ?? 0}`);
         const result = await configureAlert({ ...(body as object), monitorId } as Parameters<typeof configureAlert>[0]);
-        console.log(`✅ POST /monitors/${monitorId}/alert → 200`);
+        log.debug(`✅ POST /monitors/${monitorId}/alert → 200`);
         return json(result);
       }
       if (method === "GET") {
-        console.log(`🔍 GET /monitors/${monitorId}/alert`);
+        log.debug(`🔍 GET /monitors/${monitorId}/alert`);
         const result = await getAlert({ monitorId });
-        console.log(`✅ GET /monitors/${monitorId}/alert → 200 recipients=${result.recipients.length}`);
+        log.debug(`✅ GET /monitors/${monitorId}/alert → 200 recipients=${result.recipients.length}`);
         return json(result);
       }
     }
@@ -2327,22 +2451,22 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // Secrets
     if (method === "POST" && pathname === "/secrets") {
       const body = await parseBody(req) as Parameters<typeof setSecret>[0];
-      console.log(`🔍 POST /secrets: key=${body.secretKey}`);
+      log.debug(`🔍 POST /secrets: key=${body.secretKey}`);
       const result = await setSecret(body);
-      console.log(`✅ POST /secrets → 200 key=${body.secretKey}`);
+      log.debug(`✅ POST /secrets → 200 key=${body.secretKey}`);
       return json(result);
     }
     if (method === "GET" && pathname === "/secrets") {
       const result = await listSecrets();
-      console.log(`✅ GET /secrets → 200 count=${result.secrets.length}`);
+      log.debug(`✅ GET /secrets → 200 count=${result.secrets.length}`);
       return json(result);
     }
     const secretMatch = pathname.match(/^\/secrets\/([^/]+)$/);
     if (secretMatch && method === "DELETE") {
       const secretKey = decodeURIComponent(secretMatch[1]);
-      console.log(`🔍 DELETE /secrets/${secretKey}`);
+      log.debug(`🔍 DELETE /secrets/${secretKey}`);
       const result = await deleteSecret({ secretKey });
-      console.log(`✅ DELETE /secrets/${secretKey} → 200`);
+      log.debug(`✅ DELETE /secrets/${secretKey} → 200`);
       return json(result);
     }
 
@@ -2350,9 +2474,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const runMatch = pathname.match(/^\/run\/([^/]+)$/);
     if (runMatch && method === "POST") {
       const monitorId = runMatch[1];
-      console.log(`🔍 POST /run/${monitorId}: triggering manual run`);
+      log.info(`🔍 POST /run/${monitorId}: triggering manual run`);
       const result = await executeRunner({ monitorId });
-      console.log(`✅ POST /run/${monitorId} → 200 passed=${result.passed} observed=${result.observed}`);
+      log.debug(`✅ POST /run/${monitorId} → 200 passed=${result.passed} observed=${result.observed}`);
       return json(result);
     }
 
@@ -2378,29 +2502,31 @@ Deno.serve(async (req: Request): Promise<Response> => {
         ntfyMessage: body.ntfyMessage,
       };
       if (body.channel === "email") {
-        console.log(`📧 test-alert: sending email to ${body.address}`);
+        log.info(`📧 test-alert: sending email to ${body.address}`);
         const ch = new Email(body.address);
         await ch.send(fakeRun, fakeAlert);
       } else if (body.channel === "sms") {
-        console.log(`📱 test-alert: sending SMS to ${body.address}`);
+        log.info(`📱 test-alert: sending SMS to ${body.address}`);
         const ch = new Sms(body.address);
         await ch.send(fakeRun, fakeAlert);
       } else if (body.channel === "ntfy") {
-        console.log(`🔔 test-alert: sending ntfy to ${body.address}`);
+        log.info(`🔔 test-alert: sending ntfy to ${body.address}`);
         const ch = new Ntfy(body.address);
         await ch.send(fakeRun, fakeAlert);
       } else {
         throw new CanaryError("validation-error", `Unknown channel: ${body.channel}`, 400);
       }
-      console.log(`✅ test-alert: sent ${body.channel} to ${body.address}`);
+      log.info(`✅ test-alert: sent ${body.channel} to ${body.address}`);
       return json({ sent: true });
     }
 
     return json({ error: "not-found", message: `No route for ${method} ${pathname}` }, 404);
   } catch (e) {
-    console.log(`❌ request error: ${(e as Error).message}`, (e as Error).stack);
+    // errorResponse() logs unhandled errors at error level; this trace is the
+    // per-request diagnostic (includes handled 4xx), so keep it at debug.
+    log.debug(`❌ request error: ${(e as Error).message}`, (e as Error).stack);
     return errorResponse(e);
   }
 });
 
-console.log("🚀 Canary is running");
+log.debug("🚀 Canary is running");

@@ -5,6 +5,7 @@ import { BaseAlertChannel } from "./shared/mod.ts";
 import { Sms } from "./implementations/sms/mod.ts";
 import { Email } from "./implementations/email/mod.ts";
 import { Ntfy } from "./implementations/ntfy/mod.ts";
+import { log } from "../_log.ts";
 
 export class AlertChannel {
   private constructor(
@@ -22,7 +23,7 @@ export class AlertChannel {
       else if (r.channel === "ntfy") { channels.push(new Ntfy(r.address)); labels.push("ntfy"); }
       // Skip an unknown channel rather than throwing — a single bad recipient
       // must not block the valid ones from being notified.
-      else console.log(`⚠️ AlertChannel.fromAlert: skipping unknown channel "${r.channel}"`);
+      else log.warn(`⚠️ AlertChannel.fromAlert: skipping unknown channel "${r.channel}"`);
     }
     return new AlertChannel(channels, labels, dto);
   }
@@ -35,9 +36,9 @@ export class AlertChannel {
       const label = this.labels[i] ?? "channel";
       if (res.status === "rejected") {
         const reason = res.reason instanceof Error ? res.reason.message : String(res.reason);
-        console.log(`❌ AlertChannel.send: ${label} failed (non-fatal) — ${reason}`);
+        log.error(`❌ AlertChannel.send: ${label} failed (non-fatal) — ${reason}`);
       } else {
-        console.log(`✅ AlertChannel.send: ${label} sent`);
+        log.info(`✅ AlertChannel.send: ${label} sent`);
       }
     });
     const failed = results.filter((r) => r.status === "rejected").length;

@@ -1,5 +1,5 @@
 import type { MonitorIdDto } from "../../dto/monitor-id-dto.ts";
-import type { RunResultDto } from "../../dto/run-result-dto.ts";
+import type { RunResultDto, RunRequestDetailDto, RunResponseDetailDto } from "../../dto/run-result-dto.ts";
 import type { CheckDto } from "../../dto/check-dto.ts";
 import { Monitor } from "../../impure/monitor/monitor.ts";
 import { Check } from "../../impure/check/check.ts";
@@ -8,11 +8,36 @@ import { Source } from "../../impure/source/mod.ts";
 import { Extractor } from "../../pure/extractor/extractor.ts";
 import { Comparator } from "../../pure/comparator/comparator.ts";
 import { persistRunAndAlert } from "../_shared/persistRunAndAlert.ts";
-import { CanaryError } from "../../dto/_shared.ts";
+import { CanaryError, type ResponseDetailCarrier } from "../../dto/_shared.ts";
+import { log, withRun } from "../../impure/_log.ts";
 
 // {{KEY}} secret references, substituted into the outbound request just before
 // it is sent. Whitespace around the key is tolerated.
 const SECRET_RE = /\{\{\s*([^}\s]+)\s*\}\}/g;
+
+// Cap persisted response bodies so a single chatty endpoint can't blow past the
+// Deno KV per-value limit or bloat the run history.
+const MAX_RESPONSE_BODY = 16 * 1024;
+
+// Header names whose values must never be persisted or logged in the clear.
+const SENSITIVE_HEADERS = new Set(["authorization", "cookie", "x-api-key", "proxy-authorization"]);
+
+/**
+ * Mask the values of known-sensitive headers (e.g. a literal Authorization
+ * bearer) before they are persisted to a run detail or written to a log.
+ */
+export function redactHeaders(headers: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers ?? {})) {
+    out[k] = SENSITIVE_HEADERS.has(k.toLowerCase()) ? "***" : v;
+  }
+  return out;
+}
+
+function truncateBody(body: string): { body: string; truncated: boolean } {
+  if (body.length <= MAX_RESPONSE_BODY) return { body, truncated: false };
+  return { body: body.slice(0, MAX_RESPONSE_BODY) + "…(truncated)", truncated: true };
+}
 
 /**
  * Replace {{KEY}} tokens in the check's url, header values, and body with the
@@ -56,22 +81,29 @@ export function redactSecrets(text: string, secretValues: string[]): string {
   return out;
 }
 
-export async function executeRunner(input: MonitorIdDto): Promise<RunResultDto> {
-  console.log(`🚀 runner.execute: starting for monitorId=${input.monitorId}`);
+export function executeRunner(input: MonitorIdDto): Promise<RunResultDto> {
+  // One id for the whole run: it tags every log line below (via withRun) AND
+  // becomes the stored run's runId, so logs and history line up exactly.
+  const runId = crypto.randomUUID();
+  return withRun(runId, () => executeRun(runId, input));
+}
+
+async function executeRun(runId: string, input: MonitorIdDto): Promise<RunResultDto> {
+  log.info(`🚀 runner.execute: starting for monitorId=${input.monitorId}`);
 
   const check = new Check();
-  console.log(`🔍 runner.execute: loading check config for monitorId=${input.monitorId}`);
+  log.debug(`🔍 runner.execute: loading check config for monitorId=${input.monitorId}`);
   const checkDto = await check.get(input.monitorId);
-  console.log(`✅ runner.execute: check loaded — url=${checkDto.url} cron=${checkDto.cron} method=${checkDto.method}`);
+  log.info(`✅ runner.execute: check loaded — url=${checkDto.url} cron=${checkDto.cron} method=${checkDto.method}`);
 
   let monitorName: string | undefined;
   try {
     const monitor = new Monitor();
     const monitorDto = await monitor.get(input.monitorId);
     monitorName = monitorDto.name;
-    console.log(`✅ runner.execute: monitor name="${monitorName}"`);
+    log.debug(`✅ runner.execute: monitor name="${monitorName}"`);
   } catch {
-    console.log(`⚠️ runner.execute: could not load monitor name for ${input.monitorId}`);
+    log.warn(`⚠️ runner.execute: could not load monitor name for ${input.monitorId}`);
   }
 
   let observed = 0;
@@ -79,41 +111,76 @@ export async function executeRunner(input: MonitorIdDto): Promise<RunResultDto> 
   let runError: string | undefined;
   let captures: Record<string, string> | undefined;
   let secretValues: string[] = [];
+  // Captured for the failed-run drill-in. Populated from the successful response
+  // OR from a non-2xx error that carries the upstream status/body.
+  let responseStatus: number | undefined;
+  let responseBody: string | undefined;
   try {
     const resolved = await resolveCheckSecrets(checkDto);
     secretValues = resolved.secretValues;
     const source = Source.fromCheck(resolved.check);
     // Log the TEMPLATE url (checkDto), not the resolved one, so secrets stay out of logs.
-    console.log(`🔍 runner.execute: fetching ${checkDto.method} ${checkDto.url}`);
+    log.info(`🔍 runner.execute: fetching ${checkDto.method} ${checkDto.url}`);
     // Pass resolved values so the source can scrub them from its own logs/errors.
     const responseDto = await source.fetch(resolved.check, secretValues);
-    console.log(`🔍 runner.execute: response received — payloadLength=${responseDto.payload?.length ?? 0}`);
+    responseStatus = responseDto.status;
+    responseBody = responseDto.payload;
+    log.debug(`🔍 runner.execute: response received — status=${responseDto.status ?? "?"} payloadLength=${responseDto.payload?.length ?? 0}`);
     observed = Extractor.apply(checkDto, responseDto);
-    console.log(`🔍 runner.execute: extractor applied — observed=${observed}`);
+    log.info(`🔍 runner.execute: extractor applied — observed=${observed}`);
     passed = Comparator.evaluate(checkDto, observed);
-    console.log(`🔍 runner.execute: comparator evaluated — observed=${observed} passed=${passed} op=${checkDto.comparatorOp} threshold=${checkDto.threshold}`);
+    log.debug(`🔍 runner.execute: comparator evaluated — observed=${observed} passed=${passed} op=${checkDto.comparatorOp} threshold=${checkDto.threshold}`);
     if (checkDto.captures && Object.keys(checkDto.captures).length > 0) {
       captures = Extractor.applyCaptures(checkDto.captures, responseDto.payload);
-      console.log(`🔍 runner.execute: captures extracted — ${JSON.stringify(captures)}`);
+      log.debug(`🔍 runner.execute: captures extracted — ${JSON.stringify(captures)}`);
     }
   } catch (e) {
     // Redact any resolved secret values that may appear in the error text
     // before it is persisted to the run result or surfaced in an alert.
     runError = redactSecrets((e as Error).message, secretValues);
-    console.log(`❌ runner.execute: check failed — ${runError}`);
+    // A non-2xx response throws but carries the upstream status/body so the
+    // failed-run drill-in can still show what the endpoint returned.
+    const carrier = e as ResponseDetailCarrier;
+    if (carrier.responseStatus !== undefined) responseStatus = carrier.responseStatus;
+    if (carrier.responseBody !== undefined) responseBody = carrier.responseBody;
+    log.error(`❌ runner.execute: check failed — ${runError}`);
+  }
+
+  // Capture request/response on FAILED runs only — that is what gets debugged,
+  // and it keeps passing-run history lean.
+  let request: RunRequestDetailDto | undefined;
+  let response: RunResponseDetailDto | undefined;
+  if (!passed) {
+    request = {
+      method: checkDto.method,
+      url: checkDto.url, // template — keeps {{KEY}} out of band, never the secret value
+      headers: redactHeaders(checkDto.headers),
+      body: checkDto.body,
+    };
+    if (responseStatus !== undefined || responseBody !== undefined) {
+      const t = truncateBody(redactSecrets(responseBody ?? "", secretValues));
+      response = {
+        status: responseStatus,
+        body: responseBody !== undefined ? t.body : undefined,
+        truncated: t.truncated || undefined,
+      };
+    }
   }
 
   const { runResult } = await persistRunAndAlert({
+    runId,
     monitorId: input.monitorId,
     monitorName,
     observed,
     passed,
     error: runError,
     captures,
+    request,
+    response,
     notifyOnRecover: checkDto.notifyOnRecover,
     source: "cron",
   });
 
-  console.log(`✅ runner.execute: complete for monitorId=${input.monitorId} passed=${passed} observed=${observed}`);
+  log.info(`✅ runner.execute: complete for monitorId=${input.monitorId} passed=${passed} observed=${observed}`);
   return runResult;
 }

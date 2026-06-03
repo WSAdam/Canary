@@ -40,7 +40,11 @@ export class Extractor {
     const result: Record<string, string> = {};
     for (const [name, path] of Object.entries(captures)) {
       const val = getPath(parsed, path);
-      result[name] = val === undefined ? "" : String(val);
+      // Objects and arrays must be JSON-serialized; String(val) would coerce
+      // them to the useless literal "[object Object]". Primitives stay as-is.
+      result[name] = val === undefined
+        ? ""
+        : (typeof val === "object" && val !== null ? JSON.stringify(val) : String(val));
     }
     return result;
   }

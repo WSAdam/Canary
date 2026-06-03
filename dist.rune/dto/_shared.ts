@@ -10,6 +10,16 @@ export class CanaryError extends Error {
 }
 
 /**
+ * Optional upstream-response detail attached to errors thrown by HTTP sources
+ * on a non-2xx response, so a failed run can persist what the endpoint actually
+ * returned (status + body) rather than discarding it.
+ */
+export interface ResponseDetailCarrier {
+  responseStatus?: number;
+  responseBody?: string;
+}
+
+/**
  * Constant-time string comparison for secret/hash material. The length check
  * leaks length only, which is fine for fixed-length hex/base64 digests.
  */

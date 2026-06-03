@@ -415,6 +415,7 @@ Deno Deploy provides Deno KV out of the box. No additional database setup requir
 | `POSTMARK_FROM_EMAIL` | For email alerts + invites | Verified sender address. |
 | `ZAPIER_SMS_URL` | For SMS alerts | Zapier webhook URL that forwards to Textmagic (or your SMS provider). |
 | `FETCH_TIMEOUT_MS` | No (default `10000`) | Per-check request timeout in milliseconds. A check exceeding it fails with a `timed-out` error (which alerts). |
+| `LOG_LEVEL` | No (default `info`) | Minimum log level to emit: `debug`, `info`, `warn`, or `error`. At `info`, bootstrap/idle-cron chatter is suppressed (a cold-start logs nothing) and only real activity — runs, alerts, warnings, errors — shows. Set `debug` for the full firehose. Each line is tagged `[level]`, and lines inside a check run also carry `[run=<id>]` (matching the stored run's `runId`) so one run's logs group together. |
 
 ntfy doesn't need any env vars — the topic is configured per-recipient on each monitor.
 

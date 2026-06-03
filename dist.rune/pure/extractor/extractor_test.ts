@@ -49,3 +49,30 @@ Deno.test("Extractor.apply - throws when path is missing", () => {
     "expected number",
   );
 });
+
+Deno.test("Extractor.applyCaptures - serializes objects/arrays as JSON, not [object Object]", () => {
+  const payload = '{"totalErrors": 1, "errors": [{"code": "X"}], "meta": {"ok": false}}';
+  const result = Extractor.applyCaptures(
+    { totalErrors: "totalErrors", errors: "errors", meta: "meta" },
+    payload,
+  );
+  assertEquals(result.totalErrors, "1");
+  assertEquals(result.errors, '[{"code":"X"}]');
+  assertEquals(result.meta, '{"ok":false}');
+});
+
+Deno.test("Extractor.applyCaptures - primitives and missing paths", () => {
+  const payload = '{"name": "autobottom", "flag": true, "ratio": 0.5}';
+  const result = Extractor.applyCaptures(
+    { name: "name", flag: "flag", ratio: "ratio", missing: "nope.gone" },
+    payload,
+  );
+  assertEquals(result.name, "autobottom");
+  assertEquals(result.flag, "true");
+  assertEquals(result.ratio, "0.5");
+  assertEquals(result.missing, "");
+});
+
+Deno.test("Extractor.applyCaptures - returns empty object on invalid JSON", () => {
+  assertEquals(Extractor.applyCaptures({ a: "a" }, "not json"), {});
+});

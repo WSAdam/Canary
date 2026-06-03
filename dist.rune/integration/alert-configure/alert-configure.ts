@@ -3,9 +3,10 @@ import type { AlertDto } from "../../dto/alert-dto.ts";
 import { Alert } from "../../impure/alert/alert.ts";
 import { normalizeNtfyUrl } from "../../impure/alertChannel/implementations/ntfy/mod.ts";
 import { CanaryError } from "../../dto/_shared.ts";
+import { log } from "../../impure/_log.ts";
 
 export async function configureAlert(input: ConfigureAlertDto): Promise<AlertDto> {
-  console.log("🚀 alert.configure", input.monitorId, input.recipients.length, "recipients");
+  log.debug("🚀 alert.configure", input.monitorId, input.recipients.length, "recipients");
   // Reject an unusable ntfy topic at save time so the alert can't be stored in a
   // state that silently fails to deliver. Reuses the send-time normalizer.
   for (const r of input.recipients) {
@@ -19,6 +20,6 @@ export async function configureAlert(input: ConfigureAlertDto): Promise<AlertDto
   const alert = Alert.build(input);
   const alertDto = alert.toDto();
   const result = await alert.upsert(alertDto);
-  console.log("✅ alert.configure", result.monitorId);
+  log.debug("✅ alert.configure", result.monitorId);
   return result;
 }

@@ -2,6 +2,7 @@ import { applyVars, BaseAlertChannel, buildVars } from "../../shared/mod.ts";
 import type { RunResultDto } from "../../../../dto/run-result-dto.ts";
 import type { AlertDto } from "../../../../dto/alert-dto.ts";
 import { CanaryError } from "../../../../dto/_shared.ts";
+import { log } from "../../../_log.ts";
 
 /**
  * ntfy reads the notification title from an HTTP header. Header values cannot
@@ -78,7 +79,7 @@ export class Ntfy extends BaseAlertChannel {
     const priority = run.passed ? "default" : "high";
     const tags = run.passed ? "white_check_mark" : "warning";
 
-    console.log(`🔔 ntfy.send: url=${url} title="${title}" priority=${priority}`);
+    log.info(`🔔 ntfy.send: url=${url} title="${title}" priority=${priority}`);
     const response = await fetch(url, {
       method: "POST",
       headers: {

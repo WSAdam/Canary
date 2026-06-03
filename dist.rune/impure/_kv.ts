@@ -1,3 +1,5 @@
-console.log("🔍 kv: initializing Deno.openKv()...");
+import { log } from "./_log.ts";
+
+log.debug("🔍 kv: initializing Deno.openKv()...");
 export const kv = await Deno.openKv();
-console.log("✅ kv: initialized successfully");
+log.debug("✅ kv: initialized successfully");

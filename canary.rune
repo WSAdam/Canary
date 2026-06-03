@@ -156,7 +156,7 @@
         [CSE] email
         ex:alertChannel.send(RunResultDto): void
           send-failed timed-out
-        [RET] RunResultDto
+    [RET] RunResultDto
 
 
 [TYP] monitor: Class
@@ -261,7 +261,8 @@
     input for querying or deleting a secret by key name
 [DTO] SecretListDto: secret(s)
     all stored secret key names
-[DTO] ResponseDto: payload
-    raw response payload from an HTTP source request
-[DTO] RunResultDto: runId, monitorId, observed, passed, timestamp
-    the result of a single check run including observed value and status
+[DTO] ResponseDto: payload, status
+    raw response payload and HTTP status from an HTTP source request
+[DTO] RunResultDto: runId, monitorId, observed, passed, timestamp, request,
+    response
+    a single check run; request/response are captured on failures for drill-in

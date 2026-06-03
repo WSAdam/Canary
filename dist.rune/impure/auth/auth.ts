@@ -1,5 +1,6 @@
 import { kv } from "../_kv.ts";
 import { CanaryError, constantTimeEqual } from "../../dto/_shared.ts";
+import { log } from "../_log.ts";
 
 interface UserRecord {
   username: string;
@@ -32,7 +33,7 @@ function importHmacKey(raw: Uint8Array): Promise<CryptoKey> {
 async function loadOrCreateSigningKey(): Promise<CryptoKey> {
   const existing = await kv.get<Uint8Array>(SIGNING_KEY_KV, { consistency: "strong" });
   if (existing.value) {
-    console.log("🔑 signingKey: loaded existing key from KV");
+    log.debug("🔑 signingKey: loaded existing key from KV");
     return importHmacKey(existing.value);
   }
   const fresh = crypto.getRandomValues(new Uint8Array(32));
@@ -41,7 +42,7 @@ async function loadOrCreateSigningKey(): Promise<CryptoKey> {
     .set(SIGNING_KEY_KV, fresh)
     .commit();
   if (res.ok) {
-    console.log("🔑 signingKey: generated and persisted new key");
+    log.info("🔑 signingKey: generated and persisted new key");
     return importHmacKey(fresh);
   }
   // Lost the first-boot race with another isolate — adopt the winning key.
@@ -49,7 +50,7 @@ async function loadOrCreateSigningKey(): Promise<CryptoKey> {
   if (!winner.value) {
     throw new CanaryError("internal-error", "Failed to establish session signing key", 500);
   }
-  console.log("🔑 signingKey: adopted key written by another instance");
+  log.info("🔑 signingKey: adopted key written by another instance");
   return importHmacKey(winner.value);
 }
 
@@ -124,28 +125,28 @@ async function verifyPassword(password: string, hash: string, salt: string): Pro
 // ---------------------------------------------------------------------------
 
 export async function seedAdmin(username: string, password: string): Promise<void> {
-  console.log("🔍 seedAdmin: checking:", username);
+  log.debug("🔍 seedAdmin: checking:", username);
   const existing = await kv.get<UserRecord>(["user", username], { consistency: "strong" });
-  if (existing.value !== null) { console.log("🔍 seedAdmin: already exists"); return; }
+  if (existing.value !== null) { log.debug("🔍 seedAdmin: already exists"); return; }
   const { hash, salt } = await hashPassword(password);
   await kv.set(["user", username], { username, passwordHash: hash, salt });
-  console.log("✅ seedAdmin: created:", username);
+  log.info("✅ seedAdmin: created:", username);
 }
 
 export async function login(username: string, password: string): Promise<{ token: string }> {
-  console.log("🔍 login: attempt for:", username);
+  log.debug("🔍 login: attempt for:", username);
   const entry = await kv.get<UserRecord>(["user", username], { consistency: "strong" });
   if (!entry.value) {
-    console.log("❌ login: user not found:", username);
+    log.warn("❌ login: user not found:", username);
     throw new CanaryError("unauthorized", "Invalid credentials", 401);
   }
   const valid = await verifyPassword(password, entry.value.passwordHash, entry.value.salt);
   if (!valid) {
-    console.log("❌ login: wrong password for:", username);
+    log.warn("❌ login: wrong password for:", username);
     throw new CanaryError("unauthorized", "Invalid credentials", 401);
   }
   const token = await signToken(username);
-  console.log("✅ login: signed token for:", username);
+  log.info("✅ login: signed token for:", username);
   return { token };
 }
 
@@ -156,10 +157,10 @@ export async function logout(_token: string): Promise<void> {
 export async function validateSession(token: string): Promise<{ username: string }> {
   try {
     const result = await verifyToken(token);
-    console.log("✅ validateSession:", result.username);
+    log.debug("✅ validateSession:", result.username);
     return result;
   } catch (e) {
-    console.log("❌ validateSession failed:", (e as Error).message);
+    log.debug("❌ validateSession failed:", (e as Error).message);
     throw e;
   }
 }
@@ -169,7 +170,7 @@ export async function createUser(username: string, password: string): Promise<vo
   if (existing.value !== null) throw new CanaryError("conflict", `User '${username}' already exists`, 409);
   const { hash, salt } = await hashPassword(password);
   await kv.set(["user", username], { username, passwordHash: hash, salt });
-  console.log("✅ user created:", username);
+  log.info("✅ user created:", username);
 }
 
 export async function listUsers(): Promise<{ users: string[] }> {
@@ -184,5 +185,5 @@ export async function deleteUser(username: string): Promise<void> {
   const existing = await kv.get<UserRecord>(["user", username], { consistency: "strong" });
   if (!existing.value) throw new CanaryError("not-found", `User '${username}' not found`, 404);
   await kv.delete(["user", username]);
-  console.log("✅ user deleted:", username);
+  log.info("✅ user deleted:", username);
 }

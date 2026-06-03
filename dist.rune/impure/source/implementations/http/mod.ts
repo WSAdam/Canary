@@ -1,7 +1,8 @@
 import { BaseSource } from "../../shared/mod.ts";
 import type { CheckDto } from "../../../../dto/check-dto.ts";
 import type { ResponseDto } from "../../../../dto/response-dto.ts";
-import { CanaryError } from "../../../../dto/_shared.ts";
+import { CanaryError, type ResponseDetailCarrier } from "../../../../dto/_shared.ts";
+import { log } from "../../../_log.ts";
 
 const RETRY_DELAYS = [0, 2000, 5000]; // immediate, 2s, 5s
 // Per-request wall-clock cap so a hung/slow endpoint can't stall the runner.
@@ -20,7 +21,7 @@ export class Http extends BaseSource {
 
     for (let attempt = 0; attempt < RETRY_DELAYS.length; attempt++) {
       if (RETRY_DELAYS[attempt] > 0) {
-        console.log(`🔄 http.fetch: retry attempt ${attempt + 1} after ${RETRY_DELAYS[attempt]}ms delay — url=${url}`);
+        log.warn(`🔄 http.fetch: retry attempt ${attempt + 1} after ${RETRY_DELAYS[attempt]}ms delay — url=${url}`);
         await new Promise((r) => setTimeout(r, RETRY_DELAYS[attempt]));
       }
 
@@ -33,22 +34,31 @@ export class Http extends BaseSource {
         });
 
         if (!response.ok) {
-          lastError = new CanaryError("request-failed", `HTTP ${response.status} from ${url}`, 502);
-          console.log(`⚠️ http.fetch: attempt ${attempt + 1} failed — HTTP ${response.status}`);
+          // Keep the body so a failed run can show what the endpoint returned.
+          const errBody = redact(await response.text().catch(() => ""));
+          const err: CanaryError & ResponseDetailCarrier = new CanaryError(
+            "request-failed",
+            `HTTP ${response.status} from ${url}`,
+            502,
+          );
+          err.responseStatus = response.status;
+          err.responseBody = errBody;
+          lastError = err;
+          log.warn(`⚠️ http.fetch: attempt ${attempt + 1} failed — HTTP ${response.status}`);
           continue;
         }
 
         const payload = await response.text();
-        if (attempt > 0) console.log(`✅ http.fetch: succeeded on attempt ${attempt + 1}`);
-        return { payload };
+        if (attempt > 0) log.info(`✅ http.fetch: succeeded on attempt ${attempt + 1}`);
+        return { payload, status: response.status };
       } catch (e) {
         const err = e as Error;
         if (err.name === "TimeoutError" || err.name === "AbortError") {
           lastError = new CanaryError("timed-out", `Timed out after ${TIMEOUT_MS}ms reaching ${url}`, 504);
-          console.log(`⚠️ http.fetch: attempt ${attempt + 1} timed out after ${TIMEOUT_MS}ms`);
+          log.warn(`⚠️ http.fetch: attempt ${attempt + 1} timed out after ${TIMEOUT_MS}ms`);
         } else {
           lastError = new CanaryError("request-failed", `Failed to reach ${url}`, 502);
-          console.log(`⚠️ http.fetch: attempt ${attempt + 1} failed — ${redact(err.message)}`);
+          log.warn(`⚠️ http.fetch: attempt ${attempt + 1} failed — ${redact(err.message)}`);
         }
       }
     }
