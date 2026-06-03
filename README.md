@@ -20,6 +20,8 @@ Canary polls your HTTP endpoints on a cron schedule, extracts numeric values fro
 - **Push webhooks**: per-monitor `cnry_v1_…` bearer secrets, hashed at rest, rotate/revoke from the UI
 - **Secret management**: store API keys / bearer tokens in Deno KV and reference them in monitor headers as `{{KEY}}`
 - **Manual trigger**: fire any monitor on demand via `POST /run/:monitorId`
+- **Reports & failed-run drill-in**: per-monitor check history in the dashboard — click any failed run to see the exact request sent and the response received (secrets redacted, body truncated)
+- **Structured leveled logs**: `LOG_LEVEL`-gated logging that stays quiet by default (a cold-start logs nothing) and tags every line of a single check run with `[run=<id>]` so its logs group together
 - **Diagnostic snapshot**: `GET /api/debug` returns the full KV state — what monitors/checks/alerts/webhooks exist, last cron tick, env presence
 - **Test-fire endpoint**: `POST /test-alert` sends one real SMS/email/ntfy push to verify creds without setting up a monitor
 - **Zero dependencies**: plain Deno with no third-party frameworks
@@ -34,6 +36,7 @@ canary/
 │   ├── dto/            # Plain TypeScript interfaces
 │   ├── pure/           # Side-effect-free logic (Schedule, Extractor, Comparator)
 │   ├── impure/         # Deno KV domain classes + HTTP source + alert channels
+│   │   └── _log.ts     # Central leveled logger (LOG_LEVEL + per-run [run=] tag)
 │   └── integration/    # Orchestration functions (one per API operation)
 ├── main.ts             # Deno.serve routes + Deno.cron tick
 ├── canary.rune         # Rune spec (source of truth for requirements)
@@ -265,12 +268,27 @@ POST /run/:monitorId
 
 ---
 
+### Reports & run history
+
+The dashboard's **Reports** tab lists recent fired checks per monitor (newest first) over a 24h / 7d / 30d window. Each **failed** run is clickable and opens a drill-in showing the exact request sent and response received — the fastest way to answer "what did the endpoint actually return?"
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/reports?window=24h\|7d\|30d` | Per-monitor run summary + recent rows (capped at 500/monitor). Each row includes `runId`, `passed`, `observed`, `error`, `captures`, and `hasDetail` (whether request/response was captured). |
+| `GET` | `/api/runs/:monitorId/:timestamp/:runId` | Full detail for a single run: `request` (method, url, redacted headers, body) and `response` (status, secret-redacted body, `truncated` flag). Captured on **failed runs only**. |
+
+> Object/array captures are stored as JSON (e.g. `errors=[{"code":"X"}]`), not the old `[object Object]`. Request/response capture is forward-only — runs recorded before this was added have no detail.
+
+---
+
 ### Diagnostics
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/status` | Public — `{ status, startedAt, lastCronTick, monitors: count }`. |
 | `GET` | `/api/debug` | Admin — full KV snapshot: monitors, checks (with `matchesNow`), alerts (with channel list + custom-template flags), latest run per monitor, webhooks (existence + fingerprint), env-var presence booleans. The first place to look when "alerts aren't arriving." |
+
+**Logs.** Server logs go through a central leveled logger gated by `LOG_LEVEL` (default `info`). At `info`, bootstrap and idle-cron chatter is suppressed — a Deno Deploy cold-start logs nothing — so only real activity (runs, alerts, warnings, errors) shows. Every line is prefixed `[level]`, and lines emitted inside a check run also carry `[run=<id>]` (matching the stored `runId`) so one run's logs group together even when isolates interleave. Set `LOG_LEVEL=debug` for the full firehose. Sensitive header values (Authorization, Cookie, …) are redacted before anything is logged.
 
 ---
 
