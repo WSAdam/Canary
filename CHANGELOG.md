@@ -18,6 +18,13 @@ versioned yet, so entries are grouped by date. Format loosely follows
   failure rolls back. New orchestrator
   `dist.rune/integration/integration-create/integration-create.ts`; see the
   README "Integrations (one-step setup)" section.
+- **`reporter/` drop-in module.** The producer side of the health contract for
+  Deno projects. `new CanaryReporter({ secret })` provides `trackError(step,
+  msg)` to record errors and `handleErrors(req)` to serve `POST /canary/errors`
+  — Deno KV by default (pluggable store), DST-correct calendar-day window,
+  fail-safe recording. A new project can conform to the contract in a few lines
+  instead of hand-building it. Tests + runnable example included; see
+  `reporter/README.md`.
 - **Structured leveled logging** (`dist.rune/impure/_log.ts`). All server-side
   logging now flows through a central logger gated by the `LOG_LEVEL` env var
   (default `info`). Bootstrap and idle-cron chatter is demoted to `debug`, so a

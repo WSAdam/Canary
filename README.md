@@ -116,6 +116,8 @@ The fastest way to monitor another project. If the project exposes the **Canary 
 
 Canary reads `totalErrors`; **healthy = 0**. Because the shape is identical for every project, the check config is boilerplate — you supply only what varies.
 
+**Producer side.** A Deno project can expose this endpoint in a few lines with the [`reporter/`](reporter/) drop-in — `await canary.trackError(step, msg)` to record, `canary.handleErrors(req)` to serve. See [reporter/README.md](reporter/README.md).
+
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/integrations` | Provision monitor + secret + check + alert in one call, then verify. |
