@@ -47,7 +47,7 @@ export class Email extends BaseAlertChannel {
   }
 }
 
-function buildEmailBody(run: RunResultDto): string {
+export function buildEmailBody(run: RunResultDto): string {
   const status = run.passed ? "✅ RECOVERED" : "❌ FAILED";
   const monitorLabel = run.monitorName || run.monitorId;
   const lines = [
@@ -58,5 +58,21 @@ function buildEmailBody(run: RunResultDto): string {
     `Timestamp: ${run.timestamp}`,
   ];
   if (run.error) lines.push(`Error:     ${run.error}`);
+  // Include the captured HTTP response body so the failure email is
+  // self-contained (no need to open the dashboard to see what failed). Only
+  // failed runs carry run.response, so recovered emails stay clean. Pretty-
+  // printed when it's JSON; raw otherwise.
+  if (run.response?.body) {
+    lines.push("", "Response:", prettyJson(run.response.body));
+    if (run.response.truncated) lines.push("(truncated)");
+  }
   return lines.join("\n");
+}
+
+function prettyJson(body: string): string {
+  try {
+    return JSON.stringify(JSON.parse(body), null, 2);
+  } catch {
+    return body;
+  }
 }

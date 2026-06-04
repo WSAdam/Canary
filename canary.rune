@@ -65,6 +65,14 @@
       not-found timed-out
 
 
+[REQ] monitor.update(UpdateMonitorDto): MonitorDto
+    [CTR] monitor
+    db:monitor.get(monitorId): MonitorDto
+      not-found timed-out
+    db:monitor.update(UpdateMonitorDto): MonitorDto
+      duplicate-name timed-out
+
+
 [REQ] check.configure(ConfigureCheckDto): CheckDto
     [CTR] monitor
     db:monitor.get(monitorId): MonitorDto
@@ -231,6 +239,8 @@
 
 [DTO] CreateMonitorDto: name, description
     input for creating a new named monitor
+[DTO] UpdateMonitorDto: monitorId, name, description
+    input for renaming or editing an existing monitor's name and description
 [DTO] MonitorDto: monitorId, name, description
     a resolved monitor with its identifier and display fields
 [DTO] MonitorListDto: monitor(s)

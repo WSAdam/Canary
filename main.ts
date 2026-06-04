@@ -16,6 +16,7 @@ import { consumeInvite, createInvites } from "./dist.rune/impure/invite/invite.t
 import { createMonitor } from "./dist.rune/integration/monitor-create/monitor-create.ts";
 import { listMonitors } from "./dist.rune/integration/monitor-list/monitor-list.ts";
 import { getMonitor } from "./dist.rune/integration/monitor-get/monitor-get.ts";
+import { updateMonitor } from "./dist.rune/integration/monitor-update/monitor-update.ts";
 import { configureCheck } from "./dist.rune/integration/check-configure/check-configure.ts";
 import { getCheck } from "./dist.rune/integration/check-get/check-get.ts";
 import { buildSchedule } from "./dist.rune/integration/schedule-build/schedule-build.ts";
@@ -482,7 +483,7 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
     </div>
     <div class="wizard-footer">
       <button class="btn btn-ghost" onclick="showView('dashboard')">Cancel</button>
-      <button class="btn btn-primary" onclick="wizardStep1()">Next: Check config</button>
+      <button class="btn btn-primary" id="ws1-btn" onclick="wizardStep1()">Next: Check config</button>
     </div>
     <div class="error-msg" id="ws1-err"></div>
   </div>
@@ -608,7 +609,7 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
     </div>
     <div class="wizard-footer">
       <button class="btn btn-ghost" onclick="wizardBack()">Back</button>
-      <button class="btn btn-primary" onclick="wizardStep2()">Next: Alert config</button>
+      <button class="btn btn-primary" id="ws2-btn" onclick="wizardStep2()">Next: Alert config</button>
     </div>
     <div class="error-msg" id="ws2-err"></div>
   </div>
@@ -1093,6 +1094,7 @@ function renderMonitorList(monitors) {
         <p>\${esc(m.description || 'No description')}</p>
       </div>
       <div class="monitor-actions">
+        <button class="btn btn-ghost btn-sm" onclick="editDetails('\${esc(m.monitorId)}')">Edit details</button>
         <button class="btn btn-ghost btn-sm" onclick="editCheck('\${esc(m.monitorId)}')">Edit check</button>
         <button class="btn btn-ghost btn-sm" onclick="editAlert('\${esc(m.monitorId)}')">Edit alert</button>
         <button class="btn btn-ghost btn-sm" onclick="runNow('\${esc(m.monitorId)}', this)">Run now</button>
@@ -1330,6 +1332,7 @@ function editCheck(monitorId) {
   showView('wizard');
   document.getElementById('wiz-title').textContent = 'Edit check';
   document.getElementById('wiz-subtitle').textContent = monitorId;
+  document.getElementById('ws2-btn').textContent = 'Save check';
   prefillCheck(monitorId);
 }
 
@@ -1343,6 +1346,24 @@ function editAlert(monitorId) {
   document.getElementById('wiz-subtitle').textContent = monitorId;
   document.getElementById('ws3-btn').textContent = 'Save alert';
   prefillAlert(monitorId);
+}
+
+async function editDetails(monitorId) {
+  S.wizardMonitorId = monitorId;
+  S.wizardMode = 'edit-details';
+  resetWizard();
+  wizardGoStep(1);
+  showView('wizard');
+  document.getElementById('wiz-title').textContent = 'Edit details';
+  document.getElementById('wiz-subtitle').textContent = monitorId;
+  document.getElementById('ws1-btn').textContent = 'Save details';
+  try {
+    const m = await api('GET', '/monitors/' + monitorId);
+    document.getElementById('w-name').value = m.name || '';
+    document.getElementById('w-desc').value = m.description || '';
+  } catch (e) {
+    document.getElementById('ws1-err').textContent = e.message;
+  }
 }
 
 function resetWizard() {
@@ -1370,6 +1391,9 @@ function resetWizard() {
   document.getElementById('w-ntfy-title').value = '';
   document.getElementById('w-ntfy-message').value = '';
   ws3Tab('config');
+  document.getElementById('ws1-btn').textContent = 'Next: Check config';
+  const ws2btn = document.getElementById('ws2-btn');
+  ws2btn.disabled = false; ws2btn.textContent = 'Next: Alert config';
   document.getElementById('ws3-btn').textContent = 'Save monitor';
   document.getElementById('test-result').style.display = 'none';
   document.getElementById('test-error').style.display = 'none';
@@ -1409,6 +1433,17 @@ async function wizardStep1() {
   const description = document.getElementById('w-desc').value.trim();
   if (!name) { document.getElementById('ws1-err').textContent = 'Monitor name is required.'; return; }
   clearErr();
+  // Edit-details mode: PATCH the existing monitor's name/description, then
+  // return to the dashboard (no check/alert steps).
+  if (S.wizardMode === 'edit-details') {
+    try {
+      await api('PATCH', '/monitors/' + S.wizardMonitorId, { name, description });
+      showView('dashboard');
+    } catch (e) {
+      document.getElementById('ws1-err').textContent = e.message;
+    }
+    return;
+  }
   // Only create a monitor in create mode — never re-POST while editing an
   // existing one (would orphan the edit onto a brand-new monitor).
   if (S.wizardMode !== 'create') { wizardGoStep(2); return; }
@@ -1472,8 +1507,16 @@ async function wizardStep2() {
     console.log('🔍 wizardStep2: POST payload', JSON.stringify(payload));
     const result = await api('POST', '/monitors/' + S.wizardMonitorId + '/check', payload);
     console.log('✅ wizardStep2: check saved', JSON.stringify(result));
+    // Edit-check is a standalone edit: the check is now saved, so finish here
+    // instead of forcing the Alerts step (a check needs no alert — see the
+    // runner's graceful no-alert handling). Create mode still walks to Step 3.
+    if (S.wizardMode === 'edit-check') {
+      const b = document.getElementById('ws2-btn');
+      b.disabled = true; b.textContent = 'Check saved!';
+      setTimeout(() => showView('dashboard'), 900);
+      return;
+    }
     wizardGoStep(3);
-    if (S.wizardMode === 'edit-check') prefillAlert(S.wizardMonitorId);
   } catch (e) {
     document.getElementById('ws2-err').textContent = e.message;
   }
@@ -2569,6 +2612,15 @@ Deno.serve(async (req: Request): Promise<Response> => {
       log.debug(`🔍 GET /monitors/${monitorId}`);
       const result = await getMonitor({ monitorId });
       log.debug(`✅ GET /monitors/${monitorId} → 200 name="${result.name}"`);
+      return json(result);
+    }
+    if (monitorMatch && method === "PATCH") {
+      const monitorId = monitorMatch[1];
+      const body = await parseBody(req);
+      log.debug(`🔍 PATCH /monitors/${monitorId}: body=${JSON.stringify(body)}`);
+      // Path id wins over any id in the body.
+      const result = await updateMonitor({ ...(body as Record<string, unknown>), monitorId } as Parameters<typeof updateMonitor>[0]);
+      log.info(`✅ PATCH /monitors/${monitorId} → 200 name="${result.name}"`);
       return json(result);
     }
 
