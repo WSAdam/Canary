@@ -284,6 +284,10 @@ textarea{resize:vertical;min-height:72px}
 .recipient-row{display:grid;grid-template-columns:120px 1fr 32px;gap:8px;margin-bottom:8px;align-items:center}
 .recipient-row select,.recipient-row input{margin:0}
 
+/* SMS numbers */
+.sms-row{display:grid;grid-template-columns:1fr 32px;gap:8px;margin-bottom:8px;align-items:center}
+.sms-row input{margin:0}
+
 /* Toggle */
 .toggle-row{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid var(--b)}
 .toggle-label{font-size:14px}
@@ -655,9 +659,10 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
       <div style="padding-bottom:20px;margin-bottom:20px;border-bottom:1px solid #2a2a2a">
         <p style="font-size:11px;color:#FFD700;font-weight:600;letter-spacing:.08em;margin-bottom:14px">SMS</p>
         <div class="form-group">
-          <label>PHONE NUMBER <span style="color:#555;font-weight:400">(leave blank to skip SMS alerts)</span></label>
-          <input type="text" id="w-sms-addr" placeholder="18432222986">
-          <p class="help-text">10 or 11 digits, no + prefix (e.g. 18432222986)</p>
+          <label>PHONE NUMBERS <span style="color:#555;font-weight:400">(leave blank to skip SMS alerts)</span></label>
+          <div id="w-sms-list"></div>
+          <button type="button" class="btn btn-ghost btn-sm" id="w-sms-add-btn" onclick="addSmsRow()">+ Add number</button>
+          <p class="help-text">10 or 11 digits, no + prefix (e.g. 18432222986). Up to 5 numbers; sent 4 seconds apart.</p>
         </div>
         <div class="form-group" style="margin-bottom:0">
           <label>SMS MESSAGE <span style="color:#555;font-weight:400">(optional)</span></label>
@@ -1383,7 +1388,8 @@ function resetWizard() {
   document.getElementById('headers-list').innerHTML = '';
   document.getElementById('captures-list').innerHTML = '';
   document.getElementById('w-email-addr').value = '';
-  document.getElementById('w-sms-addr').value = '';
+  document.getElementById('w-sms-list').innerHTML = '';
+  addSmsRow(); // always show one empty SMS row to start
   document.getElementById('w-ntfy-addr').value = '';
   document.getElementById('w-email-subject').value = '';
   document.getElementById('w-email-message').value = '';
@@ -1524,7 +1530,8 @@ async function wizardStep2() {
 
 async function wizardStep3() {
   const emailAddr = document.getElementById('w-email-addr').value.trim();
-  const smsAddr = document.getElementById('w-sms-addr').value.trim();
+  const smsAddrs = [...document.querySelectorAll('#w-sms-list input')]
+    .map(i => i.value.trim()).filter(Boolean);
   const ntfyAddr = document.getElementById('w-ntfy-addr').value.trim();
   const emailSubject = document.getElementById('w-email-subject').value.trim() || undefined;
   const emailMessage = document.getElementById('w-email-message').value.trim() || undefined;
@@ -1538,7 +1545,7 @@ async function wizardStep3() {
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
-  if (!emailAddr && !smsAddr && !ntfyAddr) {
+  if (!emailAddr && smsAddrs.length === 0 && !ntfyAddr) {
     showErr('Add at least one email, phone number, or ntfy topic.');
     return;
   }
@@ -1546,14 +1553,14 @@ async function wizardStep3() {
     showErr('Email address must contain @.');
     return;
   }
-  if (smsAddr) {
+  for (const n of smsAddrs) {
     // NB: this runs inside the INDEX_HTML template literal, so a "\d"/"\D" escape
     // would be silently stripped to "d"/"D" at runtime. Use [^0-9] (no backslash)
     // to strip non-digits reliably — otherwise formatted numbers (+, spaces,
     // dashes) fail the length check and a saved alert can't be re-saved.
-    const digits = smsAddr.replace(/[^0-9]/g, '');
+    const digits = n.replace(/[^0-9]/g, '');
     if (digits.length < 10 || digits.length > 11) {
-      showErr('Phone number must be 10 or 11 digits (e.g. 18432222986).');
+      showErr('Each phone number must be 10 or 11 digits (e.g. 18432222986).');
       return;
     }
   }
@@ -1575,7 +1582,7 @@ async function wizardStep3() {
 
   const recipients = [];
   if (emailAddr) recipients.push({ channel: 'email', address: emailAddr });
-  if (smsAddr) recipients.push({ channel: 'sms', address: smsAddr });
+  smsAddrs.forEach(a => recipients.push({ channel: 'sms', address: a }));
   if (ntfyAddr) recipients.push({ channel: 'ntfy', address: ntfyAddr });
 
   const btn = document.getElementById('ws3-btn');
@@ -1661,10 +1668,11 @@ async function prefillAlert(monitorId) {
     const d = await api('GET', '/monitors/' + monitorId + '/alert');
     const list = d.recipients || [];
     const emailRec = list.find(r => r.channel === 'email');
-    const smsRec = list.find(r => r.channel === 'sms');
     const ntfyRec = list.find(r => r.channel === 'ntfy');
     if (emailRec) document.getElementById('w-email-addr').value = emailRec.address;
-    if (smsRec) document.getElementById('w-sms-addr').value = smsRec.address;
+    document.getElementById('w-sms-list').innerHTML = '';
+    list.filter(r => r.channel === 'sms').forEach(r => addSmsRow(r.address));
+    if (!document.getElementById('w-sms-list').children.length) addSmsRow();
     if (ntfyRec) document.getElementById('w-ntfy-addr').value = ntfyRec.address;
     if (d.emailSubject) document.getElementById('w-email-subject').value = d.emailSubject;
     if (d.emailMessage) document.getElementById('w-email-message').value = d.emailMessage;
@@ -1701,6 +1709,25 @@ function addCaptureRow(name = '', path = '') {
     <button class="icon-btn" onclick="this.parentElement.remove()" title="Remove">&#x2715;</button>
   \`;
   document.getElementById('captures-list').appendChild(row);
+}
+
+// ─── SMS numbers builder ──────────────────────────────────────────────────────
+function addSmsRow(value = '') {
+  const list = document.getElementById('w-sms-list');
+  if (list.children.length >= 5) return;
+  const row = document.createElement('div');
+  row.className = 'sms-row';
+  row.innerHTML = \`
+    <input type="text" placeholder="18432222986" value="\${esc(value)}">
+    <button class="icon-btn" onclick="this.parentElement.remove(); updateSmsAddBtn()" title="Remove">&#x2715;</button>
+  \`;
+  list.appendChild(row);
+  updateSmsAddBtn();
+}
+
+function updateSmsAddBtn() {
+  const count = document.getElementById('w-sms-list').children.length;
+  document.getElementById('w-sms-add-btn').style.display = count >= 5 ? 'none' : 'inline-flex';
 }
 
 

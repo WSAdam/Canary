@@ -32,6 +32,14 @@ Deno.test("updateMonitor - description-only update keeps the name", async () => 
   assertEquals(updated.description, "after");
 });
 
+Deno.test("updateMonitor - updating a nonexistent monitor throws not-found", async () => {
+  await assertRejects(
+    () => updateMonitor({ monitorId: crypto.randomUUID(), name: uniq("ghost"), description: "" }),
+    CanaryError,
+    "not found",
+  );
+});
+
 Deno.test("updateMonitor - renaming onto a taken name throws duplicate-name", async () => {
   const a = uniq("dup-a");
   const b = uniq("dup-b");

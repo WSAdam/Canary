@@ -42,11 +42,15 @@ export class Monitor {
 
   async update(dto: UpdateMonitorDto): Promise<MonitorDto> {
     const existing = await this.get(dto.monitorId); // throws not-found
-    const updated: MonitorDto = { monitorId: dto.monitorId, name: dto.name, description: dto.description };
+    // PATCH semantics: merge over the existing record so a partial body can't
+    // clobber a field with undefined, and any future MonitorDto fields survive.
+    const name = dto.name ?? existing.name;
+    const description = dto.description ?? existing.description;
+    const updated: MonitorDto = { ...existing, monitorId: dto.monitorId, name, description };
 
     // Name unchanged → only the record needs writing (e.g. a description edit).
     // The ["monitor_name", name] index already points at this monitor.
-    if (dto.name === existing.name) {
+    if (name === existing.name) {
       log.debug(`🚀 monitor.update: ${dto.monitorId} description-only (name unchanged)`);
       await kv.set(["monitor", dto.monitorId], updated);
       return updated;
@@ -55,18 +59,18 @@ export class Monitor {
     // Name changed → atomically move the uniqueness index: claim the new name
     // (must be free), drop the old one, and rewrite the record in one commit so
     // a concurrent create/rename can't duplicate a name.
-    log.debug(`🚀 monitor.update: ${dto.monitorId} rename "${existing.name}" → "${dto.name}"`);
+    log.debug(`🚀 monitor.update: ${dto.monitorId} rename "${existing.name}" → "${name}"`);
     const res = await kv.atomic()
-      .check({ key: ["monitor_name", dto.name], versionstamp: null })
+      .check({ key: ["monitor_name", name], versionstamp: null })
       .set(["monitor", dto.monitorId], updated)
       .delete(["monitor_name", existing.name])
-      .set(["monitor_name", dto.name], dto.monitorId)
+      .set(["monitor_name", name], dto.monitorId)
       .commit();
     if (!res.ok) {
       log.debug(`🔍 monitor.update: atomic commit failed (name taken)`);
-      throw new CanaryError("duplicate-name", `Monitor with name "${dto.name}" already exists`, 409);
+      throw new CanaryError("duplicate-name", `Monitor with name "${name}" already exists`, 409);
     }
-    log.debug(`✅ monitor.update: ${dto.monitorId} renamed to "${dto.name}" versionstamp=${res.versionstamp}`);
+    log.debug(`✅ monitor.update: ${dto.monitorId} renamed to "${name}" versionstamp=${res.versionstamp}`);
     return updated;
   }
 

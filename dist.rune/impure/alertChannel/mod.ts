@@ -7,6 +7,10 @@ import { Email } from "./implementations/email/mod.ts";
 import { Ntfy } from "./implementations/ntfy/mod.ts";
 import { log } from "../_log.ts";
 
+// Throttle: space consecutive SMS sends apart so we don't hammer the Zapier
+// webhook / carrier when an alert fans out to several numbers.
+const SMS_STAGGER_MS = 4000;
+
 export class AlertChannel {
   private constructor(
     private readonly channels: BaseAlertChannel[],
@@ -31,7 +35,19 @@ export class AlertChannel {
   async send(run: RunResultDto): Promise<void> {
     // allSettled, not all: one channel's failure (e.g. a bad ntfy address) must
     // never suppress the others. We attempt every channel, then report.
-    const results = await Promise.allSettled(this.channels.map((c) => c.send(run, this.alert)));
+    // SMS channels are staggered SMS_STAGGER_MS apart (first immediate, 2nd +4s,
+    // …) to throttle the webhook; email/ntfy fire immediately. Mapping over
+    // this.channels in order keeps results[i] aligned with this.labels[i].
+    let smsIndex = 0;
+    const tasks = this.channels.map((c, i) => {
+      const delayMs = this.labels[i] === "sms" ? smsIndex++ * SMS_STAGGER_MS : 0;
+      return (async () => {
+        if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+        return c.send(run, this.alert);
+      })();
+    });
+    if (smsIndex > 1) log.debug(`📱 AlertChannel.send: staggering ${smsIndex} sms send(s) ${SMS_STAGGER_MS}ms apart`);
+    const results = await Promise.allSettled(tasks);
     results.forEach((res, i) => {
       const label = this.labels[i] ?? "channel";
       if (res.status === "rejected") {
