@@ -4,6 +4,67 @@ All notable changes to Canary are documented here. The project is not formally
 versioned yet, so entries are grouped by date. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-06-09
+
+### Added
+- **Duplicate a monitor.** Each monitor card now has a **Duplicate** button that
+  opens the create wizard prefilled with a full copy of the source's check + alert
+  config, with the name pre-set to `(Copy of) <name>` and the cursor at the start
+  for an immediate retype. There's no dedicated endpoint — it reuses the normal
+  create flow (`POST /monitors` → `/check` → `/alert`) and the existing
+  `prefillCheck`/`prefillAlert` helpers, so the clone is persisted only when the
+  wizard is completed and an abandoned copy leaves nothing behind (there is no
+  `DELETE /monitors`). The incoming webhook (a per-monitor secret) is not copied.
+- **Multiple SMS numbers per alert.** An alert can now notify up to **5** phone
+  numbers. The wizard's SMS section has a **+ Add number** button (rows capped at
+  5); when an alert fires, the SMS sends are **staggered 4 seconds apart** (first
+  immediate, each subsequent +4s) so a fan-out doesn't hammer the Zapier webhook —
+  email and ntfy still fire immediately. No storage change: recipients were
+  already an array, so additional `{ channel: "sms" }` entries just work.
+- **Monitor rename / edit.** `PATCH /monitors/:id` updates a monitor's name and
+  description, with the name-uniqueness index moved atomically (rename onto a
+  taken name → `409`). Editable from the dashboard via the wizard's edit-details
+  mode.
+- **Response body in failure-alert emails.** Failure emails now include the
+  (secret-redacted, truncated) response body so you can triage without opening the
+  dashboard.
+- **In-page purge of corrupt run rows.** The Reports tab now surfaces any run row
+  whose stored value can't be deserialized and offers a purge action — one-click
+  when the exact key is known, or a paste-the-`runId` form for legacy rows. Backed
+  by a new `DELETE /api/runs/:monitorId/:timestamp/:runId` (deletes by key, so it
+  works on an unreadable row) and a tiny `["run_idx", monitorId, timestamp, runId]`
+  sidecar written atomically with each run to keep keys recoverable.
+- **Dismiss for unrecoverable legacy corrupt rows.** A pre-`run_idx` corrupt row
+  has no sidecar, so its exact key can't be recovered and Deno KV can't delete it.
+  The legacy banner now offers a **Dismiss warning** button backed by
+  `POST /api/reports/:monitorId/dismiss-corrupt`, which records an ack at
+  `["run_corrupt_ack", monitorId]` so the Reports scan stops surfacing that
+  unactionable banner. Genuinely purgeable (indexed) rows are never hidden — they
+  always keep their one-click Purge.
+
+### Fixed
+- **A corrupt newest run row no longer wedges a monitor.** `persistRunAndAlert`
+  reads the previous run via `RunResult.getLatest` before saving; that read walked
+  the newest row and threw (`RangeError`) if its value couldn't deserialize, so the
+  run aborted before persisting. With the bad row stuck as the newest, every
+  subsequent run repeated the throw — the monitor silently stopped recording and
+  alerting. `getLatest` now swallows an undeserializable newest row and reports "no
+  previous run", so the run still persists a fresh readable+indexed row that
+  un-blocks the monitor. (The `saved` log line also now includes the run
+  `timestamp` so a row's full key is recoverable from the logs.)
+- **Reports tab no longer dies on one bad row.** `GET /api/reports` walked each
+  monitor's history with `kv.list` and `500`'d entirely if a single stored run
+  value failed to deserialize (`RangeError`). It now reads runs one row at a time
+  (`batchSize: 1`), so a corrupt row truncates only that monitor's history at the
+  bad row — the rest of the dashboard loads.
+- **Partial-PATCH clobber.** `Monitor.update` rebuilt the record from scratch, so
+  a partial body (e.g. description only) wrote `undefined` into the omitted field.
+  It now merges over the existing record (true PATCH semantics) and survives
+  future `MonitorDto` fields.
+- **Listening log noise.** Deno Deploy reprinted `Listening on …` on every isolate
+  spin-up. `Deno.serve`'s `onListen` now routes that line through the logger at
+  `debug`, so it's silent at the default `info` level.
+
 ## 2026-06-03
 
 ### Added

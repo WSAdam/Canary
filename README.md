@@ -9,19 +9,20 @@ Canary polls your HTTP endpoints on a cron schedule, extracts numeric values fro
 ## Features
 
 - **Web dashboard + 3-step wizard** for creating monitors, configuring checks, and managing alert recipients & message templates
+- **Duplicate a monitor**: one click clones an existing monitor's full check + alert config into the wizard, prefilled and named `(Copy of) …`, so a near-identical monitor is a couple of edits away (persisted only when you finish the wizard)
 - **One-step integrations**: for a project that exposes the Canary health contract, `POST /integrations` (or the **+ Add integration** button) provisions monitor + secret + check + alert and runs an immediate verification check
 - **Two alert sources, one pipeline**: cron-driven pull *or* webhook-driven push, both using the same recipients/templates/recovery logic
 - **Flexible scheduling**: human-readable (every day at 9 AM weekdays) or raw cron expression
 - **JSON metric extraction**: dot-notation path extraction from any JSON response
 - **Threshold comparisons**: `gt`, `lt`, `gte`, `lte`, `eq`
-- **Multi-channel alerts**: SMS via Zapier webhook, email via Postmark, or push via [ntfy.sh](https://ntfy.sh); mix recipients per monitor
+- **Multi-channel alerts**: SMS via Zapier webhook, email via Postmark, or push via [ntfy.sh](https://ntfy.sh); mix recipients per monitor — up to **5 SMS numbers** per alert, sent 4 seconds apart
 - **Message templating**: `{monitor}` `{status}` `{observed}` `{timestamp}` plus user-defined captures from the response
 - **Recovery notifications**: optional alert when a failing monitor returns to healthy
 - **Stateless HMAC auth**: admin + invited users, 24-hour sessions, no per-request DB lookup
 - **Push webhooks**: per-monitor `cnry_v1_…` bearer secrets, hashed at rest, rotate/revoke from the UI
 - **Secret management**: store API keys / bearer tokens in Deno KV and reference them in monitor headers as `{{KEY}}`
 - **Manual trigger**: fire any monitor on demand via `POST /run/:monitorId`
-- **Reports & failed-run drill-in**: per-monitor check history in the dashboard — click any failed run to see the exact request sent and the response received (secrets redacted, body truncated)
+- **Reports & failed-run drill-in**: per-monitor check history in the dashboard — click any failed run to see the exact request sent and the response received (secrets redacted, body truncated); resilient to an undeserializable KV row, which it surfaces for one-click purge instead of erroring
 - **Structured leveled logs**: `LOG_LEVEL`-gated logging that stays quiet by default (a cold-start logs nothing) and tags every line of a single check run with `[run=<id>]` so its logs group together
 - **Diagnostic snapshot**: `GET /api/debug` returns the full KV state — what monitors/checks/alerts/webhooks exist, last cron tick, env presence
 - **Test-fire endpoint**: `POST /test-alert` sends one real SMS/email/ntfy push to verify creds without setting up a monitor
@@ -94,7 +95,7 @@ deno task test
 
 ### 4. Open the dashboard
 
-Visit [http://localhost:8000](http://localhost:8000) and log in with the `ADMIN_USERNAME` / `ADMIN_PASSWORD` from your `.env`. The dashboard lets you create monitors, configure checks/alerts, invite teammates, manage webhook keys, and fire one-off test alerts — everything below is also doable via the API.
+Visit [http://localhost:8000](http://localhost:8000) and log in with the `ADMIN_USERNAME` / `ADMIN_PASSWORD` from your `.env`. The dashboard lets you create monitors (or **duplicate** an existing one), configure checks/alerts, invite teammates, manage webhook keys, and fire one-off test alerts — everything below is also doable via the API.
 
 ---
 
@@ -165,6 +166,7 @@ Pull (not push) is deliberate — Canary polling the endpoint detects both repor
 | `POST` | `/monitors` | Create a monitor |
 | `GET` | `/monitors` | List all monitors |
 | `GET` | `/monitors/:id` | Get a monitor |
+| `PATCH` | `/monitors/:id` | Rename / edit a monitor's name + description |
 
 **Create a monitor**
 
@@ -175,6 +177,23 @@ POST /monitors
   "description": "Watches the /health endpoint"
 }
 ```
+
+**Rename / edit** (partial body — omitted fields keep their current value; the
+path id always wins over any `monitorId` in the body):
+
+```json
+PATCH /monitors/:id
+{ "name": "Production API (v2)", "description": "Watches /healthz" }
+```
+
+Renaming onto a name another monitor already uses returns `409 duplicate-name`.
+
+**Duplicate** (dashboard only): the **Duplicate** button on a monitor card opens
+the create wizard prefilled with a full copy of the source's check + alert config
+and the name pre-set to `(Copy of) <name>`. There's no dedicated duplicate
+endpoint — it's a client-side convenience that re-runs the normal `POST /monitors`
+→ `/check` → `/alert` sequence when you finish the wizard, so nothing is written
+until then (and the incoming webhook, a per-monitor secret, is not copied).
 
 ---
 
@@ -230,6 +249,8 @@ POST /monitors/:id/alert
   ]
 }
 ```
+
+Include up to **5** `sms` recipients per alert (add more numbers with the **+ Add number** button in the wizard). When the alert fires, the SMS sends are **staggered 4 seconds apart** — first immediate, each subsequent +4s — so a fan-out doesn't hammer the Zapier webhook; email and ntfy fire immediately. The same `smsMessage` template is sent to every number.
 
 The `ntfy` address can be a bare topic name (`adam-code-alerts` → `https://ntfy.sh/adam-code-alerts`), `ntfy.sh/<topic>`, or a full URL to a self-hosted ntfy server. Failing checks send with `Priority: high` + `Tags: warning`; recoveries send with `Priority: default` + `Tags: white_check_mark`.
 
@@ -314,10 +335,13 @@ The dashboard's **Reports** tab lists recent fired checks per monitor (newest fi
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/reports?window=24h\|7d\|30d` | Per-monitor run summary + recent rows (capped at 500/monitor). Each row includes `runId`, `passed`, `observed`, `error`, `captures`, and `hasDetail` (whether request/response was captured). |
+| `GET` | `/api/reports?window=24h\|7d\|30d` | Per-monitor run summary + recent rows (capped at 500/monitor). Each row includes `runId`, `passed`, `observed`, `error`, `captures`, and `hasDetail` (whether request/response was captured). Each monitor also carries a `corrupt[]` array (see below), usually empty. |
 | `GET` | `/api/runs/:monitorId/:timestamp/:runId` | Full detail for a single run: `request` (method, url, redacted headers, body) and `response` (status, secret-redacted body, `truncated` flag). Captured on **failed runs only**. |
+| `DELETE` | `/api/runs/:monitorId/:timestamp/:runId` | Purge a single run row by key (deletes the run **and** its `run_idx` sidecar). Deletes by key only — no read — so it works even on a row whose value can't be deserialized. |
 
 > Object/array captures are stored as JSON (e.g. `errors=[{"code":"X"}]`), not the old `[object Object]`. Request/response capture is forward-only — runs recorded before this was added have no detail.
+
+**Corrupt-row resilience.** Run history is read one row at a time, so a single stored run value that fails to deserialize (a `RangeError` — e.g. a legacy oversized row) truncates only that monitor's history at the bad row instead of `500`-ing the whole tab. The offending row is surfaced in the report's `corrupt[]` and shown as a banner on the Reports tab: rows with an `exact` key (recovered from the `run_idx` sidecar written alongside every new run) get a **one-click Purge**; legacy rows written before the index show their timestamp bracket and a form to purge by the `runId` from the logs. Purges call the `DELETE` endpoint above.
 
 ---
 

@@ -52,10 +52,16 @@ load check config → resolve `{{SECRET}}` refs → HTTP fetch → `Extractor.ap
 (numeric observed value) → `Comparator.evaluate` (pass/fail) → `Extractor.applyCaptures`
 → `persistRunAndAlert` (save `RunResultDto` to KV, then alert on failure/recovery).
 
-- **Run history** is keyed `["run", monitorId, timestamp, runId]`.
+- **Run history** is keyed `["run", monitorId, timestamp, runId]`, with a tiny
+  `["run_idx", monitorId, timestamp, runId] = { passed }` sidecar written
+  atomically alongside it. The sidecar can't exceed KV's deserialize-size limit,
+  so it keeps a row's exact key recoverable even if the full value ever goes
+  unreadable — that's how the Reports tab purges a corrupt row.
 - **Alert channels** ([impure/alertChannel](dist.rune/impure/alertChannel)): `email`
   (Postmark), `sms` (Zapier webhook), `ntfy`. `Promise.allSettled` — one channel
-  failing never blocks the others.
+  failing never blocks the others. An alert may carry up to 5 `sms` recipients;
+  SMS sends are **staggered 4s apart** (`AlertChannel.send`) while email/ntfy fire
+  immediately.
 - **Auth:** stateless HMAC session tokens (key auto-generated into KV on first
   boot); admin seeded from `ADMIN_USERNAME`/`ADMIN_PASSWORD`.
 - **Inbound webhooks:** `POST /webhook/:monitorId/fire` with a per-monitor
@@ -79,6 +85,18 @@ load check config → resolve `{{SECRET}}` refs → HTTP fetch → `Extractor.ap
   (`GET /api/runs/:monitorId/:timestamp/:runId`). Passing runs store no detail.
   Capture serialization uses JSON for objects/arrays (not `String()` →
   `[object Object]`).
+- **Corrupt-row resilience:** `/api/reports` reads run history one row at a time
+  (`batchSize: 1`) so one undeserializable value can't take down the tab — it
+  truncates that monitor's history at the bad row and surfaces it in `corrupt[]`
+  for in-page purge via `DELETE /api/runs/:monitorId/:timestamp/:runId` (deletes
+  by key, no read). Note KV does **not** advance its cursor past a row that fails
+  to deserialize, so older rows behind it are unreachable until the bad row is
+  purged. The **run path** is hardened too: `RunResult.getLatest` swallows an
+  undeserializable newest row (returns "no previous run") so a corrupt row can't
+  wedge a monitor's persist/alert loop. A pre-`run_idx` *legacy* corrupt row has no
+  recoverable key (can't be deleted), so its banner offers a **Dismiss** that acks
+  it at `["run_corrupt_ack", monitorId]`; indexed corrupt rows always keep their
+  one-click purge.
 - **Style:** TypeScript strict; emoji log prefixes (🚀 start, ✅ success, ❌ error,
   ⚠️ warn, 🔍 debug/search); fail-safe pattern (secondary failures never block the
   primary operation). **Never** create `.env.*` template files — document env vars
@@ -93,8 +111,17 @@ deno task test     # deno test dist.rune/
 deno task check    # type-check main.ts + e2e.ts
 ```
 
-## Current state (2026-06-03)
+## Current state (2026-06-09)
 
-Recently landed (commit `d20aa19`): central leveled logging with per-run
-correlation, the `[object Object]` capture-serialization fix, and the failed-run
-request/response drill-in. See [CHANGELOG.md](CHANGELOG.md).
+Recently landed: a **Duplicate** action that clones a monitor's check + alert
+config into a prefilled create wizard (named `(Copy of) …`, persisted only on
+finish — no dedicated endpoint, reuses `POST /monitors` → `/check` → `/alert`),
+multiple SMS numbers per alert (up to 5, staggered 4s apart), monitor rename via
+`PATCH /monitors/:id` (+ partial-PATCH clobber fix), response body in
+failure-alert emails, and Reports-tab resilience to corrupt run rows with the
+`run_idx` sidecar and in-page purge (`DELETE /api/runs/...`) — now extended so a
+corrupt newest row can't wedge a monitor's run/alert loop (`getLatest` tolerates
+it) and unrecoverable legacy banners can be dismissed. Earlier
+(`d20aa19`): central leveled logging with per-run correlation, the
+`[object Object]` capture fix, and the failed-run request/response drill-in. See
+[CHANGELOG.md](CHANGELOG.md).
