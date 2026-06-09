@@ -288,6 +288,13 @@ textarea{resize:vertical;min-height:72px}
 .sms-row{display:grid;grid-template-columns:1fr 32px;gap:8px;margin-bottom:8px;align-items:center}
 .sms-row input{margin:0}
 
+/* Corrupt-run banner (Reports tab) */
+.corrupt-banner{margin-top:10px;padding:10px 12px;border:1px solid #4a3a1a;background:#1a160d;border-radius:8px;font-size:12px;color:#e0c98a;display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.corrupt-banner-legacy{flex-direction:column;align-items:stretch}
+.corrupt-banner code{font-family:ui-monospace,Menlo,monospace;background:#0d0b06;padding:1px 4px;border-radius:3px}
+.corrupt-purge-form{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.corrupt-purge-form input{flex:1;min-width:160px;background:#111;border:1px solid #2a2a2a;border-radius:6px;padding:6px 10px;color:#e0e0e0;font-size:12px}
+
 /* Toggle */
 .toggle-row{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid var(--b)}
 .toggle-label{font-size:14px}
@@ -1183,14 +1190,60 @@ function renderReports(reports) {
         + (rep.capped ? '<div style="font-size:11px;color:var(--m);margin-top:8px">Showing the most recent 500 runs in this window.</div>' : '')
       : '';
 
+    const corruptBanner = (rep.corrupt || []).map(c => {
+      if (c.exact) {
+        // Exact key recovered from the index → one-click purge.
+        const when = new Date(c.timestamp).toLocaleString();
+        return '<div class="corrupt-banner">'
+          + '<span>⚠️ An unreadable run row is blocking older history (saved ' + esc(when) + ', run ' + esc(String(c.runId).slice(0, 8)) + '…).</span>'
+          + '<button class="btn btn-danger btn-sm" data-purge-run="1"'
+          + ' data-monitorid="' + esc(rep.monitorId) + '" data-timestamp="' + esc(c.timestamp) + '" data-runid="' + esc(c.runId) + '">Purge row</button>'
+          + '</div>';
+      }
+      // Legacy orphan: no index entry, so we only know the timestamp bracket.
+      // User pastes the runId (from deploy logs in that window) to purge it.
+      const bracket = c.olderThan
+        ? 'between ' + esc(new Date(c.olderThan).toLocaleString()) + ' and ' + (c.newerThan ? esc(new Date(c.newerThan).toLocaleString()) : 'now')
+        : (c.newerThan ? 'just before ' + esc(new Date(c.newerThan).toLocaleString()) : 'in this monitor');
+      return '<div class="corrupt-banner corrupt-banner-legacy">'
+        + '<div>⚠️ A legacy unreadable run row (' + bracket + ') is blocking older history. '
+        + 'Find its <code>runId</code> + <code>timestamp</code> in the deploy logs (a <code>cron.persist: saved runId=…</code> line in that window), then purge it:</div>'
+        + '<form class="corrupt-purge-form" data-purge-legacy="1" data-monitorid="' + esc(rep.monitorId) + '">'
+        + '<input type="text" name="timestamp" placeholder="2026-06-09T09:30:45.910Z" required>'
+        + '<input type="text" name="runid" placeholder="runId (UUID)" required>'
+        + '<button type="submit" class="btn btn-danger btn-sm">Purge row</button>'
+        + '</form>'
+        + '</div>';
+    }).join('');
+
     return '<div class="card" style="margin-bottom:16px">'
       + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">'
       + '<div><h3 style="margin:0;font-size:15px">' + esc(rep.name) + '</h3>' + ctx + '</div>'
       + '<div style="font-size:13px;text-align:right">' + summary + '</div>'
       + '</div>'
+      + corruptBanner
       + body
       + '</div>';
   }).join('');
+}
+
+// ─── Purge a corrupt run row ────────────────────────────────────────────────────
+async function purgeRun(monitorId, timestamp, runId, btn) {
+  if (!timestamp || !runId) { alert('Both a timestamp and a runId are required.'); return; }
+  if (!confirm('Permanently delete this run row?\\n\\ntimestamp: ' + timestamp + '\\nrunId: ' + runId + '\\n\\nThis cannot be undone.')) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Purging…'; }
+  try {
+    await api('DELETE', '/api/runs/'
+      + encodeURIComponent(monitorId) + '/'
+      + encodeURIComponent(timestamp) + '/'
+      + encodeURIComponent(runId));
+    console.log('🗑️ purgeRun: deleted run ' + runId + ' — reloading reports');
+    loadReports(); // re-scan; older rows behind the purged orphan now load
+  } catch (e) {
+    console.error('❌ purgeRun failed:', e.message);
+    alert('Could not purge run: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Purge row'; }
+  }
 }
 
 // ─── Run detail drill-in ───────────────────────────────────────────────────────
@@ -2196,8 +2249,21 @@ document.getElementById('li-user').addEventListener('keydown', e => { if (e.key 
   // Delegated click for drilling into a failed report row's request/response.
   const rl = document.getElementById('reports-list');
   if (rl) rl.addEventListener('click', (e) => {
+    const purge = e.target.closest('[data-purge-run]');
+    if (purge) {
+      purgeRun(purge.dataset.monitorid, purge.dataset.timestamp, purge.dataset.runid, purge);
+      return;
+    }
     const row = e.target.closest('[data-run-detail]');
     if (row) openRunDetail(row.dataset.monitorid, row.dataset.timestamp, row.dataset.runid);
+  });
+  // Legacy-orphan purge form: user supplies timestamp + runId from the logs.
+  if (rl) rl.addEventListener('submit', (e) => {
+    const form = e.target.closest('[data-purge-legacy]');
+    if (!form) return;
+    e.preventDefault();
+    purgeRun(form.dataset.monitorid, form.timestamp.value.trim(), form.runid.value.trim(),
+      form.querySelector('button[type="submit"]'));
   });
   // Delegated click for clickable JSON leaves in the Test-request viewer
   // (replaces inline onclick so injected response content can't run script).
@@ -2284,7 +2350,10 @@ function extractToken(req: Request): string {
 // HTTP server
 // ---------------------------------------------------------------------------
 
-Deno.serve(async (req: Request): Promise<Response> => {
+// onListen overrides Deno.serve's default stdout "Listening on …" line, which
+// Deno Deploy reprints on every isolate spin-up and floods the logs. Route it
+// through our logger at debug level so it's hidden at the normal info level.
+Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http://${hostname}:${port}/`) }, async (req: Request): Promise<Response> => {
   const url = new URL(req.url);
   const { pathname } = url;
   const method = req.method;
@@ -2481,24 +2550,71 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
         const runs: Array<Record<string, unknown>> = [];
         let passed = 0;
+        // Corrupt/undeserializable run rows surfaced to the UI so they can be
+        // purged. `exact` rows carry the precise key (recovered from run_idx) and
+        // get a one-click delete; non-exact rows are legacy pre-index orphans we
+        // can only bracket by timestamp (purge via the manual runId form).
+        const corrupt: Array<Record<string, unknown>> = [];
+        // batchSize: 1 so each run row deserializes on its own. With the default
+        // batch, KV deserializes ~100s of rows at once, so one undeserializable
+        // value (a legacy/corrupt run row) throws before any of that batch's
+        // newer rows are yielded — wiping out recent history for the monitor.
+        // Per-row batching yields every newest run individually; we read up to
+        // the bad row, then stop. (We must stop, not skip: KV doesn't advance its
+        // cursor past a row that fails to deserialize, so retrying re-throws the
+        // same row forever. Older rows behind it are unreachable via this API.)
         const iter = kv.list<RunResultDto>(
           { prefix: ["run", m.monitorId] },
-          { reverse: true, limit: PER_CHECK_CAP },
+          { reverse: true, limit: PER_CHECK_CAP, batchSize: 1 },
         );
-        for await (const entry of iter) {
-          const r = entry.value;
-          if (r.timestamp < cutoff) break; // reached the window edge — older runs follow
-          if (r.passed) passed++;
-          runs.push({
-            runId: r.runId, // lets the SPA drill into a failed run's request/response
-            timestamp: r.timestamp,
-            passed: r.passed,
-            observed: r.observed,
-            error: r.error,
-            captures: r.captures,
-            // Whether full request/response detail was captured (failed runs only).
-            hasDetail: !!(r.request || r.response),
-          });
+        try {
+          while (true) {
+            const res = await iter.next();
+            if (res.done) break;
+            const r = res.value.value;
+            if (r.timestamp < cutoff) break; // reached the window edge — older runs follow
+            if (r.passed) passed++;
+            runs.push({
+              runId: r.runId, // lets the SPA drill into a failed run's request/response
+              timestamp: r.timestamp,
+              passed: r.passed,
+              observed: r.observed,
+              error: r.error,
+              captures: r.captures,
+              // Whether full request/response detail was captured (failed runs only).
+              hasDetail: !!(r.request || r.response),
+            });
+          }
+        } catch (e) {
+          log.warn(`⚠️ GET /api/reports: run history for ${m.monitorId} truncated at an unreadable row — ${e instanceof Error ? e.message : String(e)}`);
+          // The scan stopped at an orphan just older than the last good run.
+          // Recover its exact key from run_idx (the tiny sidecar that still
+          // decodes): the index entry immediately older than `newerThan` is the
+          // offending row. Confirm by re-reading the full value — if that throws,
+          // we have the exact key for a one-click purge; if it reads fine, the
+          // orphan predates the index (legacy) and we fall back to a bracket.
+          const newerThan = runs.length ? (runs[runs.length - 1].timestamp as string) : null;
+          const idxSelector = newerThan
+            ? { prefix: ["run_idx", m.monitorId], end: ["run_idx", m.monitorId, newerThan] }
+            : { prefix: ["run_idx", m.monitorId] };
+          let candidate: { timestamp: string; runId: string } | null = null;
+          for await (const idx of kv.list(idxSelector, { reverse: true, limit: 1 })) {
+            candidate = { timestamp: idx.key[2] as string, runId: idx.key[3] as string };
+          }
+          if (candidate) {
+            try {
+              const full = await kv.get<RunResultDto>(["run", m.monitorId, candidate.timestamp, candidate.runId]);
+              // Reads fine (or already gone) → the index neighbour isn't the
+              // orphan, so the orphan itself is unindexed/legacy.
+              corrupt.push(full.value === null
+                ? { exact: true, timestamp: candidate.timestamp, runId: candidate.runId } // stale index → purge cleans it
+                : { exact: false, newerThan, olderThan: candidate.timestamp });
+            } catch {
+              corrupt.push({ exact: true, timestamp: candidate.timestamp, runId: candidate.runId });
+            }
+          } else {
+            corrupt.push({ exact: false, newerThan, olderThan: null });
+          }
         }
         // If we filled the cap and the oldest kept run is still inside the window,
         // there may be more runs we didn't read.
@@ -2517,6 +2633,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
           failed: runs.length - passed,
           capped,
           runs,
+          corrupt,
         });
       }
 
@@ -2532,6 +2649,18 @@ Deno.serve(async (req: Request): Promise<Response> => {
       if (!entry.value) throw new CanaryError("not-found", "Run not found", 404);
       log.debug(`✅ GET /api/runs/${monitorId}/${timestamp}/${runId} → 200`);
       return json(entry.value);
+    }
+    // Purge a single run row by exact key. Deletes by key only (no read), so it
+    // works even when the value is undeserializable — this is how a corrupt run
+    // surfaced on the Reports tab gets removed. Drops the run_idx sidecar too.
+    if (runDetailMatch && method === "DELETE") {
+      const [, monitorId, timestamp, runId] = runDetailMatch.map((s, i) => i === 0 ? s : decodeURIComponent(s));
+      await kv.atomic()
+        .delete(["run", monitorId, timestamp, runId])
+        .delete(["run_idx", monitorId, timestamp, runId])
+        .commit();
+      log.info(`🗑️ DELETE /api/runs/${monitorId}/${timestamp}/${runId} → 200 (purged run + index)`);
+      return json({ ok: true });
     }
 
     // Webhook key management — admin-only, scoped by monitorId

@@ -45,7 +45,16 @@ export class RunResult {
     // runId is the final key segment so two runs in the same millisecond don't
     // overwrite each other; timestamp stays primary so reverse-order still
     // returns the newest run.
-    await kv.set(["run", dto.monitorId, dto.timestamp, dto.runId], dto);
+    //
+    // run_idx is a tiny sidecar mirroring just the key (+ passed flag). It can't
+    // exceed KV's deserialize size limit, so it stays readable even if the full
+    // run value ever becomes undeserializable — letting the Reports tab recover
+    // the exact key of a corrupt row and purge it. Written atomically with the
+    // run so the index never diverges from the rows it points at.
+    await kv.atomic()
+      .set(["run", dto.monitorId, dto.timestamp, dto.runId], dto)
+      .set(["run_idx", dto.monitorId, dto.timestamp, dto.runId], { passed: dto.passed })
+      .commit();
   }
 
   static async getLatest(monitorId: string): Promise<RunResultDto | null> {
