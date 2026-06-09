@@ -85,18 +85,22 @@ load check config → resolve `{{SECRET}}` refs → HTTP fetch → `Extractor.ap
   (`GET /api/runs/:monitorId/:timestamp/:runId`). Passing runs store no detail.
   Capture serialization uses JSON for objects/arrays (not `String()` →
   `[object Object]`).
-- **Corrupt-row resilience:** `/api/reports` reads run history one row at a time
+- **Corrupt-row resilience:** the Reports walk lives in `RunResult.scanWindow`
+  (called per-monitor by `/api/reports`) and reads run history one row at a time
   (`batchSize: 1`) so one undeserializable value can't take down the tab — it
   truncates that monitor's history at the bad row and surfaces it in `corrupt[]`
-  for in-page purge via `DELETE /api/runs/:monitorId/:timestamp/:runId` (deletes
-  by key, no read). Note KV does **not** advance its cursor past a row that fails
-  to deserialize, so older rows behind it are unreachable until the bad row is
+  for in-page purge via `RunResult.purge` (`DELETE /api/runs/:monitorId/:timestamp/:runId`,
+  deletes by key, no read). Note KV does **not** advance its cursor past a row that
+  fails to deserialize, so older rows behind it are unreachable until the bad row is
   purged. The **run path** is hardened too: `RunResult.getLatest` swallows an
   undeserializable newest row (returns "no previous run") so a corrupt row can't
-  wedge a monitor's persist/alert loop. A pre-`run_idx` *legacy* corrupt row has no
-  recoverable key (can't be deleted), so its banner offers a **Dismiss** that acks
-  it at `["run_corrupt_ack", monitorId]`; indexed corrupt rows always keep their
-  one-click purge.
+  wedge a monitor's persist/alert loop, and `RunResult.save` throws on a failed
+  atomic `commit()` rather than letting a dropped write log a false success. A
+  pre-`run_idx` *legacy* corrupt row has no recoverable key (can't be deleted), so
+  its banner offers a **Dismiss** (`RunResult.dismissCorrupt`, acked at
+  `["run_corrupt_ack", monitorId]`); indexed corrupt rows always keep their one-click
+  purge. These run-history ops live as `RunResult` statics so they're covered by
+  `deno test dist.rune/`.
 - **Style:** TypeScript strict; emoji log prefixes (🚀 start, ✅ success, ❌ error,
   ⚠️ warn, 🔍 debug/search); fail-safe pattern (secondary failures never block the
   primary operation). **Never** create `.env.*` template files — document env vars
@@ -121,7 +125,9 @@ multiple SMS numbers per alert (up to 5, staggered 4s apart), monitor rename via
 failure-alert emails, and Reports-tab resilience to corrupt run rows with the
 `run_idx` sidecar and in-page purge (`DELETE /api/runs/...`) — now extended so a
 corrupt newest row can't wedge a monitor's run/alert loop (`getLatest` tolerates
-it) and unrecoverable legacy banners can be dismissed. Earlier
+it), unrecoverable legacy banners can be dismissed, `save` throws instead of
+logging a false success on a failed commit, and the scan/purge/dismiss ops moved
+into tested `RunResult` statics (+ `validateSession` auth-gate tests). Earlier
 (`d20aa19`): central leveled logging with per-run correlation, the
 `[object Object]` capture fix, and the failed-run request/response drill-in. See
 [CHANGELOG.md](CHANGELOG.md).

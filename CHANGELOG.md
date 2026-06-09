@@ -42,7 +42,23 @@ versioned yet, so entries are grouped by date. Format loosely follows
   unactionable banner. Genuinely purgeable (indexed) rows are never hidden — they
   always keep their one-click Purge.
 
+### Changed
+- **Run-history scan / purge / dismiss moved into `RunResult`.** The Reports
+  window walk, the corrupt-row delete-by-key, and the dismiss ack/check now live as
+  `RunResult.scanWindow` / `.purge` / `.dismissCorrupt` (the `main.ts` route handlers
+  are thin callers), so they sit in the tested `dist.rune` layer instead of inline in
+  the request handler. Added coverage for the scan's per-row batching + `run_idx` key
+  recovery + dismiss suppression, delete-by-key idempotency, the dismiss round-trip,
+  the `save` commit guard, and `validateSession` (the auth gate the new routes
+  inherit).
+
 ### Fixed
+- **A dropped run-history write is no longer logged as a success.** `RunResult.save`
+  ignored the atomic `commit()` result, so a rejected commit (neither the `run` row
+  nor its `run_idx` sidecar landing) still emitted a `✅ saved` log — silently
+  skewing history and manufacturing the exact missing-sidecar / legacy-orphan state
+  the resilience work guards against. `save` now checks `ok` and throws, so the caller
+  surfaces the failure instead of logging a false success.
 - **A corrupt newest run row no longer wedges a monitor.** `persistRunAndAlert`
   reads the previous run via `RunResult.getLatest` before saving; that read walked
   the newest row and threw (`RangeError`) if its value couldn't deserialize, so the

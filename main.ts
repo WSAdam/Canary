@@ -1192,23 +1192,25 @@ function renderReports(reports) {
         + (rep.capped ? '<div style="font-size:11px;color:var(--m);margin-top:8px">Showing the most recent 500 runs in this window.</div>' : '')
       : '';
 
+    // Shared chrome for both corrupt-row banners — only the modifier class and
+    // inner content differ between the exact (purgeable) and legacy cases.
+    const banner = (extraClass, inner) => '<div class="corrupt-banner' + extraClass + '">' + inner + '</div>';
     const corruptBanner = (rep.corrupt || []).map(c => {
       if (c.exact) {
         // Exact key recovered from the index → one-click purge.
         const when = new Date(c.timestamp).toLocaleString();
-        return '<div class="corrupt-banner">'
-          + '<span>⚠️ An unreadable run row is blocking older history (saved ' + esc(when) + ', run ' + esc(String(c.runId).slice(0, 8)) + '…).</span>'
+        return banner('',
+          '<span>⚠️ An unreadable run row is blocking older history (saved ' + esc(when) + ', run ' + esc(String(c.runId).slice(0, 8)) + '…).</span>'
           + '<button class="btn btn-danger btn-sm" data-purge-run="1"'
-          + ' data-monitorid="' + esc(rep.monitorId) + '" data-timestamp="' + esc(c.timestamp) + '" data-runid="' + esc(c.runId) + '">Purge row</button>'
-          + '</div>';
+          + ' data-monitorid="' + esc(rep.monitorId) + '" data-timestamp="' + esc(c.timestamp) + '" data-runid="' + esc(c.runId) + '">Purge row</button>');
       }
       // Legacy orphan: no index entry, so we only know the timestamp bracket.
       // User pastes the runId (from deploy logs in that window) to purge it.
       const bracket = c.olderThan
         ? 'between ' + esc(new Date(c.olderThan).toLocaleString()) + ' and ' + (c.newerThan ? esc(new Date(c.newerThan).toLocaleString()) : 'now')
         : (c.newerThan ? 'just before ' + esc(new Date(c.newerThan).toLocaleString()) : 'in this monitor');
-      return '<div class="corrupt-banner corrupt-banner-legacy">'
-        + '<div>⚠️ A legacy unreadable run row (' + bracket + ') is blocking older history. '
+      return banner(' corrupt-banner-legacy',
+        '<div>⚠️ A legacy unreadable run row (' + bracket + ') is blocking older history. '
         + 'Find its <code>runId</code> + <code>timestamp</code> in the deploy logs (a <code>cron.persist: saved runId=…</code> line in that window), then purge it:</div>'
         + '<form class="corrupt-purge-form" data-purge-legacy="1" data-monitorid="' + esc(rep.monitorId) + '">'
         + '<input type="text" name="timestamp" placeholder="2026-06-09T09:30:45.910Z" required>'
@@ -1216,8 +1218,7 @@ function renderReports(reports) {
         + '<button type="submit" class="btn btn-danger btn-sm">Purge row</button>'
         + '</form>'
         + '<div class="corrupt-dismiss">Cannot track it down? It cannot be deleted (its key is unrecoverable), but you can '
-        + '<button class="btn btn-ghost btn-sm" data-dismiss-corrupt="1" data-monitorid="' + esc(rep.monitorId) + '">Dismiss warning</button></div>'
-        + '</div>';
+        + '<button class="btn btn-ghost btn-sm" data-dismiss-corrupt="1" data-monitorid="' + esc(rep.monitorId) + '">Dismiss warning</button></div>');
     }).join('');
 
     return '<div class="card" style="margin-bottom:16px">'
@@ -2602,87 +2603,14 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
           check = null;
         }
 
-        const runs: Array<Record<string, unknown>> = [];
-        let passed = 0;
-        // Corrupt/undeserializable run rows surfaced to the UI so they can be
-        // purged. `exact` rows carry the precise key (recovered from run_idx) and
-        // get a one-click delete; non-exact rows are legacy pre-index orphans we
-        // can only bracket by timestamp (purge via the manual runId form).
-        const corrupt: Array<Record<string, unknown>> = [];
-        // batchSize: 1 so each run row deserializes on its own. With the default
-        // batch, KV deserializes ~100s of rows at once, so one undeserializable
-        // value (a legacy/corrupt run row) throws before any of that batch's
-        // newer rows are yielded — wiping out recent history for the monitor.
-        // Per-row batching yields every newest run individually; we read up to
-        // the bad row, then stop. (We must stop, not skip: KV doesn't advance its
-        // cursor past a row that fails to deserialize, so retrying re-throws the
-        // same row forever. Older rows behind it are unreachable via this API.)
-        const iter = kv.list<RunResultDto>(
-          { prefix: ["run", m.monitorId] },
-          { reverse: true, limit: PER_CHECK_CAP, batchSize: 1 },
+        // The per-monitor walk (batchSize:1 corrupt-row resilience, run_idx
+        // recovery, dismiss filter) lives in RunResult.scanWindow so it's covered
+        // by the dist.rune test suite.
+        const { runs, passed, corrupt, capped } = await RunResult.scanWindow(
+          m.monitorId,
+          cutoff,
+          PER_CHECK_CAP,
         );
-        try {
-          while (true) {
-            const res = await iter.next();
-            if (res.done) break;
-            const r = res.value.value;
-            if (r.timestamp < cutoff) break; // reached the window edge — older runs follow
-            if (r.passed) passed++;
-            runs.push({
-              runId: r.runId, // lets the SPA drill into a failed run's request/response
-              timestamp: r.timestamp,
-              passed: r.passed,
-              observed: r.observed,
-              error: r.error,
-              captures: r.captures,
-              // Whether full request/response detail was captured (failed runs only).
-              hasDetail: !!(r.request || r.response),
-            });
-          }
-        } catch (e) {
-          log.warn(`⚠️ GET /api/reports: run history for ${m.monitorId} truncated at an unreadable row — ${e instanceof Error ? e.message : String(e)}`);
-          // The scan stopped at an orphan just older than the last good run.
-          // Recover its exact key from run_idx (the tiny sidecar that still
-          // decodes): the index entry immediately older than `newerThan` is the
-          // offending row. Confirm by re-reading the full value — if that throws,
-          // we have the exact key for a one-click purge; if it reads fine, the
-          // orphan predates the index (legacy) and we fall back to a bracket.
-          const newerThan = runs.length ? (runs[runs.length - 1].timestamp as string) : null;
-          const idxSelector = newerThan
-            ? { prefix: ["run_idx", m.monitorId], end: ["run_idx", m.monitorId, newerThan] }
-            : { prefix: ["run_idx", m.monitorId] };
-          let candidate: { timestamp: string; runId: string } | null = null;
-          for await (const idx of kv.list(idxSelector, { reverse: true, limit: 1 })) {
-            candidate = { timestamp: idx.key[2] as string, runId: idx.key[3] as string };
-          }
-          let entry: Record<string, unknown>;
-          if (candidate) {
-            try {
-              const full = await kv.get<RunResultDto>(["run", m.monitorId, candidate.timestamp, candidate.runId]);
-              // Reads fine (or already gone) → the index neighbour isn't the
-              // orphan, so the orphan itself is unindexed/legacy.
-              entry = full.value === null
-                ? { exact: true, timestamp: candidate.timestamp, runId: candidate.runId } // stale index → purge cleans it
-                : { exact: false, newerThan, olderThan: candidate.timestamp };
-            } catch {
-              entry = { exact: true, timestamp: candidate.timestamp, runId: candidate.runId };
-            }
-          } else {
-            entry = { exact: false, newerThan, olderThan: null };
-          }
-          // exact rows are one-click purgeable, so always surface them. A legacy
-          // (exact:false) row can't be deleted — its key is unrecoverable — so
-          // honor a user dismissal and suppress its banner once acknowledged.
-          if (entry.exact) {
-            corrupt.push(entry);
-          } else if (!(await kv.get(["run_corrupt_ack", m.monitorId])).value) {
-            corrupt.push(entry);
-          }
-        }
-        // If we filled the cap and the oldest kept run is still inside the window,
-        // there may be more runs we didn't read.
-        const capped = runs.length === PER_CHECK_CAP &&
-          (runs[runs.length - 1].timestamp as string) >= cutoff;
 
         reports.push({
           monitorId: m.monitorId,
@@ -2718,10 +2646,7 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
     // surfaced on the Reports tab gets removed. Drops the run_idx sidecar too.
     if (runDetailMatch && method === "DELETE") {
       const [, monitorId, timestamp, runId] = runDetailMatch.map((s, i) => i === 0 ? s : decodeURIComponent(s));
-      await kv.atomic()
-        .delete(["run", monitorId, timestamp, runId])
-        .delete(["run_idx", monitorId, timestamp, runId])
-        .commit();
+      await RunResult.purge(monitorId, timestamp, runId);
       log.info(`🗑️ DELETE /api/runs/${monitorId}/${timestamp}/${runId} → 200 (purged run + index)`);
       return json({ ok: true });
     }
@@ -2733,7 +2658,7 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
     const dismissCorruptMatch = pathname.match(/^\/api\/reports\/([^/]+)\/dismiss-corrupt$/);
     if (dismissCorruptMatch && method === "POST") {
       const monitorId = decodeURIComponent(dismissCorruptMatch[1]);
-      await kv.set(["run_corrupt_ack", monitorId], { dismissedAt: new Date().toISOString() });
+      await RunResult.dismissCorrupt(monitorId);
       log.info(`🙈 POST /api/reports/${monitorId}/dismiss-corrupt → 200 (legacy corrupt-row banner dismissed)`);
       return json({ ok: true });
     }
