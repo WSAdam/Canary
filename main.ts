@@ -1109,6 +1109,7 @@ function renderMonitorList(monitors) {
         <button class="btn btn-ghost btn-sm" onclick="editDetails('\${esc(m.monitorId)}')">Edit details</button>
         <button class="btn btn-ghost btn-sm" onclick="editCheck('\${esc(m.monitorId)}')">Edit check</button>
         <button class="btn btn-ghost btn-sm" onclick="editAlert('\${esc(m.monitorId)}')">Edit alert</button>
+        <button class="btn btn-ghost btn-sm" onclick="duplicateMonitor('\${esc(m.monitorId)}')">Duplicate</button>
         <button class="btn btn-ghost btn-sm" onclick="runNow('\${esc(m.monitorId)}', this)">Run now</button>
       </div>
     </div>
@@ -1422,6 +1423,34 @@ async function editDetails(monitorId) {
   } catch (e) {
     document.getElementById('ws1-err').textContent = e.message;
   }
+}
+
+// Duplicate: open the create wizard prefilled with a full copy of the source's
+// check + alert config. Nothing is persisted until the user finishes the steps —
+// create mode (wizardMonitorId=null) makes wizardStep1 POST a brand-new monitor.
+async function duplicateMonitor(sourceId) {
+  S.wizardMonitorId = null;
+  S.wizardMode = 'create';
+  resetWizard();
+  document.getElementById('wiz-title').textContent = 'Duplicate monitor';
+  document.getElementById('wiz-subtitle').textContent = '';
+  wizardGoStep(1);
+  showView('wizard');
+  try {
+    const m = await api('GET', '/monitors/' + sourceId);
+    document.getElementById('w-name').value = '(Copy of) ' + (m.name || '');
+    document.getElementById('w-desc').value = m.description || '';
+    // prefillCheck/prefillAlert fill steps 2 & 3 by element id from the source —
+    // they don't touch S.wizardMonitorId, so they're safe in create mode.
+    await prefillCheck(sourceId);
+    await prefillAlert(sourceId);
+  } catch (e) {
+    document.getElementById('ws1-err').textContent = e.message;
+  }
+  // Focus the name with the caret at the very start of the box.
+  const nameEl = document.getElementById('w-name');
+  nameEl.focus();
+  if (nameEl.setSelectionRange) nameEl.setSelectionRange(0, 0);
 }
 
 function resetWizard() {
