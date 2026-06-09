@@ -293,6 +293,7 @@ textarea{resize:vertical;min-height:72px}
 .corrupt-banner-legacy{flex-direction:column;align-items:stretch}
 .corrupt-banner code{font-family:ui-monospace,Menlo,monospace;background:#0d0b06;padding:1px 4px;border-radius:3px}
 .corrupt-purge-form{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.corrupt-dismiss{font-size:11px;color:#9a8a5a}
 .corrupt-purge-form input{flex:1;min-width:160px;background:#111;border:1px solid #2a2a2a;border-radius:6px;padding:6px 10px;color:#e0e0e0;font-size:12px}
 
 /* Toggle */
@@ -1214,6 +1215,8 @@ function renderReports(reports) {
         + '<input type="text" name="runid" placeholder="runId (UUID)" required>'
         + '<button type="submit" class="btn btn-danger btn-sm">Purge row</button>'
         + '</form>'
+        + '<div class="corrupt-dismiss">Cannot track it down? It cannot be deleted (its key is unrecoverable), but you can '
+        + '<button class="btn btn-ghost btn-sm" data-dismiss-corrupt="1" data-monitorid="' + esc(rep.monitorId) + '">Dismiss warning</button></div>'
         + '</div>';
     }).join('');
 
@@ -1244,6 +1247,23 @@ async function purgeRun(monitorId, timestamp, runId, btn) {
     console.error('❌ purgeRun failed:', e.message);
     alert('Could not purge run: ' + e.message);
     if (btn) { btn.disabled = false; btn.textContent = 'Purge row'; }
+  }
+}
+
+// Dismiss the legacy "unreadable row" banner for a monitor. The row can't be
+// deleted (its key is unrecoverable), so this just records an acknowledgement so
+// the warning stops showing. Genuinely purgeable (indexed) rows are unaffected.
+async function dismissCorrupt(monitorId, btn) {
+  if (!confirm('Hide this unreadable-row warning for this monitor?\\n\\nThe row cannot be deleted (its key is unrecoverable), so this only stops the warning from showing. A newly corrupt row would still appear.')) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Dismissing…'; }
+  try {
+    await api('POST', '/api/reports/' + encodeURIComponent(monitorId) + '/dismiss-corrupt');
+    console.log('🙈 dismissCorrupt: dismissed for ' + monitorId + ' — reloading reports');
+    loadReports();
+  } catch (e) {
+    console.error('❌ dismissCorrupt failed:', e.message);
+    alert('Could not dismiss warning: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Dismiss warning'; }
   }
 }
 
@@ -2283,6 +2303,11 @@ document.getElementById('li-user').addEventListener('keydown', e => { if (e.key 
       purgeRun(purge.dataset.monitorid, purge.dataset.timestamp, purge.dataset.runid, purge);
       return;
     }
+    const dismiss = e.target.closest('[data-dismiss-corrupt]');
+    if (dismiss) {
+      dismissCorrupt(dismiss.dataset.monitorid, dismiss);
+      return;
+    }
     const row = e.target.closest('[data-run-detail]');
     if (row) openRunDetail(row.dataset.monitorid, row.dataset.timestamp, row.dataset.runid);
   });
@@ -2630,19 +2655,28 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
           for await (const idx of kv.list(idxSelector, { reverse: true, limit: 1 })) {
             candidate = { timestamp: idx.key[2] as string, runId: idx.key[3] as string };
           }
+          let entry: Record<string, unknown>;
           if (candidate) {
             try {
               const full = await kv.get<RunResultDto>(["run", m.monitorId, candidate.timestamp, candidate.runId]);
               // Reads fine (or already gone) → the index neighbour isn't the
               // orphan, so the orphan itself is unindexed/legacy.
-              corrupt.push(full.value === null
+              entry = full.value === null
                 ? { exact: true, timestamp: candidate.timestamp, runId: candidate.runId } // stale index → purge cleans it
-                : { exact: false, newerThan, olderThan: candidate.timestamp });
+                : { exact: false, newerThan, olderThan: candidate.timestamp };
             } catch {
-              corrupt.push({ exact: true, timestamp: candidate.timestamp, runId: candidate.runId });
+              entry = { exact: true, timestamp: candidate.timestamp, runId: candidate.runId };
             }
           } else {
-            corrupt.push({ exact: false, newerThan, olderThan: null });
+            entry = { exact: false, newerThan, olderThan: null };
+          }
+          // exact rows are one-click purgeable, so always surface them. A legacy
+          // (exact:false) row can't be deleted — its key is unrecoverable — so
+          // honor a user dismissal and suppress its banner once acknowledged.
+          if (entry.exact) {
+            corrupt.push(entry);
+          } else if (!(await kv.get(["run_corrupt_ack", m.monitorId])).value) {
+            corrupt.push(entry);
           }
         }
         // If we filled the cap and the oldest kept run is still inside the window,
@@ -2689,6 +2723,18 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
         .delete(["run_idx", monitorId, timestamp, runId])
         .commit();
       log.info(`🗑️ DELETE /api/runs/${monitorId}/${timestamp}/${runId} → 200 (purged run + index)`);
+      return json({ ok: true });
+    }
+    // Dismiss the "legacy unreadable row" banner for a monitor. A pre-index
+    // (sidecar-less) corrupt row has no recoverable key, so it can't be deleted —
+    // this records an acknowledgement so the Reports tab stops surfacing it. Only
+    // suppresses the unrecoverable (exact:false) banner; genuinely purgeable rows
+    // (exact:true) always surface their one-click delete.
+    const dismissCorruptMatch = pathname.match(/^\/api\/reports\/([^/]+)\/dismiss-corrupt$/);
+    if (dismissCorruptMatch && method === "POST") {
+      const monitorId = decodeURIComponent(dismissCorruptMatch[1]);
+      await kv.set(["run_corrupt_ack", monitorId], { dismissedAt: new Date().toISOString() });
+      log.info(`🙈 POST /api/reports/${monitorId}/dismiss-corrupt → 200 (legacy corrupt-row banner dismissed)`);
       return json({ ok: true });
     }
 

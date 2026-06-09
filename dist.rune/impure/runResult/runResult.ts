@@ -1,4 +1,5 @@
 import { kv } from "../_kv.ts";
+import { log } from "../_log.ts";
 import type { RunResultDto, RunRequestDetailDto, RunResponseDetailDto } from "../../dto/run-result-dto.ts";
 
 export interface RunResultExtra {
@@ -58,13 +59,29 @@ export class RunResult {
   }
 
   static async getLatest(monitorId: string): Promise<RunResultDto | null> {
-    const iter = kv.list<RunResultDto>(
-      { prefix: ["run", monitorId] },
-      { reverse: true, limit: 1 },
-    );
-    for await (const entry of iter) {
-      return entry.value;
+    try {
+      const iter = kv.list<RunResultDto>(
+        { prefix: ["run", monitorId] },
+        { reverse: true, limit: 1 },
+      );
+      for await (const entry of iter) {
+        return entry.value;
+      }
+      return null;
+    } catch (e) {
+      // A corrupt/undeserializable NEWEST run row must never wedge the run path.
+      // KV throws while deserializing it and cannot advance its cursor past it,
+      // so we can't read older rows here either — treat it as "no previous run".
+      // The current run then still persists (writing a fresh, readable, indexed
+      // newest row), which un-blocks every subsequent getLatest call. The only
+      // cost is recovery detection possibly re-alerting once — far better than a
+      // monitor that silently stops recording and alerting. See the Reports tab's
+      // corrupt-row purge for cleaning the bad row up.
+      log.warn(
+        `⚠️ RunResult.getLatest: newest run for ${monitorId} is unreadable — ` +
+          `treating as no previous run — ${e instanceof Error ? e.message : String(e)}`,
+      );
+      return null;
     }
-    return null;
   }
 }

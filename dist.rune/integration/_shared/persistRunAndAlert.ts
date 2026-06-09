@@ -43,7 +43,9 @@ export async function persistRunAndAlert(input: PersistAndAlertInput): Promise<P
   );
   const runResultDto = runResult.toDto();
   await runResult.save(runResultDto);
-  log.info(`✅ ${tag}: saved runId=${runResultDto.runId}`);
+  // Log the exact key (runId + timestamp) so a row can be purged manually from
+  // the Reports tab even in the unlikely event it ever becomes unreadable.
+  log.info(`✅ ${tag}: saved runId=${runResultDto.runId} at=${runResultDto.timestamp}`);
 
   const isRecovery = previousRun !== null && !previousRun.passed && input.passed;
   // Alert on ANY failure (down endpoint, non-2xx, timeout, extraction failure,
