@@ -10,30 +10,10 @@ import "./main.ts";
 const BASE = "http://localhost:8000";
 const TS = encodeURIComponent("2026-01-01T00:00:00.000Z");
 
-// Deno.serve binds synchronously during the import above, so the socket is already
-// accepting by the time the first test runs. This memoized poll guards that implicit
-// contract: if main.ts ever defers serving behind an await, the first request would
-// otherwise flake on ECONNREFUSED rather than fail on the logic under test.
-let serverReady: Promise<void> | null = null;
-function waitForServer() {
-  serverReady ??= (async () => {
-    for (let i = 0; i < 20; i++) {
-      try {
-        await fetch(BASE);
-        return;
-      } catch {
-        await new Promise((r) => setTimeout(r, 50));
-      }
-    }
-  })();
-  return serverReady;
-}
-
 // Mint a real session token the same way auth_test.ts does — the DELETE /api/runs
 // route sits below main.ts's `validateSession` gate, so an unauthenticated request
 // would 401 before ever reaching the purge logic we want to exercise.
 async function withSession(fn: (token: string) => Promise<void>) {
-  await waitForServer();
   const username = `purgeroute-${crypto.randomUUID()}@example.com`;
   await createUser(username, "correct-horse");
   try {

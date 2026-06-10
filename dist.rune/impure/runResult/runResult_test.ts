@@ -268,10 +268,7 @@ Deno.test("RunResult.purge - returns false and warns when the atomic delete fail
 });
 
 Deno.test("RunResult.purge - returns true and does not warn on a successful commit", async () => {
-  // The success half of the return contract: the same .delete().delete().commit()
-  // chain must thread res.ok through as `true` and stay quiet. Pins it so a refactor
-  // that stops returning res.ok on the ok path can't pass on the failure test alone.
-  // (The two-key deletion itself is covered by the real-KV idempotent test above.)
+  // Pins the ok path: a successful commit threads res.ok through as true with no warn.
   const realAtomic = kv.atomic.bind(kv);
   const realWarn = log.warn;
   const warnCalls: unknown[][] = [];
