@@ -24,13 +24,9 @@ export interface ScanRunRow {
 // An undeserializable row surfaced to the Reports UI. `exact` rows carry the
 // precise key recovered from run_idx (one-click purge); legacy rows have no
 // recoverable key and are bracketed by the surrounding timestamps instead.
-export interface CorruptEntry {
-  exact: boolean;
-  timestamp?: string;
-  runId?: string;
-  newerThan?: string | null;
-  olderThan?: string | null;
-}
+export type CorruptEntry =
+  | { exact: true; timestamp: string; runId: string }
+  | { exact: false; newerThan: string | null; olderThan: string | null };
 
 export interface ScanWindowResult {
   runs: ScanRunRow[];
@@ -159,57 +155,63 @@ export class RunResult {
         `⚠️ RunResult.scanWindow: run history for ${monitorId} truncated at an ` +
           `unreadable row — ${e instanceof Error ? e.message : String(e)}`,
       );
-      // The scan stopped at an orphan just older than the last good run. Recover
-      // its exact key from run_idx (the tiny sidecar that still decodes): the index
-      // entry immediately older than `newerThan` is the offending row. Confirm by
-      // re-reading the full value — if that throws we have the exact key for a
-      // one-click purge; if it reads fine the orphan predates the index (legacy)
-      // and we fall back to a timestamp bracket.
       const newerThan = runs.length ? runs[runs.length - 1].timestamp : null;
-      const idxSelector = newerThan
-        ? { prefix: ["run_idx", monitorId], end: ["run_idx", monitorId, newerThan] }
-        : { prefix: ["run_idx", monitorId] };
-      let candidate: { timestamp: string; runId: string } | null = null;
-      for await (const idx of kv.list(idxSelector, { reverse: true, limit: 1 })) {
-        candidate = { timestamp: idx.key[2] as string, runId: idx.key[3] as string };
-      }
-      let entry: CorruptEntry;
-      if (candidate) {
-        try {
-          const full = await kv.get<RunResultDto>(["run", monitorId, candidate.timestamp, candidate.runId]);
-          entry = full.value === null
-            ? { exact: true, timestamp: candidate.timestamp, runId: candidate.runId } // stale index → purge cleans it
-            : { exact: false, newerThan, olderThan: candidate.timestamp };
-        } catch {
-          entry = { exact: true, timestamp: candidate.timestamp, runId: candidate.runId };
-        }
-      } else {
-        entry = { exact: false, newerThan, olderThan: null };
-      }
+      const entry = await RunResult.resolveCorruptEntry(monitorId, newerThan);
       // exact rows are one-click purgeable, so always surface them. A legacy
       // (exact:false) row can't be deleted — its key is unrecoverable — so honor a
       // user dismissal and suppress its banner once acknowledged.
-      if (entry.exact) {
-        corrupt.push(entry);
-      } else if (!(await RunResult.isCorruptDismissed(monitorId))) {
+      if (entry.exact || !(await RunResult.isCorruptDismissed(monitorId))) {
         corrupt.push(entry);
       }
     }
-    const capped = runs.length === cap && runs[runs.length - 1].timestamp >= cutoff;
+    const capped = cap > 0 && runs.length === cap && runs[runs.length - 1].timestamp >= cutoff;
     return { runs, passed, corrupt, capped };
+  }
+
+  // Identify the orphan row that truncated a scanWindow walk. The scan stopped at
+  // a row just older than `newerThan` (the last good row's timestamp, or null when
+  // even the newest row is corrupt). Recover its exact key from run_idx (the tiny
+  // sidecar that still decodes): the index entry immediately older than `newerThan`
+  // is the offending row. Confirm by re-reading the full value — if that throws (or
+  // the row is gone) we have the exact key for a one-click purge; if it reads fine
+  // the orphan predates the index (legacy) and we fall back to a timestamp bracket.
+  private static async resolveCorruptEntry(
+    monitorId: string,
+    newerThan: string | null,
+  ): Promise<CorruptEntry> {
+    const idxSelector = newerThan
+      ? { prefix: ["run_idx", monitorId], end: ["run_idx", monitorId, newerThan] }
+      : { prefix: ["run_idx", monitorId] };
+    let candidate: { timestamp: string; runId: string } | null = null;
+    for await (const idx of kv.list(idxSelector, { reverse: true, limit: 1 })) {
+      candidate = { timestamp: idx.key[2] as string, runId: idx.key[3] as string };
+    }
+    if (!candidate) return { exact: false, newerThan, olderThan: null };
+    try {
+      const full = await kv.get<RunResultDto>(["run", monitorId, candidate.timestamp, candidate.runId]);
+      return full.value === null
+        ? { exact: true, timestamp: candidate.timestamp, runId: candidate.runId } // stale index → purge cleans it
+        : { exact: false, newerThan, olderThan: candidate.timestamp };
+    } catch {
+      return { exact: true, timestamp: candidate.timestamp, runId: candidate.runId };
+    }
   }
 
   // Delete a single run row by exact key, plus its run_idx sidecar — by key only,
   // never reading the value, so it works even when the row is undeserializable.
   // This is how a corrupt run surfaced on the Reports tab gets removed. Idempotent.
-  static async purge(monitorId: string, timestamp: string, runId: string): Promise<void> {
+  static async purge(monitorId: string, timestamp: string, runId: string): Promise<boolean> {
     const res = await kv.atomic()
       .delete(["run", monitorId, timestamp, runId])
       .delete(["run_idx", monitorId, timestamp, runId])
       .commit();
     if (!res.ok) {
+      // Symmetric with save(): don't let the caller report a false success. The
+      // Reports "Purge row" button surfaces this as a retryable failure instead of
+      // a 200 that leaves the corrupt banner to reappear on reload.
       log.warn(`⚠️ RunResult.purge: atomic delete failed for monitor=${monitorId} runId=${runId}`);
     }
+    return res.ok;
   }
 
   // Acknowledge an unrecoverable (pre-run_idx) corrupt row so the Reports tab stops

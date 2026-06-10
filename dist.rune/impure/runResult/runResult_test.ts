@@ -100,20 +100,29 @@ Deno.test("RunResult.save - throws when the atomic commit fails (ok:false)", asy
   // A dropped write must not be followed by a false "saved" log. save() inspects
   // commit().ok and throws so persistRunAndAlert surfaces the failure instead.
   const realAtomic = kv.atomic.bind(kv);
+  const realError = log.error;
+  const errorCalls: unknown[][] = [];
   const fakeOp: Record<string, unknown> = {};
   fakeOp.set = () => fakeOp;
   fakeOp.delete = () => fakeOp;
   fakeOp.check = () => fakeOp;
   fakeOp.commit = () => Promise.resolve({ ok: false });
   (kv as { atomic: unknown }).atomic = () => fakeOp;
+  (log as { error: unknown }).error = (...args: unknown[]) => { errorCalls.push(args); };
   try {
     const dto: RunResultDto = {
       runId: crypto.randomUUID(), monitorId: "save-fail", observed: 1, passed: true,
       timestamp: "2026-01-01T00:00:00.000Z",
     };
     await assertRejects(() => new RunResult().save(dto), Error, "Failed to persist run");
+    // The throw alone proves the mechanism; this proves the failure was actually
+    // logged at the call site (the ❌ line carrying the monitorId), so no false
+    // "saved" can slip through unrecorded.
+    assertEquals(errorCalls.length, 1);
+    assertStringIncludes(String(errorCalls[0][0]), "save-fail");
   } finally {
     (kv as { atomic: unknown }).atomic = realAtomic;
+    (log as { error: unknown }).error = realError;
   }
 });
 
@@ -170,6 +179,10 @@ Deno.test("RunResult.scanWindow - per-row batching keeps newer rows and recovers
     const res = await RunResult.scanWindow(monitorId, "2026-01-01T00:00:00.000Z", 500);
     assertEquals(res.runs.map((r) => r.observed), [30, 20]);
     assertEquals(res.corrupt, [{ exact: true, timestamp: corruptTs, runId: corruptRunId }]);
+    // Pass-counting still runs when the walk ends in a throw (observed:30 passed),
+    // and a corrupt truncation isn't mis-reported as a cap.
+    assertEquals(res.passed, 1);
+    assertEquals(res.capped, false);
   } finally {
     (kv as { list: unknown }).list = realList;
     (kv as { get: unknown }).get = realGet;
@@ -196,6 +209,10 @@ Deno.test("RunResult.scanWindow - suppresses a dismissed legacy (unrecoverable) 
     const shown = await RunResult.scanWindow(monitorId, "2026-01-01T00:00:00.000Z", 500);
     assertEquals(shown.corrupt.length, 1);
     assertEquals(shown.corrupt[0].exact, false);
+    // Full shape on the corrupt path: the single observed:9 row counts as a pass,
+    // and the truncation is not a cap.
+    assertEquals(shown.passed, 1);
+    assertEquals(shown.capped, false);
     dismissed = true;
     const hidden = await RunResult.scanWindow(monitorId, "2026-01-01T00:00:00.000Z", 500);
     assertEquals(hidden.corrupt.length, 0);

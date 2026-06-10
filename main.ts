@@ -2646,7 +2646,13 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
     // surfaced on the Reports tab gets removed. Drops the run_idx sidecar too.
     if (runDetailMatch && method === "DELETE") {
       const [, monitorId, timestamp, runId] = runDetailMatch.map((s, i) => i === 0 ? s : decodeURIComponent(s));
-      await RunResult.purge(monitorId, timestamp, runId);
+      const purged = await RunResult.purge(monitorId, timestamp, runId);
+      if (!purged) {
+        // Atomic delete rejected — the corrupt row is still in KV. Surface a
+        // failure so the "Purge row" button can prompt a retry instead of
+        // reporting success and silently re-showing the banner on reload.
+        throw new CanaryError("purge-failed", "Could not purge run row — retry", 500);
+      }
       log.info(`🗑️ DELETE /api/runs/${monitorId}/${timestamp}/${runId} → 200 (purged run + index)`);
       return json({ ok: true });
     }
