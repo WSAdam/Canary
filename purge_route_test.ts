@@ -10,10 +10,30 @@ import "./main.ts";
 const BASE = "http://localhost:8000";
 const TS = encodeURIComponent("2026-01-01T00:00:00.000Z");
 
+// Deno.serve binds synchronously during the import above, so the socket is already
+// accepting by the time the first test runs. This memoized poll guards that implicit
+// contract: if main.ts ever defers serving behind an await, the first request would
+// otherwise flake on ECONNREFUSED rather than fail on the logic under test.
+let serverReady: Promise<void> | null = null;
+function waitForServer() {
+  serverReady ??= (async () => {
+    for (let i = 0; i < 20; i++) {
+      try {
+        await fetch(BASE);
+        return;
+      } catch {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+  })();
+  return serverReady;
+}
+
 // Mint a real session token the same way auth_test.ts does — the DELETE /api/runs
 // route sits below main.ts's `validateSession` gate, so an unauthenticated request
 // would 401 before ever reaching the purge logic we want to exercise.
 async function withSession(fn: (token: string) => Promise<void>) {
+  await waitForServer();
   const username = `purgeroute-${crypto.randomUUID()}@example.com`;
   await createUser(username, "correct-horse");
   try {
@@ -24,44 +44,56 @@ async function withSession(fn: (token: string) => Promise<void>) {
   }
 }
 
-Deno.test({
-  name: "DELETE /api/runs - returns 500 + purge-failed when the purge cannot delete",
-  sanitizeResources: false,
-  sanitizeOps: false,
-  fn: () =>
-    withSession(async (token) => {
-      const realPurge = RunResult.purge;
-      (RunResult as { purge: unknown }).purge = () => Promise.resolve(false);
-      try {
-        const res = await fetch(`${BASE}/api/runs/mon-x/${TS}/run-x`, {
-          method: "DELETE",
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        assertEquals(res.status, 500);
-        assertEquals((await res.json()).error, "purge-failed");
-      } finally {
-        (RunResult as { purge: unknown }).purge = realPurge;
-      }
-    }),
-});
+// Stub RunResult.purge to a fixed result for one session, always restoring it in a
+// finally. Centralizing the save/restore here means a future route test can't copy
+// the pattern and forget the cleanup, leaking a stubbed purge into the shared process.
+function withStubbedPurge(value: boolean, fn: (token: string) => Promise<void>) {
+  return withSession(async (token) => {
+    const realPurge = RunResult.purge;
+    (RunResult as { purge: unknown }).purge = () => Promise.resolve(value);
+    try {
+      await fn(token);
+    } finally {
+      (RunResult as { purge: unknown }).purge = realPurge;
+    }
+  });
+}
 
-Deno.test({
-  name: "DELETE /api/runs - returns 200 {ok:true} on a successful purge",
-  sanitizeResources: false,
-  sanitizeOps: false,
-  fn: () =>
-    withSession(async (token) => {
-      const realPurge = RunResult.purge;
-      (RunResult as { purge: unknown }).purge = () => Promise.resolve(true);
-      try {
+// One DELETE /api/runs case: stub the purge result, fire the request, assert the
+// status + body. The URL, method, auth header, and sanitizer flags — which must stay
+// in lockstep across cases — are written once here.
+function purgeRouteCase(
+  name: string,
+  purgeReturn: boolean,
+  expectedStatus: number,
+  assertBody: (body: Record<string, unknown>) => void,
+) {
+  Deno.test({
+    name,
+    sanitizeResources: false, // main.ts's server + cron live for the whole process
+    sanitizeOps: false,
+    fn: () =>
+      withStubbedPurge(purgeReturn, async (token) => {
         const res = await fetch(`${BASE}/api/runs/mon-x/${TS}/run-x`, {
           method: "DELETE",
           headers: { Authorization: `Bearer ${token}` },
         });
-        assertEquals(res.status, 200);
-        assertEquals((await res.json()).ok, true);
-      } finally {
-        (RunResult as { purge: unknown }).purge = realPurge;
-      }
-    }),
-});
+        assertEquals(res.status, expectedStatus);
+        assertBody(await res.json());
+      }),
+  });
+}
+
+purgeRouteCase(
+  "DELETE /api/runs - returns 500 + purge-failed when the purge cannot delete",
+  false,
+  500,
+  (b) => assertEquals(b.error, "purge-failed"),
+);
+
+purgeRouteCase(
+  "DELETE /api/runs - returns 200 {ok:true} on a successful purge",
+  true,
+  200,
+  (b) => assertEquals(b.ok, true),
+);

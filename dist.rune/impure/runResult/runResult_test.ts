@@ -267,6 +267,29 @@ Deno.test("RunResult.purge - returns false and warns when the atomic delete fail
   }
 });
 
+Deno.test("RunResult.purge - returns true and does not warn on a successful commit", async () => {
+  // The success half of the return contract: the same .delete().delete().commit()
+  // chain must thread res.ok through as `true` and stay quiet. Pins it so a refactor
+  // that stops returning res.ok on the ok path can't pass on the failure test alone.
+  // (The two-key deletion itself is covered by the real-KV idempotent test above.)
+  const realAtomic = kv.atomic.bind(kv);
+  const realWarn = log.warn;
+  const warnCalls: unknown[][] = [];
+  const fakeOp: Record<string, unknown> = {};
+  fakeOp.delete = () => fakeOp;
+  fakeOp.commit = () => Promise.resolve({ ok: true });
+  (kv as { atomic: unknown }).atomic = () => fakeOp;
+  (log as { warn: unknown }).warn = (...args: unknown[]) => { warnCalls.push(args); };
+  try {
+    const ok = await RunResult.purge("purge-ok", "2026-01-01T00:00:00.000Z", crypto.randomUUID());
+    assertEquals(ok, true);
+    assertEquals(warnCalls.length, 0);
+  } finally {
+    (kv as { atomic: unknown }).atomic = realAtomic;
+    (log as { warn: unknown }).warn = realWarn;
+  }
+});
+
 Deno.test("RunResult.scanWindow - cap of 0 does not throw computing capped", async () => {
   // Locks the `cap > 0` guard on the `capped` expression. We mock kv.list to yield
   // an empty iterator because real Deno KV rejects `limit: 0` ("Limit must be
