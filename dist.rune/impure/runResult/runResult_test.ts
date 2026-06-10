@@ -243,6 +243,48 @@ Deno.test("RunResult.purge - deletes the run and its run_idx sidecar by key, ide
   }
 });
 
+Deno.test("RunResult.purge - returns false and warns when the atomic delete fails", async () => {
+  // Pins the new return contract: a rejected commit must surface as `false` (so the
+  // route can 500) and warn — not be swallowed back to a bare log. purge() only
+  // chains .delete().delete().commit(), so the fake needs just those, and it logs
+  // via log.warn (unlike save(), which uses log.error).
+  const realAtomic = kv.atomic.bind(kv);
+  const realWarn = log.warn;
+  const warnCalls: unknown[][] = [];
+  const fakeOp: Record<string, unknown> = {};
+  fakeOp.delete = () => fakeOp;
+  fakeOp.commit = () => Promise.resolve({ ok: false });
+  (kv as { atomic: unknown }).atomic = () => fakeOp;
+  (log as { warn: unknown }).warn = (...args: unknown[]) => { warnCalls.push(args); };
+  try {
+    const ok = await RunResult.purge("purge-fail", "2026-01-01T00:00:00.000Z", crypto.randomUUID());
+    assertEquals(ok, false);
+    assertEquals(warnCalls.length, 1);
+    assertStringIncludes(String(warnCalls[0][0]), "purge-fail");
+  } finally {
+    (kv as { atomic: unknown }).atomic = realAtomic;
+    (log as { warn: unknown }).warn = realWarn;
+  }
+});
+
+Deno.test("RunResult.scanWindow - cap of 0 does not throw computing capped", async () => {
+  // Locks the `cap > 0` guard on the `capped` expression. We mock kv.list to yield
+  // an empty iterator because real Deno KV rejects `limit: 0` ("Limit must be
+  // positive") at the list call itself — so the guard is what protects the *capped*
+  // computation: with runs.length === 0 and cap === 0, an unguarded
+  // `runs.length === cap` is 0 === 0 → true, and the next clause reads
+  // runs[-1].timestamp → throws. Completing + capped:false proves the short-circuit.
+  const realList = kv.list.bind(kv);
+  (kv as { list: unknown }).list = () => fakeListIter([]);
+  try {
+    const res = await RunResult.scanWindow("scan-zerocap", "2026-01-01T00:00:00.000Z", 0);
+    assertEquals(res.runs.length, 0);
+    assertEquals(res.capped, false);
+  } finally {
+    (kv as { list: unknown }).list = realList;
+  }
+});
+
 Deno.test("RunResult.dismissCorrupt / isCorruptDismissed - round-trip", async () => {
   const monitorId = `dismiss-${crypto.randomUUID()}`;
   try {
