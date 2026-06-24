@@ -129,9 +129,20 @@ export class RunResult {
     const runs: ScanRunRow[] = [];
     let passed = 0;
     const corrupt: CorruptEntry[] = [];
+    // Track the last good row's runId alongside its timestamp so corrupt-row
+    // recovery can build a precise index bound when the bad row shares a
+    // millisecond with the last good one.
+    let lastGoodRunId: string | null = null;
+    // Read one row PAST the cap so we can tell "limit hit and that's all there
+    // is" from "limit hit AND more in-window rows remain". With a plain
+    // limit:cap, a monitor with exactly `cap` in-window runs and none older
+    // would falsely report capped:true (the UI then claims history was
+    // truncated when nothing was actually omitted). The extra row is only
+    // peeked — it is never collected into `runs`.
+    let capped = false;
     const iter = kv.list<RunResultDto>(
       { prefix: ["run", monitorId] },
-      { reverse: true, limit: cap, batchSize: 1 },
+      { reverse: true, limit: cap > 0 ? cap + 1 : undefined, batchSize: 1 },
     );
     try {
       while (true) {
@@ -139,7 +150,13 @@ export class RunResult {
         if (res.done) break;
         const r = res.value.value;
         if (r.timestamp < cutoff) break; // reached the window edge — older runs follow
+        if (cap > 0 && runs.length === cap) {
+          // This is the (cap+1)-th in-window row — real truncation. Stop here.
+          capped = true;
+          break;
+        }
         if (r.passed) passed++;
+        lastGoodRunId = r.runId;
         runs.push({
           runId: r.runId, // lets the SPA drill into a failed run's request/response
           timestamp: r.timestamp,
@@ -156,15 +173,26 @@ export class RunResult {
           `unreadable row — ${e instanceof Error ? e.message : String(e)}`,
       );
       const newerThan = runs.length ? runs[runs.length - 1].timestamp : null;
-      const entry = await RunResult.resolveCorruptEntry(monitorId, newerThan);
-      // exact rows are one-click purgeable, so always surface them. A legacy
-      // (exact:false) row can't be deleted — its key is unrecoverable — so honor a
-      // user dismissal and suppress its banner once acknowledged.
-      if (entry.exact || !(await RunResult.isCorruptDismissed(monitorId))) {
-        corrupt.push(entry);
+      try {
+        const entry = await RunResult.resolveCorruptEntry(monitorId, newerThan, lastGoodRunId);
+        // exact rows are one-click purgeable, so always surface them. A legacy
+        // (exact:false) row can't be deleted — its key is unrecoverable — so honor a
+        // user dismissal and suppress its banner once acknowledged.
+        if (entry.exact || !(await RunResult.isCorruptDismissed(monitorId))) {
+          corrupt.push(entry);
+        }
+      } catch (recoveryErr) {
+        // A secondary KV hiccup during recovery must NOT blank out the whole
+        // Reports page — degrade this one monitor's corrupt-row detail instead.
+        // Surface a non-exact banner from what we already read so the user still
+        // sees that history is truncated here.
+        log.warn(
+          `⚠️ RunResult.scanWindow: corrupt-row recovery for ${monitorId} failed ` +
+            `(non-fatal) — ${recoveryErr instanceof Error ? recoveryErr.message : String(recoveryErr)}`,
+        );
+        corrupt.push({ exact: false, newerThan, olderThan: null });
       }
     }
-    const capped = cap > 0 && runs.length === cap && runs[runs.length - 1].timestamp >= cutoff;
     return { runs, passed, corrupt, capped };
   }
 
@@ -178,9 +206,20 @@ export class RunResult {
   private static async resolveCorruptEntry(
     monitorId: string,
     newerThan: string | null,
+    lastGoodRunId: string | null = null,
   ): Promise<CorruptEntry> {
+    // KV `end` is exclusive. A 3-part bound ["run_idx",mon,newerThan] sorts
+    // BEFORE every 4-part key sharing that timestamp, so it would skip a corrupt
+    // row that shares `newerThan`'s millisecond (runIds disambiguate same-ms
+    // runs). Bound on the last good row's exact 4-part key instead so the
+    // immediately-older corrupt row in the same millisecond is included.
     const idxSelector = newerThan
-      ? { prefix: ["run_idx", monitorId], end: ["run_idx", monitorId, newerThan] }
+      ? {
+        prefix: ["run_idx", monitorId],
+        end: lastGoodRunId
+          ? ["run_idx", monitorId, newerThan, lastGoodRunId]
+          : ["run_idx", monitorId, newerThan],
+      }
       : { prefix: ["run_idx", monitorId] };
     let candidate: { timestamp: string; runId: string } | null = null;
     for await (const idx of kv.list(idxSelector, { reverse: true, limit: 1 })) {

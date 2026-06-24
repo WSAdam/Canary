@@ -22,50 +22,111 @@ function inviteEmailHtml(link: string): string {
 </body></html>`;
 }
 
+export interface CreateInvitesResult {
+  sent: string[];
+  failed: { email: string; error: string }[];
+}
+
 export async function createInvites(
   emails: string[],
   baseUrl: string,
   fromEmail: string,
   postmarkToken: string,
-): Promise<void> {
-  if (!emails.length || emails.length > 10) {
+): Promise<CreateInvitesResult> {
+  if (!Array.isArray(emails) || !emails.length || emails.length > 10) {
     throw new CanaryError("validation-error", "Provide between 1 and 10 email addresses", 400);
   }
+  // Normalize (trim) and validate up front. We persist/send the TRIMMED value so
+  // the stored invite — and the username created on acceptance — never carries
+  // stray surrounding whitespace (which would make a later login by the clean
+  // form miss the row). A basic format check also rejects non-email strings so
+  // they can't become a verbatim username.
+  const normalized = emails.map((email) => {
+    if (typeof email !== "string" || email.trim() === "") {
+      throw new CanaryError("validation-error", "Each email must be a non-empty string", 400);
+    }
+    const trimmed = email.trim();
+    // Pragmatic shape check: non-empty local part, "@", non-empty domain with a
+    // dot, and no internal whitespace — enough to reject "admin", "<x>", etc.
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+      throw new CanaryError("validation-error", `"${email}" is not a valid email address`, 400);
+    }
+    return trimmed;
+  });
 
-  await Promise.all(emails.map(async (email) => {
+  // Send each invite independently. A single failing send must not abort the
+  // batch (leaving the others' tokens live but unreported) — instead we clean up
+  // the failed invite's KV row and surface a per-email result so the admin knows
+  // exactly which addresses went out and which to retry.
+  const results = await Promise.all(normalized.map(async (email): Promise<{ email: string; ok: boolean; error?: string }> => {
     const token = crypto.randomUUID();
     await kv.set(["invite", token], { email } satisfies InviteRecord, { expireIn: INVITE_TTL_MS });
     const link = `${baseUrl}/invite/accept?token=${token}`;
 
-    const res = await fetch("https://api.postmarkapp.com/email", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Postmark-Server-Token": postmarkToken,
-      },
-      body: JSON.stringify({
-        From: fromEmail,
-        To: email,
-        Subject: "You've been invited to Canary",
-        HtmlBody: inviteEmailHtml(link),
-        TextBody: `You've been invited to Canary, an HTTP monitoring platform.\n\nSet your password here:\n${link}\n\nThis link expires in 7 days.`,
-        MessageStream: "outbound",
-      }),
-    });
+    let res: Response;
+    try {
+      res = await fetch("https://api.postmarkapp.com/email", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Postmark-Server-Token": postmarkToken,
+        },
+        body: JSON.stringify({
+          From: fromEmail,
+          To: email,
+          Subject: "You've been invited to Canary",
+          HtmlBody: inviteEmailHtml(link),
+          TextBody: `You've been invited to Canary, an HTTP monitoring platform.\n\nSet your password here:\n${link}\n\nThis link expires in 7 days.`,
+          MessageStream: "outbound",
+        }),
+      });
+    } catch (e) {
+      // Drop the now-orphaned token so it can't be resolved by a stale link.
+      await kv.delete(["invite", token]);
+      log.warn(`⚠️ invite send threw for ${email} — ${(e as Error).message}`);
+      return { email, ok: false, error: (e as Error).message };
+    }
 
     if (!res.ok) {
       const body = await res.text();
-      throw new CanaryError("internal-error", `Failed to send invite to ${email}: ${body}`, 500);
+      await kv.delete(["invite", token]);
+      log.warn(`⚠️ invite send failed for ${email} — ${res.status}: ${body}`);
+      return { email, ok: false, error: `${res.status}: ${body}` };
     }
 
     log.info("✅ invite sent:", email);
+    return { email, ok: true };
   }));
+
+  const failed = results.filter((r) => !r.ok);
+  // Only fail the whole call when every send failed (nothing went out). A
+  // partial success returns normally — the live invites stay valid.
+  if (failed.length === emails.length) {
+    throw new CanaryError(
+      "internal-error",
+      `Failed to send any invites: ${failed.map((f) => `${f.email} (${f.error})`).join("; ")}`,
+      500,
+    );
+  }
+  return { sent: results.filter((r) => r.ok).map((r) => r.email), failed: failed.map((f) => ({ email: f.email, error: f.error ?? "unknown" })) };
+}
+
+/** Resolve an invite token to its email WITHOUT consuming it. Callers must
+ *  finalize a successful acceptance with `markInviteConsumed`, so a failed
+ *  createUser/login doesn't permanently burn the single-use token. */
+export async function peekInvite(token: string): Promise<string> {
+  const entry = await kv.get<InviteRecord>(["invite", token], { consistency: "strong" });
+  if (!entry.value) throw new CanaryError("not-found", "Invite link not found or expired", 404);
+  return entry.value.email;
+}
+
+/** Delete a consumed invite token. Call only after the account was created. */
+export async function markInviteConsumed(token: string): Promise<void> {
+  await kv.delete(["invite", token]);
 }
 
 export async function consumeInvite(token: string): Promise<string> {
-  const entry = await kv.get<InviteRecord>(["invite", token], { consistency: "strong" });
-  if (!entry.value) throw new CanaryError("not-found", "Invite link not found or expired", 404);
-  const { email } = entry.value;
-  await kv.delete(["invite", token]);
+  const email = await peekInvite(token);
+  await markInviteConsumed(token);
   return email;
 }

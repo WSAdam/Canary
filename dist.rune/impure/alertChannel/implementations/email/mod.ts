@@ -42,7 +42,11 @@ export class Email extends BaseAlertChannel {
 
     if (!response.ok) {
       const errBody = await response.text().catch(() => "");
-      throw new CanaryError("send-failed", `Postmark returned ${response.status}: ${errBody}`, 500);
+      // A 4xx from Postmark (e.g. 422 invalid recipient) is a config/client
+      // error — surface it as 4xx so /test-alert doesn't misreport a bad address
+      // as a 500 "our fault". Only a true upstream 5xx maps to a 502.
+      const status = response.status >= 400 && response.status < 500 ? 400 : 502;
+      throw new CanaryError("send-failed", `Postmark returned ${response.status}: ${errBody}`, status);
     }
   }
 }

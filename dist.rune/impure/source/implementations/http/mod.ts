@@ -1,7 +1,7 @@
 import { BaseSource } from "../../shared/mod.ts";
 import type { CheckDto } from "../../../../dto/check-dto.ts";
 import type { ResponseDto } from "../../../../dto/response-dto.ts";
-import { CanaryError, type ResponseDetailCarrier } from "../../../../dto/_shared.ts";
+import { assertFetchableUrl, CanaryError, fetchNoSsrfRedirect, type ResponseDetailCarrier } from "../../../../dto/_shared.ts";
 import { log } from "../../../_log.ts";
 
 const RETRY_DELAYS = [0, 2000, 5000]; // immediate, 2s, 5s
@@ -17,6 +17,13 @@ export class Http extends BaseSource {
       secretValues.reduce((acc, v) => (v ? acc.split(v).join("***") : acc), s);
     const url = redact(dto.url);
 
+    // SSRF guard: block fetches to loopback/link-local/private/metadata hosts so
+    // a check URL can't read the deployment's internal network. Guards the
+    // resolved URL (post {{SECRET}} substitution) — the host that is actually hit.
+    // fetchNoSsrfRedirect (below) re-applies this guard to every redirect hop so
+    // a public host can't 3xx-bounce us onto an internal/metadata address.
+    assertFetchableUrl(dto.url);
+
     let lastError: Error | null = null;
 
     for (let attempt = 0; attempt < RETRY_DELAYS.length; attempt++) {
@@ -26,7 +33,7 @@ export class Http extends BaseSource {
       }
 
       try {
-        const response = await fetch(dto.url, {
+        const response = await fetchNoSsrfRedirect(dto.url, {
           method: dto.method,
           headers: { "Content-Type": "application/json", ...dto.headers },
           body: dto.method !== "GET" && dto.body ? dto.body : undefined,

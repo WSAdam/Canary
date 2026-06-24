@@ -49,4 +49,9 @@ export class Alert {
     log.debug(`✅ alert.get: found alert recipients=${result.value.recipients.length} versionstamp=${result.versionstamp}`);
     return result.value;
   }
+
+  async delete(monitorId: string): Promise<void> {
+    log.debug(`🗑️ alert.delete: key=["alert", "${monitorId}"]`);
+    await kv.delete(["alert", monitorId]);
+  }
 }

@@ -92,7 +92,8 @@ export class Ntfy extends BaseAlertChannel {
 
     if (!response.ok) {
       const errBody = await response.text().catch(() => "");
-      throw new CanaryError("send-failed", `ntfy returned ${response.status}: ${errBody}`, 500);
+      const status = response.status >= 400 && response.status < 500 ? 400 : 502;
+      throw new CanaryError("send-failed", `ntfy returned ${response.status}: ${errBody}`, status);
     }
   }
 }

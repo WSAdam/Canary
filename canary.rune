@@ -30,6 +30,10 @@
     // alert.get(MonitorIdDto)
 //   Returns the alert channel configuration for a given monitor.
 //
+    // alert.delete(MonitorIdDto)
+//   Removes the alert channel configuration for a monitor. The monitor
+//   keeps running; it just stops dispatching notifications.
+//
     // secret.set(SetSecretDto)
 //   Stores a named secret value in Deno KV for use by integrations.
 //
@@ -111,6 +115,15 @@
     [CTR] alert
     db:alert.get(monitorId): AlertDto
       not-found timed-out
+
+
+[REQ] alert.delete(MonitorIdDto): AlertDto
+    [CTR] alert
+    db:alert.get(monitorId): AlertDto
+      not-found timed-out
+    db:alert.delete(monitorId): void
+      timed-out
+    [RET] AlertDto
 
 
 [REQ] secret.set(SetSecretDto): SecretDto

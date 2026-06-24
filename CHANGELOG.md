@@ -4,6 +4,65 @@ All notable changes to Canary are documented here. The project is not formally
 versioned yet, so entries are grouped by date. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-06-24
+
+### Added
+- **Full captures in the run-detail drill-in.** The Reports run-detail modal now
+  renders every capture in full (JSON pretty-printed when the value parses),
+  with a Copy button, and **any run with captures is now drillable** — not just
+  failed runs — so the truncated `errors=[…]` shown in a row can be read in full.
+- **Delete an alert.** Each monitor card has a **Delete alert** button backed by a
+  new idempotent `DELETE /monitors/:id/alert` (`alert.delete`); the monitor keeps
+  running but stops notifying until an alert is re-added.
+
+### Security
+- **SSRF guard on every outbound fetch.** The check runner and the `/test-request`
+  proxy now refuse loopback/link-local/private/cloud-metadata hosts (including
+  IPv4-mapped IPv6 and NAT64 forms), follow redirects manually re-validating each
+  hop, and strip `Authorization`/`Cookie` on cross-origin redirects. Opt out for a
+  trusted internal target with `ALLOW_PRIVATE_FETCH=1` (see README). Residual
+  DNS-rebinding risk is documented in `assertFetchableUrl`.
+- **Deleting a user revokes their session immediately.** `validateSession` now
+  confirms the account still exists, so a stateless token can't outlive a
+  `DELETE /users/:username` by up to its 24h TTL.
+- **Server-side password policy** (min 8 chars) enforced on user creation and
+  invite acceptance — the API no longer trusts the SPA's client-side check.
+- **Stored-XSS fix.** A check `expression` was rendered unescaped into the Reports
+  comparator-hint; all user/server-controlled values now route through `esc()`.
+- Output/secret hardening: capture values are now secret-redacted before persist
+  and alert; alert-channel send failures map upstream 4xx → 400 (not a misleading
+  500).
+
+### Fixed
+- **Run rows can no longer silently overflow KV.** Size caps are now byte-accurate
+  (UTF-8, not UTF-16 code units) and enforced at the shared persistence chokepoint
+  (`persistRunAndAlert`), so an oversized row from the cron runner **or** the
+  webhook-fire path is trimmed to fit instead of throwing on save and vanishing
+  from history. `request.url`/`headers` and the error message are bounded too.
+- **Stepped cron fields now fire.** A field like `5/15` (`N/step`, no range end)
+  validated but never matched, so the monitor silently never ran.
+- **`comparatorOp` is validated at configure time** (allow-list), so a typo is
+  rejected at save instead of false-alerting on every tick.
+- **Invite acceptance is robust.** The token is consumed only *after* the account
+  is created and logged in (peek-then-consume), so a failed accept no longer burns
+  the invite; batch invite sends report per-recipient success/failure.
+- **Alert dispatch truthfulness.** An alert whose recipients are all unknown
+  channels no longer reports `fired:true` while sending nothing.
+- Many malformed-input paths that returned `500` now return a proper `400`
+  (login, users, monitors, checks, alerts, secrets, webhook bodies, path params),
+  and integration provisioning no longer collides/overwrites or rolls back another
+  integration's live secret.
+
+### Changed
+- **Removed the per-username login throttle.** A lockout keyed solely on the
+  attacker-supplied username (gated before the credential check) let an
+  unauthenticated caller lock out any user and break invite acceptance — a broken
+  control worse than none. Brute-force protection will be reconsidered as a
+  deliberate per-IP design.
+
+### Docs
+- Documented `ALLOW_PRIVATE_FETCH` and the password policy in the README.
+
 ## 2026-06-09
 
 ### Added

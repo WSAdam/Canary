@@ -39,7 +39,17 @@ async function webhookFireRun(runId: string, input: WebhookFireInput): Promise<P
     log.debug(`🔍 webhook.fire: no check configured — defaulting notifyOnRecover=true`);
   }
 
-  const { passed, observed, error, captures, message, title } = input.payload;
+  // The payload comes from an untrusted external caller, so coerce/ignore any
+  // wrong-typed field instead of passing it through. A non-string title/message
+  // would otherwise flow into applyVars(template).replace() and throw, getting
+  // swallowed by allSettled and silently SUPPRESSING the alert for a real
+  // failure. error/captures are likewise type-checked so they can't violate the
+  // persisted RunResultDto shape.
+  const { passed, observed } = input.payload;
+  const error = typeof input.payload.error === "string" ? input.payload.error : undefined;
+  const message = typeof input.payload.message === "string" ? input.payload.message : undefined;
+  const title = typeof input.payload.title === "string" ? input.payload.title : undefined;
+  const captures = sanitizeCaptures(input.payload.captures);
 
   return await persistRunAndAlert({
     runId,
@@ -53,4 +63,17 @@ async function webhookFireRun(runId: string, input: WebhookFireInput): Promise<P
     source: "webhook",
     alertOverrides: (message || title) ? { message, title } : undefined,
   });
+}
+
+/** Keep only string-valued entries from an externally-supplied captures map so
+ *  the stored RunResultDto.captures (Record<string,string>) stays well-typed and
+ *  every value is safe to feed into the alert template engine. */
+function sanitizeCaptures(raw: unknown): Record<string, string> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === "string") out[k] = v;
+    else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }

@@ -6,6 +6,15 @@ import type { MonitorListDto } from "../../dto/monitor-list-dto.ts";
 import { CanaryError } from "../../dto/_shared.ts";
 import { log } from "../_log.ts";
 
+// Bound the name so it can't blow past Deno KV's ~2 KiB key-size limit when used
+// as the ["monitor_name", name] index key part.
+export const MAX_MONITOR_NAME_LENGTH = 200;
+
+// Bound the description so an oversized value (stored in the ["monitor", id] KV
+// VALUE) can't blow past Deno KV's ~64 KiB per-value limit as an opaque 500 —
+// it's surfaced as a clean 400 at the boundary instead (mirrors the name cap).
+export const MAX_MONITOR_DESCRIPTION_LENGTH = 4000;
+
 export class Monitor {
   static async checkUnique(name: string): Promise<void> {
     log.debug(`🔍 monitor.checkUnique: checking name="${name}"`);
@@ -41,7 +50,13 @@ export class Monitor {
   }
 
   async update(dto: UpdateMonitorDto): Promise<MonitorDto> {
-    const existing = await this.get(dto.monitorId); // throws not-found
+    // Read with the versionstamp so the rename commit can pin the record —
+    // see the atomic check below.
+    const read = await kv.get<MonitorDto>(["monitor", dto.monitorId], { consistency: "strong" });
+    if (read.value === null) {
+      throw new CanaryError("not-found", `Monitor "${dto.monitorId}" not found`, 404);
+    }
+    const existing = read.value;
     // PATCH semantics: merge over the existing record so a partial body can't
     // clobber a field with undefined, and any future MonitorDto fields survive.
     const name = dto.name ?? existing.name;
@@ -50,24 +65,45 @@ export class Monitor {
 
     // Name unchanged → only the record needs writing (e.g. a description edit).
     // The ["monitor_name", name] index already points at this monitor.
+    //
+    // Still PIN the record's versionstamp: a bare kv.set here would silently
+    // clobber a concurrent rename that commits between our read and write —
+    // restoring the old name in the record while the rename already moved the
+    // ["monitor_name", …] index, desyncing the uniqueness invariant. The check
+    // forces us to observe that conflict and re-read instead of overwriting it.
     if (name === existing.name) {
       log.debug(`🚀 monitor.update: ${dto.monitorId} description-only (name unchanged)`);
-      await kv.set(["monitor", dto.monitorId], updated);
+      const res = await kv.atomic()
+        .check({ key: ["monitor", dto.monitorId], versionstamp: read.versionstamp })
+        .set(["monitor", dto.monitorId], updated)
+        .commit();
+      if (!res.ok) {
+        log.debug(`🔍 monitor.update: ${dto.monitorId} changed concurrently during description-only update`);
+        throw new CanaryError("conflict", "Monitor was modified concurrently — please retry", 409);
+      }
       return updated;
     }
 
     // Name changed → atomically move the uniqueness index: claim the new name
     // (must be free), drop the old one, and rewrite the record in one commit so
     // a concurrent create/rename can't duplicate a name.
+    //
+    // Also pin the monitor record's versionstamp: two concurrent renames of THIS
+    // monitor (A→B and A→C) both read existing.name="A" and both find their new
+    // name free, so without this check both commit — leaving the record at one
+    // name but BOTH [monitor_name,B] and [monitor_name,C] pointing at it (one a
+    // phantom reservation that no record matches). The check forces the loser to
+    // observe the conflict instead of silently desyncing the index.
     log.debug(`🚀 monitor.update: ${dto.monitorId} rename "${existing.name}" → "${name}"`);
     const res = await kv.atomic()
+      .check({ key: ["monitor", dto.monitorId], versionstamp: read.versionstamp })
       .check({ key: ["monitor_name", name], versionstamp: null })
       .set(["monitor", dto.monitorId], updated)
       .delete(["monitor_name", existing.name])
       .set(["monitor_name", name], dto.monitorId)
       .commit();
     if (!res.ok) {
-      log.debug(`🔍 monitor.update: atomic commit failed (name taken)`);
+      log.debug(`🔍 monitor.update: atomic commit failed (name taken or concurrent change)`);
       throw new CanaryError("duplicate-name", `Monitor with name "${name}" already exists`, 409);
     }
     log.debug(`✅ monitor.update: ${dto.monitorId} renamed to "${name}" versionstamp=${res.versionstamp}`);

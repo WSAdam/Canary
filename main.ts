@@ -1,4 +1,4 @@
-import { CanaryError } from "./dist.rune/dto/_shared.ts";
+import { assertFetchableUrl, CanaryError, fetchNoSsrfRedirect, requireString } from "./dist.rune/dto/_shared.ts";
 import { kv } from "./dist.rune/impure/_kv.ts";
 import type { CheckDto } from "./dist.rune/dto/check-dto.ts";
 import {
@@ -10,7 +10,7 @@ import {
   seedAdmin,
   validateSession,
 } from "./dist.rune/impure/auth/auth.ts";
-import { consumeInvite, createInvites } from "./dist.rune/impure/invite/invite.ts";
+import { createInvites, markInviteConsumed, peekInvite } from "./dist.rune/impure/invite/invite.ts";
 
 // Integration imports
 import { createMonitor } from "./dist.rune/integration/monitor-create/monitor-create.ts";
@@ -22,6 +22,7 @@ import { getCheck } from "./dist.rune/integration/check-get/check-get.ts";
 import { buildSchedule } from "./dist.rune/integration/schedule-build/schedule-build.ts";
 import { configureAlert } from "./dist.rune/integration/alert-configure/alert-configure.ts";
 import { getAlert } from "./dist.rune/integration/alert-get/alert-get.ts";
+import { deleteAlert } from "./dist.rune/integration/alert-delete/alert-delete.ts";
 import { setSecret } from "./dist.rune/integration/secret-set/secret-set.ts";
 import { listSecrets } from "./dist.rune/integration/secret-list/secret-list.ts";
 import { deleteSecret } from "./dist.rune/integration/secret-delete/secret-delete.ts";
@@ -63,7 +64,12 @@ function matchField(field: string, value: number): boolean {
     const s = parseInt(step);
     if (!(s > 0)) return false; // guard against */0 (rejected at config time, defensive here)
     if (range === "*") return value % s === 0;
-    const [start, end] = range.split("-").map(Number);
+    const [start, endRaw] = range.split("-").map(Number);
+    // A single-number-with-step field like "5/15" means "every s starting at
+    // start" with NO upper bound — range.split("-") yields only [start], so
+    // endRaw is NaN. Treat a missing end as +Infinity so the open-ended form
+    // fires (5,20,35,…) instead of never matching (value <= NaN is always false).
+    const end = Number.isNaN(endRaw) ? Infinity : endRaw;
     return value >= start && value <= end && (value - start) % s === 0;
   }
   if (field.includes("-")) {
@@ -74,7 +80,13 @@ function matchField(field: string, value: number): boolean {
 }
 
 function cronMatchesNow(cron: string, now: Date): boolean {
-  const [min, hour, day, month, weekday] = cron.trim().split(/\s+/);
+  // Defensive: a check row with a missing/non-string cron, or one with fewer
+  // than 5 fields (weekday undefined → matchField throws), must not throw a raw
+  // TypeError that aborts the whole cron tick. Treat malformed crons as "not due".
+  if (typeof cron !== "string") return false;
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length < 5) return false;
+  const [min, hour, day, month, weekday] = parts;
   // Use UTC throughout so schedule matching agrees with the UTC dedup key and
   // Deno Deploy's UTC clock. getUTCDay() is 0 (Sun)–6 (Sat); also treat 7 as
   // Sunday so the common "7 = Sunday" cron convention fires.
@@ -120,21 +132,43 @@ Deno.cron("canary-runner", "* * * * *", async () => {
   log.debug("🔍 cron tick:", now.toISOString());
 
   const due: string[] = [];
-  for await (const entry of kv.list<CheckDto>({ prefix: ["check"] })) {
-    const checkDto = entry.value;
-    if (!cronMatchesNow(checkDto.cron, now)) continue;
-
-    // Per-monitor-per-minute lock: belt-and-suspenders against regional KV non-linearizability
-    const runLockKey = ["run-lock", checkDto.monitorId, minuteKey];
-    const runLock = await kv.atomic()
-      .check({ key: runLockKey, versionstamp: null })
-      .set(runLockKey, 1, { expireIn: FIVE_MIN_MS })
-      .commit();
-    if (!runLock.ok) {
-      log.debug(`🔍 run skipped for ${checkDto.monitorId} (another isolate already ran this minute)`);
-      continue;
+  // Iterate one row at a time with a per-row error boundary so a single corrupt
+  // check row (undeserializable value, or a malformed cron that slips past
+  // cronMatchesNow's guards) can't reject the whole tick and silently halt ALL
+  // monitoring every minute. batchSize:1 isolates the failure to its row; an
+  // undeserializable value throws when the iterator advances onto it, so we log
+  // and stop the scan (KV can't advance its cursor past such a row) — the
+  // monitors already collected still run.
+  const iter = kv.list<CheckDto>({ prefix: ["check"] }, { batchSize: 1 });
+  while (true) {
+    let entry: IteratorResult<Deno.KvEntry<CheckDto>>;
+    try {
+      entry = await iter.next();
+    } catch (e) {
+      log.error(`❌ cron tick: check scan hit an unreadable row — stopping scan: ${(e as Error).message}`);
+      break;
     }
-    due.push(checkDto.monitorId);
+    if (entry.done) break;
+    const checkDto = entry.value.value;
+    try {
+      if (!cronMatchesNow(checkDto.cron, now)) continue;
+
+      // Per-monitor-per-minute lock: belt-and-suspenders against regional KV non-linearizability
+      const runLockKey = ["run-lock", checkDto.monitorId, minuteKey];
+      const runLock = await kv.atomic()
+        .check({ key: runLockKey, versionstamp: null })
+        .set(runLockKey, 1, { expireIn: FIVE_MIN_MS })
+        .commit();
+      if (!runLock.ok) {
+        log.debug(`🔍 run skipped for ${checkDto.monitorId} (another isolate already ran this minute)`);
+        continue;
+      }
+      due.push(checkDto.monitorId);
+    } catch (e) {
+      // A bad single row (e.g. unexpected shape reaching the lock logic) must not
+      // abort scheduling for every other monitor.
+      log.error(`❌ cron tick: skipping a check row due to error: ${(e as Error).message}`);
+    }
   }
 
   // Run due monitors in bounded batches so a busy minute can't fan out into an
@@ -918,7 +952,16 @@ async function api(method, path, body) {
   if (S.token) headers['Authorization'] = 'Bearer ' + S.token;
   const controller = new AbortController();
   const timer = setTimeout(() => { console.error('❌ api: timeout after 15s', method, path); controller.abort(); }, 15000);
-  console.log('🔍 api:', method, path, body !== undefined ? JSON.stringify(body).slice(0, 120) : '(no body)');
+  // Never log request bodies that may carry a secret value: /secrets posts the
+  // plaintext secretValue, which is a write-only/never-logged value. Redact the
+  // body for those routes so the plaintext can't leak into devtools, console
+  // capture, or a screen share.
+  const bodyForLog = body === undefined
+    ? '(no body)'
+    : path.indexOf('/secrets') === 0
+    ? '(redacted)'
+    : JSON.stringify(body).slice(0, 120);
+  console.log('🔍 api:', method, path, bodyForLog);
   let res;
   try {
     res = await fetch(path, {
@@ -935,7 +978,14 @@ async function api(method, path, body) {
   clearTimeout(timer);
   console.log('✅ api:', method, path, '→', res.status);
   const data = await res.json().catch(() => ({}));
-  if (res.status === 401) {
+  // The 401 interceptor exists to catch an EXPIRED session on an authenticated
+  // route (clear the token, bounce to login). It must NOT fire on the public
+  // auth/invite endpoints: a wrong password on /auth/login legitimately returns
+  // 401, and masking it as "Session expired" is misleading on a first sign-in
+  // where there is no session. For those, fall through to surface data.message
+  // (e.g. "Invalid credentials").
+  const isPublicAuthPath = path === '/auth/login' || path.indexOf('/invite/') === 0;
+  if (res.status === 401 && !isPublicAuthPath) {
     console.warn('⚠️ api: 401 — clearing token and redirecting to login');
     localStorage.removeItem('canary_token');
     S.token = null;
@@ -1094,6 +1144,16 @@ async function deleteSecret(key) {
   }
 }
 
+async function deleteAlert(monitorId) {
+  if (!confirm('Delete the alert config for this monitor? The monitor keeps running but stops sending notifications until you add an alert again.')) return;
+  try {
+    await api('DELETE', '/monitors/' + encodeURIComponent(monitorId) + '/alert');
+    loadDashboard();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
 function renderMonitorList(monitors) {
   const el = document.getElementById('d-monitor-list');
   if (!monitors.length) {
@@ -1110,6 +1170,7 @@ function renderMonitorList(monitors) {
         <button class="btn btn-ghost btn-sm" onclick="editDetails('\${esc(m.monitorId)}')">Edit details</button>
         <button class="btn btn-ghost btn-sm" onclick="editCheck('\${esc(m.monitorId)}')">Edit check</button>
         <button class="btn btn-ghost btn-sm" onclick="editAlert('\${esc(m.monitorId)}')">Edit alert</button>
+        <button class="btn btn-ghost btn-sm" onclick="deleteAlert('\${esc(m.monitorId)}')">Delete alert</button>
         <button class="btn btn-ghost btn-sm" onclick="duplicateMonitor('\${esc(m.monitorId)}')">Duplicate</button>
         <button class="btn btn-ghost btn-sm" onclick="runNow('\${esc(m.monitorId)}', this)">Run now</button>
       </div>
@@ -1173,8 +1234,10 @@ function renderReports(reports) {
         }).join(', ');
         detail += ' · <span style="color:var(--m)">' + caps + '</span>';
       }
-      // Failed runs carry captured request/response detail — make them drill-in-able.
-      const clickable = !r.passed && r.hasDetail && r.runId;
+      // Drill in whenever there's something fuller to show: failed runs carry
+      // request/response detail, and any run with captures has untruncated values.
+      const hasCaps = r.captures && Object.keys(r.captures).length > 0;
+      const clickable = r.runId && (r.hasDetail || hasCaps);
       if (clickable) detail += ' · <span style="color:var(--y)">🔍 details</span>';
       const dataAttrs = clickable
         ? ' data-run-detail="1" data-monitorid="' + esc(rep.monitorId) + '" data-timestamp="' + esc(r.timestamp) + '" data-runid="' + esc(r.runId) + '"'
@@ -1327,7 +1390,27 @@ function renderRunDetail(run) {
   if (run.error) html += '<div style="font-size:13px;color:var(--red);margin-bottom:8px">' + esc(run.error) + '</div>';
 
   // Plain-text payloads mirroring what's displayed, for the copy buttons.
-  let reqText = '', resText = '';
+  let reqText = '', resText = '', capText = '';
+
+  // Captures — the named values pulled from the response on EVERY run (pass or
+  // fail). The Reports row truncates each to 80 chars; here we show them in full,
+  // pretty-printing any value that parses as JSON (e.g. an errors=[…] array).
+  const caps = run.captures;
+  if (caps && Object.keys(caps).length) {
+    const capLines = [];
+    let capBlock = '';
+    for (const [k, raw] of Object.entries(caps)) {
+      const v = String(raw);
+      let shown = v, ok = true;
+      try { shown = JSON.stringify(JSON.parse(v), null, 2); } catch (_) { ok = false; }
+      capLines.push(k + '=' + (ok ? shown : v));
+      capBlock += '<div style="font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--y);margin:8px 0 4px;word-break:break-all">' + esc(k) + '</div>'
+        + pre(esc(ok ? shown : v));
+    }
+    capText = capLines.join('\\n\\n');
+    html += sectionTitle('Captures', 'captures');
+    html += capBlock;
+  }
 
   const req = run.request;
   if (req) {
@@ -1368,15 +1451,16 @@ function renderRunDetail(run) {
     if (res.truncated) html += '<div style="font-size:11px;color:var(--m);margin-top:6px">Response body was truncated to keep history small.</div>';
   }
 
-  if (!req && !res) html += '<p style="font-size:13px;color:var(--m)">No request/response detail was captured for this run.</p>';
+  if (!req && !res && !capText) html += '<p style="font-size:13px;color:var(--m)">No request/response detail was captured for this run.</p>';
 
   // "Copy all" payload — same pieces, one block.
   const metaLine = new Date(run.timestamp).toLocaleString() + ' · ' + (run.passed ? 'PASS' : 'FAIL') + ' · observed ' + run.observed;
   const allParts = ['Run detail — ' + metaLine];
   if (run.error) allParts.push('Error: ' + run.error);
+  if (capText) allParts.push('', '=== CAPTURES ===', capText);
   if (reqText) allParts.push('', '=== REQUEST ===', reqText);
   if (resText) allParts.push('', '=== RESPONSE ===', resText);
-  _runDetailCopy = { request: reqText, response: resText, all: allParts.join('\\n') };
+  _runDetailCopy = { request: reqText, response: resText, captures: capText, all: allParts.join('\\n') };
 
   return html;
 }
@@ -1506,6 +1590,14 @@ function resetWizard() {
   document.getElementById('ws3-btn').textContent = 'Save monitor';
   document.getElementById('test-result').style.display = 'none';
   document.getElementById('test-error').style.display = 'none';
+  // Clear any show-once webhook secret from a previous monitor so it can't leak
+  // into a different monitor's Webhook tab (panel/example curl/clipboard).
+  _lastWebhookSecret = null;
+  _extraRecipients = [];
+  const whSecretPre = document.getElementById('wh-secret-pre');
+  if (whSecretPre) whSecretPre.textContent = '';
+  const whSecretDisplay = document.getElementById('wh-secret-display');
+  if (whSecretDisplay) whSecretDisplay.style.display = 'none';
   setSchedMode('simple');
   updateBodyVisibility();
   clearErr();
@@ -1687,6 +1779,9 @@ async function wizardStep3() {
   if (emailAddr) recipients.push({ channel: 'email', address: emailAddr });
   smsAddrs.forEach(a => recipients.push({ channel: 'sms', address: a }));
   if (ntfyAddr) recipients.push({ channel: 'ntfy', address: ntfyAddr });
+  // Re-append any email/ntfy recipients the single-field UI can't represent so
+  // the full-replace save doesn't drop them (see prefillAlert / _extraRecipients).
+  if (_extraRecipients && _extraRecipients.length) recipients.push(..._extraRecipients);
 
   const btn = document.getElementById('ws3-btn');
   const isEditAlert = S.wizardMode === 'edit-alert';
@@ -1706,9 +1801,13 @@ async function wizardStep3() {
 }
 
 // ─── Prefill for edit mode ────────────────────────────────────────────────────
+// Email/ntfy recipients beyond the single field the wizard exposes, stashed on
+// prefill and re-appended on save so editing an alert doesn't drop them.
+let _extraRecipients = [];
+
 function parseUtcCronToSimple(cron) {
   if (!cron) return null;
-  if (cron === '0 * * * *') return { freq: 'hourly', timeValue: '09:00', days: 'every' };
+  if (cron === '0 * * * *') return { freq: 'hourly', timeValue: '09:00', days: 'daily' };
   const parts = cron.split(' ');
   if (parts.length !== 5) return null;
   const [mm, hh, dom, month, dow] = parts;
@@ -1721,6 +1820,12 @@ function parseUtcCronToSimple(cron) {
   const localTotalMin = utcHh * 60 + utcMm - offsetMin;
   const localHh = ((Math.floor(localTotalMin / 60)) % 24 + 24) % 24;
   const localMm = ((localTotalMin % 60) + 60) % 60;
+  // The Simple-tab time dropdown only has 10-minute increments. A cron whose
+  // local minute isn't a 10-min boundary (e.g. "5 9 * * *", or any :45-offset
+  // zone round-trip) has no matching <option>, so setting w-time.value would
+  // silently no-op and a subsequent save would rewrite the cron to :00. Fall
+  // back to the Cron tab (returns null) so the exact expression is shown/kept.
+  if (localMm % 10 !== 0) return null;
   const timeValue = String(localHh).padStart(2,'0') + ':' + String(localMm).padStart(2,'0');
   let days = 'daily';
   if (dow === '1-5') days = 'weekdays';
@@ -1767,14 +1872,30 @@ async function prefillCheck(monitorId) {
 }
 
 async function prefillAlert(monitorId) {
+  _extraRecipients = [];
   try {
     const d = await api('GET', '/monitors/' + monitorId + '/alert');
     const list = d.recipients || [];
     const emailRec = list.find(r => r.channel === 'email');
     const ntfyRec = list.find(r => r.channel === 'ntfy');
+    const smsRecs = list.filter(r => r.channel === 'sms');
+    // The wizard exposes only ONE email and ONE ntfy field, and at most 5 SMS
+    // rows, but the schema/API permit more. Stash any recipient the UI can't
+    // render so the full-replace POST doesn't silently drop it (wizardStep3
+    // re-adds _extraRecipients on save). The SMS list is capped at 5 rows by
+    // addSmsRow, so anything past the 5th must be stashed too — otherwise a 6th
+    // on-call number is permanently lost the first time the alert is edited.
+    const MAX_SMS_ROWS = 5;
+    _extraRecipients = [
+      ...list.filter(r =>
+        (r.channel === 'email' && r !== emailRec) ||
+        (r.channel === 'ntfy' && r !== ntfyRec)
+      ),
+      ...smsRecs.slice(MAX_SMS_ROWS),
+    ];
     if (emailRec) document.getElementById('w-email-addr').value = emailRec.address;
     document.getElementById('w-sms-list').innerHTML = '';
-    list.filter(r => r.channel === 'sms').forEach(r => addSmsRow(r.address));
+    smsRecs.slice(0, MAX_SMS_ROWS).forEach(r => addSmsRow(r.address));
     if (!document.getElementById('w-sms-list').children.length) addSmsRow();
     if (ntfyRec) document.getElementById('w-ntfy-addr').value = ntfyRec.address;
     if (d.emailSubject) document.getElementById('w-email-subject').value = d.emailSubject;
@@ -1854,7 +1975,15 @@ function buildLocalCron(freq, timeValue, days) {
   const totalMin = hh * 60 + mm + offsetMin;
   const utcHh = ((Math.floor(totalMin / 60)) % 24 + 24) % 24;
   const utcMm = ((totalMin % 60) + 60) % 60;
-  const dayField = days === 'weekdays' ? '1-5' : days === 'weekends' ? '0,6' : '*';
+  // The local→UTC conversion can cross a day boundary; when it does, a
+  // day-restricted schedule (weekdays/weekends) must shift its weekday set by
+  // the same number of days, or e.g. a Sunday-night 'weekends' run rolls into
+  // Monday UTC and never fires. dayDelta is -1, 0, or +1.
+  const dayDelta = Math.floor(totalMin / 1440);
+  const shiftDays = (set) => set.map((d) => ((d + dayDelta) % 7 + 7) % 7).sort((a, b) => a - b).join(',');
+  let dayField = '*';
+  if (days === 'weekdays') dayField = dayDelta === 0 ? '1-5' : shiftDays([1, 2, 3, 4, 5]);
+  else if (days === 'weekends') dayField = dayDelta === 0 ? '0,6' : shiftDays([0, 6]);
   return \`\${utcMm} \${utcHh} * * \${dayField}\`;
 }
 
@@ -1876,7 +2005,12 @@ function buildTimeOptions() {
 function updateComparatorHint() {
   const op = document.getElementById('w-op').value;
   const threshold = document.getElementById('w-threshold').value;
-  const expr = document.getElementById('w-expr').value.trim() || 'value';
+  // esc() the expression: it is server-persisted, attacker-controllable input
+  // (configureCheck only requires a non-empty string), and it is interpolated
+  // into innerHTML below. Without escaping, a stored value like
+  // "<img src=x onerror=...>" executes in the viewer's session when they open
+  // "Edit check" — every other innerHTML sink in the SPA is esc()'d.
+  const expr = esc(document.getElementById('w-expr').value.trim() || 'value');
   const el = document.getElementById('comparator-hint');
   if (!threshold) { el.style.display = 'none'; return; }
   const t = parseFloat(threshold);
@@ -2074,9 +2208,24 @@ async function sendInvites() {
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Sending...';
   err.textContent = ''; ok.textContent = '';
   try {
-    await api('POST', '/invites', { emails });
-    ok.textContent = 'Invitations sent!';
-    setTimeout(closeInviteModal, 2000);
+    const result = await api('POST', '/invites', { emails });
+    const failed = (result && result.failed) || [];
+    const sent = (result && result.sent) || [];
+    if (failed.length) {
+      // Partial success: the server returns 200 with a per-email failed[] list so
+      // the admin knows exactly which invites didn't go out. Surface it instead of
+      // an unqualified "Invitations sent!" (which would hide that some never sent).
+      const lines = failed.map(f => f.email + ' (' + f.error + ')').join(', ');
+      if (sent.length) {
+        ok.textContent = 'Sent ' + sent.length + ' of ' + (sent.length + failed.length) + '.';
+        err.textContent = 'Failed to send to: ' + lines;
+      } else {
+        err.textContent = 'No invitations were sent. Failed: ' + lines;
+      }
+    } else {
+      ok.textContent = 'Invitations sent!';
+      setTimeout(closeInviteModal, 2000);
+    }
   } catch (e) { err.textContent = e.message; }
   finally { btn.disabled = false; btn.textContent = 'Send invitations'; }
 }
@@ -2174,7 +2323,10 @@ async function testRequest() {
   if (!url) { document.getElementById('ws2-err').textContent = 'Enter a URL first.'; return; }
 
   const headers = {};
-  document.querySelectorAll('.header-row').forEach(row => {
+  // Scope to #headers-list so capture rows (which share the .header-row class in
+  // #captures-list) aren't read as bogus headers — the test request must mirror
+  // exactly what the saved check sends (see wizardStep2's identical scoping).
+  document.querySelectorAll('#headers-list .header-row').forEach(row => {
     const [k, v] = row.querySelectorAll('input');
     if (k.value.trim()) headers[k.value.trim()] = v.value.trim();
   });
@@ -2387,10 +2539,28 @@ function errorResponse(e: unknown): Response {
 }
 
 async function parseBody<T>(req: Request): Promise<T> {
+  let parsed: unknown;
   try {
-    return await req.json() as T;
+    parsed = await req.json();
   } catch {
     throw new CanaryError("validation-error", "Request body must be valid JSON", 400);
+  }
+  // Every route expects a JSON object body. Reject null/array/string/number up
+  // front so a handler that reads a field (e.g. payload.passed) can't throw a
+  // raw TypeError → 500 on a non-object body.
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new CanaryError("validation-error", "Request body must be a JSON object", 400);
+  }
+  return parsed as T;
+}
+
+// decodeURIComponent throws URIError on a malformed percent-escape (e.g. "%E0%A4%A").
+// A bad path segment is client input → 400, not a server fault → 500.
+function safeDecode(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    throw new CanaryError("validation-error", `Malformed URL-encoded path segment: "${segment}"`, 400);
   }
 }
 
@@ -2462,9 +2632,34 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
     // Public: accept invite
     if (method === "POST" && pathname === "/invite/accept") {
       const body = await parseBody<{ token: string; password: string }>(req);
-      const email = await consumeInvite(body.token);
-      await createUser(email, body.password);
+      // Validate the token is a present, non-empty string BEFORE it reaches
+      // peekInvite → kv.get(["invite", token]). A missing/non-string token would
+      // otherwise hit KV as an invalid key part (raw TypeError → opaque 500) on
+      // this public route; surface a clean 400 instead (mirrors /invite/info).
+      requireString(body.token, "token");
+      // Peek (don't consume) so a failed createUser/login leaves the single-use
+      // token intact for a retry. createUser enforces the password policy.
+      const email = await peekInvite(body.token);
+      // Try to create the account. If the email is ALREADY a user — because it
+      // was registered out of band, or because a concurrent double-submit of the
+      // same token already won the create race — createUser throws a 409. In
+      // that case fall back to a plain login: if the supplied password matches
+      // the existing account, the invitee still gets a session (and the token is
+      // consumed). This avoids a permanent dead-token lockout where retrying the
+      // accept page would 409 forever, and makes a benign double-submit return a
+      // session instead of a confusing "User already exists".
+      try {
+        await createUser(email, body.password);
+      } catch (e) {
+        const err = e as { fault?: string };
+        if (err.fault !== "conflict") throw e;
+        log.info(`🔍 invite/accept: account already exists for ${email} — attempting login`);
+      }
+      // login() throws 401 on a wrong password; the token stays alive so the
+      // invitee can retry with the right one.
       const session = await login(email, body.password);
+      // Only burn the token once a session was issued.
+      await markInviteConsumed(body.token);
       return json(session);
     }
 
@@ -2503,35 +2698,49 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
       const now = new Date();
       const monitorsResult = await listMonitors();
 
+      // A single undeserializable check/alert row would otherwise throw mid-scan
+      // and blank out the WHOLE debug snapshot — exactly when an operator needs
+      // it most. Isolate the failure so the rest of the snapshot still decodes,
+      // mirroring how /api/reports tolerates a corrupt run row per-monitor.
       const checks: Array<Record<string, unknown>> = [];
-      for await (const entry of kv.list<CheckDto>({ prefix: ["check"] })) {
-        const c = entry.value;
-        checks.push({
-          monitorId: c.monitorId,
-          url: c.url,
-          method: c.method,
-          expression: c.expression,
-          comparatorOp: c.comparatorOp,
-          threshold: c.threshold,
-          cron: c.cron,
-          notifyOnRecover: c.notifyOnRecover,
-          matchesNow: cronMatchesNow(c.cron, now),
-        });
+      try {
+        for await (const entry of kv.list<CheckDto>({ prefix: ["check"] })) {
+          const c = entry.value;
+          checks.push({
+            monitorId: c.monitorId,
+            url: c.url,
+            method: c.method,
+            expression: c.expression,
+            comparatorOp: c.comparatorOp,
+            threshold: c.threshold,
+            cron: c.cron,
+            notifyOnRecover: c.notifyOnRecover,
+            matchesNow: cronMatchesNow(c.cron, now),
+          });
+        }
+      } catch (e) {
+        log.warn(`⚠️ /api/debug: check scan truncated at an unreadable row — ${(e as Error).message}`);
+        checks.push({ error: "check scan truncated at an unreadable row" });
       }
 
       const alerts: Array<Record<string, unknown>> = [];
-      for await (const entry of kv.list<AlertDto>({ prefix: ["alert"] })) {
-        const a = entry.value;
-        alerts.push({
-          monitorId: a.monitorId,
-          recipientCount: a.recipients.length,
-          channels: a.recipients.map((r) => r.channel),
-          hasCustomEmailSubject: !!a.emailSubject,
-          hasCustomEmailMessage: !!a.emailMessage,
-          hasCustomSmsMessage: !!a.smsMessage,
-          hasCustomNtfyTitle: !!a.ntfyTitle,
-          hasCustomNtfyMessage: !!a.ntfyMessage,
-        });
+      try {
+        for await (const entry of kv.list<AlertDto>({ prefix: ["alert"] })) {
+          const a = entry.value;
+          alerts.push({
+            monitorId: a.monitorId,
+            recipientCount: a.recipients.length,
+            channels: a.recipients.map((r) => r.channel),
+            hasCustomEmailSubject: !!a.emailSubject,
+            hasCustomEmailMessage: !!a.emailMessage,
+            hasCustomSmsMessage: !!a.smsMessage,
+            hasCustomNtfyTitle: !!a.ntfyTitle,
+            hasCustomNtfyMessage: !!a.ntfyMessage,
+          });
+        }
+      } catch (e) {
+        log.warn(`⚠️ /api/debug: alert scan truncated at an unreadable row — ${(e as Error).message}`);
+        alerts.push({ error: "alert scan truncated at an unreadable row" });
       }
 
       const latestRuns: Array<Record<string, unknown>> = [];
@@ -2635,7 +2844,7 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
     // Single run detail — full request/response for drilling into a failed check.
     const runDetailMatch = pathname.match(/^\/api\/runs\/([^/]+)\/([^/]+)\/([^/]+)$/);
     if (runDetailMatch && method === "GET") {
-      const [, monitorId, timestamp, runId] = runDetailMatch.map((s, i) => i === 0 ? s : decodeURIComponent(s));
+      const [, monitorId, timestamp, runId] = runDetailMatch.map((s, i) => i === 0 ? s : safeDecode(s));
       const entry = await kv.get<RunResultDto>(["run", monitorId, timestamp, runId]);
       if (!entry.value) throw new CanaryError("not-found", "Run not found", 404);
       log.debug(`✅ GET /api/runs/${monitorId}/${timestamp}/${runId} → 200`);
@@ -2645,7 +2854,7 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
     // works even when the value is undeserializable — this is how a corrupt run
     // surfaced on the Reports tab gets removed. Drops the run_idx sidecar too.
     if (runDetailMatch && method === "DELETE") {
-      const [, monitorId, timestamp, runId] = runDetailMatch.map((s, i) => i === 0 ? s : decodeURIComponent(s));
+      const [, monitorId, timestamp, runId] = runDetailMatch.map((s, i) => i === 0 ? s : safeDecode(s));
       const purged = await RunResult.purge(monitorId, timestamp, runId);
       if (!purged) {
         // Atomic delete rejected — the corrupt row is still in KV. Surface a
@@ -2663,7 +2872,7 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
     // (exact:true) always surface their one-click delete.
     const dismissCorruptMatch = pathname.match(/^\/api\/reports\/([^/]+)\/dismiss-corrupt$/);
     if (dismissCorruptMatch && method === "POST") {
-      const monitorId = decodeURIComponent(dismissCorruptMatch[1]);
+      const monitorId = safeDecode(dismissCorruptMatch[1]);
       await RunResult.dismissCorrupt(monitorId);
       log.info(`🙈 POST /api/reports/${monitorId}/dismiss-corrupt → 200 (legacy corrupt-row banner dismissed)`);
       return json({ ok: true });
@@ -2711,7 +2920,7 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
     }
     const userMatch = pathname.match(/^\/users\/([^/]+)$/);
     if (userMatch && method === "DELETE") {
-      const username = decodeURIComponent(userMatch[1]);
+      const username = safeDecode(userMatch[1]);
       log.debug(`🔍 DELETE /users/${username}`);
       await deleteUser(username);
       log.debug(`✅ DELETE /users/${username} → 200`);
@@ -2724,30 +2933,45 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
       const fromEmail = Deno.env.get("POSTMARK_FROM_EMAIL") ?? "";
       const postmarkToken = Deno.env.get("POSTMARK_SERVER_TOKEN") ?? "";
       const baseUrl = `${url.protocol}//${url.host}`;
-      await createInvites(body.emails, baseUrl, fromEmail, postmarkToken);
-      return json({ ok: true });
+      const result = await createInvites(body.emails, baseUrl, fromEmail, postmarkToken);
+      return json({ ok: true, ...result });
     }
 
     // Test request proxy
     if (method === "POST" && pathname === "/test-request") {
       const body = await parseBody<{ url: string; method: string; headers?: Record<string, string>; body?: string }>(req);
+      // SSRF guard: block proxying to internal/loopback/metadata hosts so this
+      // request-and-read primitive can't reach the deployment's private network.
+      // fetchNoSsrfRedirect re-applies the guard on every redirect hop so a
+      // public host can't 3xx-bounce the proxy onto an internal/metadata address.
+      assertFetchableUrl(body.url);
       const forwardHeaders: Record<string, string> = { ...(body.headers ?? {}) };
       if (body.body) forwardHeaders["Content-Type"] = forwardHeaders["Content-Type"] ?? "application/json";
       log.debug(`🔍 test-request → ${body.method} ${body.url}`);
       log.debug(`🔍 test-request headers:`, JSON.stringify(redactHeaders(forwardHeaders)));
       log.debug(`🔍 test-request body:`, body.body ?? "(none)");
+      // Bound the wall-clock so a slow-loris endpoint can't pin an isolate, and
+      // cap the buffered body so a huge response can't exhaust memory — mirrors
+      // the production runner (http source).
+      const TEST_TIMEOUT_MS = Number(Deno.env.get("FETCH_TIMEOUT_MS")) || 10000;
+      const TEST_MAX_BODY = 64 * 1024;
       let res: Response;
       try {
-        res = await fetch(body.url, {
+        res = await fetchNoSsrfRedirect(body.url, {
           method: body.method,
           headers: forwardHeaders,
           body: body.body ?? undefined,
+          signal: AbortSignal.timeout(TEST_TIMEOUT_MS),
         });
       } catch (e) {
         log.debug(`❌ test-request fetch threw:`, (e as Error).message);
+        if ((e as Error).name === "TimeoutError" || (e as Error).name === "AbortError") {
+          throw new CanaryError("timed-out", `Timed out after ${TEST_TIMEOUT_MS}ms reaching ${body.url}`, 504);
+        }
         throw new CanaryError("request-failed", `Could not reach ${body.url}: ${(e as Error).message}`, 502);
       }
-      const text = await res.text();
+      const rawText = await res.text();
+      const text = rawText.length > TEST_MAX_BODY ? rawText.slice(0, TEST_MAX_BODY) + "…(truncated)" : rawText;
       log.debug(`🔍 test-request response status:`, res.status);
       log.debug(`🔍 test-request response body:`, text.slice(0, 500));
       let data: unknown;
@@ -2838,6 +3062,22 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
         log.debug(`✅ GET /monitors/${monitorId}/alert → 200 recipients=${result.recipients.length}`);
         return json(result);
       }
+      if (method === "DELETE") {
+        log.debug(`🔍 DELETE /monitors/${monitorId}/alert`);
+        try {
+          const result = await deleteAlert({ monitorId });
+          log.info(`🗑️ DELETE /monitors/${monitorId}/alert → 200 (alert config removed)`);
+          return json(result);
+        } catch (e) {
+          // The button is always shown, so deleting when no alert is configured
+          // is a quiet no-op success rather than a surfaced 404.
+          if (e instanceof CanaryError && e.fault === "not-found") {
+            log.debug(`🔍 DELETE /monitors/${monitorId}/alert → 200 (no alert to delete)`);
+            return json({ ok: true, deleted: false });
+          }
+          throw e;
+        }
+      }
     }
 
     // Schedule builder
@@ -2860,7 +3100,7 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
     }
     const secretMatch = pathname.match(/^\/secrets\/([^/]+)$/);
     if (secretMatch && method === "DELETE") {
-      const secretKey = decodeURIComponent(secretMatch[1]);
+      const secretKey = safeDecode(secretMatch[1]);
       log.debug(`🔍 DELETE /secrets/${secretKey}`);
       const result = await deleteSecret({ secretKey });
       log.debug(`✅ DELETE /secrets/${secretKey} → 200`);
@@ -2880,7 +3120,16 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
     // Test alert (send a real email, SMS, or ntfy push to verify config)
     if (method === "POST" && pathname === "/test-alert") {
       const body = await parseBody(req) as { channel: string; address: string; emailSubject?: string; emailMessage?: string; smsMessage?: string; ntfyTitle?: string; ntfyMessage?: string };
-      if (!body.channel || !body.address) throw new CanaryError("validation-error", "channel and address are required", 400);
+      // Require STRINGS, not just truthy: a JSON-number address (e.g. a phone
+      // number sent unquoted) is truthy but makes Sms.send()/normalizeNtfyUrl()
+      // call .replace()/.trim() on a number → raw TypeError → opaque 500. Mirror
+      // configureAlert, which type-checks channel + address before use.
+      if (typeof body.channel !== "string" || body.channel === "") {
+        throw new CanaryError("validation-error", "channel is required and must be a string", 400);
+      }
+      if (typeof body.address !== "string" || body.address.trim() === "") {
+        throw new CanaryError("validation-error", "address is required and must be a string", 400);
+      }
       const fakeRun: RunResultDto = {
         runId: "test-" + Date.now(),
         monitorId: "test",

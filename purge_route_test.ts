@@ -14,13 +14,18 @@ const TS = encodeURIComponent("2026-01-01T00:00:00.000Z");
 // route sits below main.ts's `validateSession` gate, so an unauthenticated request
 // would 401 before ever reaching the purge logic we want to exercise.
 async function withSession(fn: (token: string) => Promise<void>) {
+  // A sentinel account so deleteUser's last-user lockout guard never trips on
+  // cleanup, no matter how many users the shared test KV already holds.
+  const sentinel = `purgeroute-sentinel-${crypto.randomUUID()}@example.com`;
   const username = `purgeroute-${crypto.randomUUID()}@example.com`;
+  await createUser(sentinel, "correct-horse-sentinel");
   await createUser(username, "correct-horse");
   try {
     const { token } = await login(username, "correct-horse");
     await fn(token);
   } finally {
     await deleteUser(username);
+    await deleteUser(sentinel);
   }
 }
 

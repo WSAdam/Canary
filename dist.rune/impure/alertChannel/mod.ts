@@ -32,6 +32,13 @@ export class AlertChannel {
     return new AlertChannel(channels, labels, dto);
   }
 
+  // The channels actually constructed (known channels only). persistRunAndAlert
+  // reports these rather than the raw recipient list, so a recipient with an
+  // unknown channel can't make the API claim a notification it never sent.
+  dispatchedLabels(): string[] {
+    return [...this.labels];
+  }
+
   async send(run: RunResultDto): Promise<void> {
     // allSettled, not all: one channel's failure (e.g. a bad ntfy address) must
     // never suppress the others. We attempt every channel, then report.

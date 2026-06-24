@@ -1,7 +1,7 @@
 import type { ConfigureCheckDto } from "../../dto/configure-check-dto.ts";
 import type { ScheduleInputDto } from "../../dto/schedule-input-dto.ts";
 import type { ScheduleDto } from "../../dto/schedule-dto.ts";
-import { CanaryError } from "../../dto/_shared.ts";
+import { CanaryError, requireString } from "../../dto/_shared.ts";
 
 const DAY_MAP: Record<string, string> = {
   sunday: "0",
@@ -98,6 +98,11 @@ export class Schedule {
     }
 
     if (frequency === "daily") {
+      // Validate presence/type before parsing so a missing or non-string field
+      // surfaces as a clean 400 rather than a raw TypeError (undefined.trim() /
+      // undefined.toLowerCase()) → opaque 500.
+      requireString(timeOfDay, "timeOfDay");
+      requireString(daysOfWeek, "daysOfWeek");
       const { hour, minute } = parseTime(timeOfDay);
       const days = parseDays(daysOfWeek);
       return new Schedule(`${minute} ${hour} * * ${days}`);

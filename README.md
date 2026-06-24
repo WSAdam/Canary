@@ -499,8 +499,11 @@ Deno Deploy provides Deno KV out of the box. No additional database setup requir
 | `ZAPIER_SMS_URL` | For SMS alerts | Zapier webhook URL that forwards to Textmagic (or your SMS provider). |
 | `FETCH_TIMEOUT_MS` | No (default `10000`) | Per-check request timeout in milliseconds. A check exceeding it fails with a `timed-out` error (which alerts). |
 | `LOG_LEVEL` | No (default `info`) | Minimum log level to emit: `debug`, `info`, `warn`, or `error`. At `info`, bootstrap/idle-cron chatter is suppressed (a cold-start logs nothing) and only real activity — runs, alerts, warnings, errors — shows. Set `debug` for the full firehose. Each line is tagged `[level]`, and lines inside a check run also carry `[run=<id>]` (matching the stored run's `runId`) so one run's logs group together. |
+| `ALLOW_PRIVATE_FETCH` | No (default off) | SSRF guard escape hatch. By default the check runner and the `/test-request` proxy refuse to fetch loopback/link-local/private/cloud-metadata hosts. Set to `1` to allow them — only when intentionally monitoring an internal service on a trusted private network. |
 
 ntfy doesn't need any env vars — the topic is configured per-recipient on each monitor.
+
+> **Password policy:** dashboard/account passwords must be at least 8 characters (enforced server-side on user creation and invite acceptance).
 
 **Session signing key:** the HMAC key that signs login sessions is generated
 automatically on first boot and stored in Deno KV (`["config", "session-signing-key"]`).

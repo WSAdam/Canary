@@ -30,16 +30,34 @@ export interface GeneratedSecret {
 
 export class WebhookSecret {
   static async generate(monitorId: string): Promise<GeneratedSecret> {
-    const randomBytes = crypto.getRandomValues(new Uint8Array(SECRET_BYTES));
-    const plaintext = PREFIX + b64u(randomBytes.buffer as ArrayBuffer);
-    const hash = await sha256Hex(plaintext);
-    const fingerprint = plaintext.slice(0, PREFIX.length + 4); // cnry_v1_XXXX
-    const createdAt = new Date().toISOString();
+    // Mint + persist atomically. Two concurrent generate/rotate calls each
+    // return their own plaintext to their caller, but a plain kv.set is
+    // last-write-wins: the losing caller is told to "save this secret" yet its
+    // hash is never the one persisted, so that secret authenticates 401 forever.
+    // Pin the versionstamp we read and retry on conflict so the plaintext we
+    // hand back is guaranteed to be the one whose hash actually landed in KV.
+    const key = ["webhook_secret", monitorId] as const;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const current = await kv.get<WebhookSecretDto>(key, { consistency: "strong" });
 
-    const dto: WebhookSecretDto = { hash, fingerprint, createdAt };
-    await kv.set(["webhook_secret", monitorId], dto);
-    log.debug(`🪝 webhookSecret.generate: monitorId=${monitorId} fingerprint=${fingerprint}`);
-    return { plaintext, fingerprint, createdAt };
+      const randomBytes = crypto.getRandomValues(new Uint8Array(SECRET_BYTES));
+      const plaintext = PREFIX + b64u(randomBytes.buffer as ArrayBuffer);
+      const hash = await sha256Hex(plaintext);
+      const fingerprint = plaintext.slice(0, PREFIX.length + 4); // cnry_v1_XXXX
+      const createdAt = new Date().toISOString();
+
+      const dto: WebhookSecretDto = { hash, fingerprint, createdAt };
+      const res = await kv.atomic()
+        .check({ key, versionstamp: current.versionstamp })
+        .set(key, dto)
+        .commit();
+      if (res.ok) {
+        log.debug(`🪝 webhookSecret.generate: monitorId=${monitorId} fingerprint=${fingerprint}`);
+        return { plaintext, fingerprint, createdAt };
+      }
+      log.warn(`⚠️ webhookSecret.generate: concurrent write for monitorId=${monitorId} — retrying (attempt ${attempt + 1})`);
+    }
+    throw new CanaryError("conflict", "Webhook key is being changed concurrently — please retry", 409);
   }
 
   static async verify(monitorId: string, plaintext: string): Promise<void> {

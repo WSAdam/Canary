@@ -29,7 +29,8 @@ export class Sms extends BaseAlertChannel {
     });
 
     if (!response.ok) {
-      throw new CanaryError("send-failed", `Zapier SMS webhook returned ${response.status}`, 500);
+      const status = response.status >= 400 && response.status < 500 ? 400 : 502;
+      throw new CanaryError("send-failed", `Zapier SMS webhook returned ${response.status}`, status);
     }
   }
 }
