@@ -1,7 +1,7 @@
 import { applyVars, BaseAlertChannel, buildVars } from "../../shared/mod.ts";
 import type { RunResultDto } from "../../../../dto/run-result-dto.ts";
 import type { AlertDto } from "../../../../dto/alert-dto.ts";
-import { CanaryError } from "../../../../dto/_shared.ts";
+import { CanaryError, upstreamStatus } from "../../../../dto/_shared.ts";
 import { log } from "../../../_log.ts";
 
 export class Sms extends BaseAlertChannel {
@@ -29,7 +29,7 @@ export class Sms extends BaseAlertChannel {
     });
 
     if (!response.ok) {
-      const status = response.status >= 400 && response.status < 500 ? 400 : 502;
+      const status = upstreamStatus(response.status);
       throw new CanaryError("send-failed", `Zapier SMS webhook returned ${response.status}`, status);
     }
   }

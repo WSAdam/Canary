@@ -108,7 +108,10 @@ export async function createInvites(
       500,
     );
   }
-  return { sent: results.filter((r) => r.ok).map((r) => r.email), failed: failed.map((f) => ({ email: f.email, error: f.error ?? "unknown" })) };
+  const sent = results.filter((r) => r.ok).map((r) => r.email);
+  // Carries the non-null error string, so it differs from the internal `failed`.
+  const failedSummary = failed.map((f) => ({ email: f.email, error: f.error ?? "unknown" }));
+  return { sent, failed: failedSummary };
 }
 
 /** Resolve an invite token to its email WITHOUT consuming it. Callers must

@@ -45,6 +45,15 @@ export function requireMaxLength(value: string, field: string, max: number): str
 }
 
 /**
+ * Map an upstream channel HTTP status to our error status: a 4xx is a
+ * client/config error (surface 400), anything else is an upstream fault (502).
+ * Shared by the email/SMS/ntfy channels so the policy can't drift between them.
+ */
+export function upstreamStatus(httpStatus: number): number {
+  return httpStatus >= 400 && httpStatus < 500 ? 400 : 502;
+}
+
+/**
  * SSRF guard for any URL the server will fetch on a caller's behalf (the
  * check runner and the /test-request proxy). Enforces an http(s) scheme and
  * rejects hosts that resolve to loopback/link-local/private space or the cloud
@@ -67,17 +76,19 @@ export function assertFetchableUrl(rawUrl: string): void {
   if (typeof rawUrl !== "string" || rawUrl.trim() === "") {
     throw new CanaryError("validation-error", "url is required", 400);
   }
-  if (globalThis.Deno?.env.get("ALLOW_PRIVATE_FETCH") === "1") return;
-
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
   } catch {
     throw new CanaryError("validation-error", `Invalid URL: "${rawUrl}"`, 400);
   }
+  // Scheme confinement is enforced UNCONDITIONALLY. ALLOW_PRIVATE_FETCH relaxes
+  // only the private-host block below — never the http(s) requirement, or the
+  // opt-out would become a file:// local-read primitive on the runner path.
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new CanaryError("validation-error", `Only http(s) URLs are allowed, got "${parsed.protocol}"`, 400);
   }
+  if (globalThis.Deno?.env.get("ALLOW_PRIVATE_FETCH") === "1") return;
   if (isBlockedHost(parsed.hostname)) {
     throw new CanaryError(
       "validation-error",
@@ -141,11 +152,16 @@ function isBlockedHost(hostRaw: string): boolean {
   // IPv4 literal → block loopback (127/8), link-local (169.254/16), and RFC1918.
   const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (v4) {
-    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    const octets = [Number(v4[1]), Number(v4[2]), Number(v4[3]), Number(v4[4])];
+    // \d{1,3} matches 0-999; a quad with an octet >255 isn't a real IPv4 literal,
+    // so treat it as a (non-private) hostname rather than misclassifying it.
+    if (octets.some((o) => o > 255)) return false;
+    const [a, b] = octets;
     if (a === 127 || a === 10) return true;
     if (a === 169 && b === 254) return true;
     if (a === 172 && b >= 16 && b <= 31) return true;
     if (a === 192 && b === 168) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT, RFC 6598 (100.64.0.0/10)
     if (a === 0) return true;
     return false;
   }

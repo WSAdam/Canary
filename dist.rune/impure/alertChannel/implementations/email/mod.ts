@@ -1,7 +1,7 @@
 import { applyVars, BaseAlertChannel, buildVars } from "../../shared/mod.ts";
 import type { RunResultDto } from "../../../../dto/run-result-dto.ts";
 import type { AlertDto } from "../../../../dto/alert-dto.ts";
-import { CanaryError } from "../../../../dto/_shared.ts";
+import { CanaryError, upstreamStatus } from "../../../../dto/_shared.ts";
 import { log } from "../../../_log.ts";
 
 export class Email extends BaseAlertChannel {
@@ -45,7 +45,7 @@ export class Email extends BaseAlertChannel {
       // A 4xx from Postmark (e.g. 422 invalid recipient) is a config/client
       // error — surface it as 4xx so /test-alert doesn't misreport a bad address
       // as a 500 "our fault". Only a true upstream 5xx maps to a 502.
-      const status = response.status >= 400 && response.status < 500 ? 400 : 502;
+      const status = upstreamStatus(response.status);
       throw new CanaryError("send-failed", `Postmark returned ${response.status}: ${errBody}`, status);
     }
   }
