@@ -1223,7 +1223,7 @@ async function editRelay(monitorId) {
   document.getElementById('relay-ok').textContent = '';
   // Surface the fire URL so it's retrievable any time after create.
   document.getElementById('relay-result').innerHTML = '<div style="font-size:13px;border:1px solid var(--b);border-radius:8px;padding:12px">'
-    + '<div style="margin-bottom:6px;color:var(--m)">Fire URL (POST, Authorization: Bearer &lt;token&gt;):</div>'
+    + '<div style="margin-bottom:6px;color:var(--m)">Fire it: POST here with <code>Authorization: Bearer &lt;token&gt;</code> and a JSON body like <code>{ "error": "…" }</code> (extra fields become captures):</div>'
     + '<pre style="white-space:pre-wrap;word-break:break-all;font-size:12px;margin:0">' + esc(relayFireUrl(monitorId)) + '</pre>'
     + '</div>';
   document.getElementById('relay-modal').classList.add('open');
@@ -1286,7 +1286,9 @@ function relayFireUrl(monitorId) {
   return location.origin + '/relay/' + monitorId + '/fire';
 }
 
-async function deleteMonitor(monitorId) {
+// Named onDeleteMonitor (not deleteMonitor) to avoid colliding with the
+// server-side deleteMonitor import at the top of this file.
+async function onDeleteMonitor(monitorId) {
   const name = _monitorNames[monitorId] || monitorId;
   if (!confirm('Delete monitor "' + name + '"? This permanently removes it and all its history (check, alert, webhook, relay, runs). This cannot be undone.')) return;
   try {
@@ -1294,16 +1296,6 @@ async function deleteMonitor(monitorId) {
     loadDashboard();
   } catch (e) {
     alert('Could not delete monitor: ' + e.message);
-  }
-}
-
-async function deleteAlert(monitorId) {
-  if (!confirm('Delete the alert config for this monitor? The monitor keeps running but stops sending notifications until you add an alert again.')) return;
-  try {
-    await api('DELETE', '/monitors/' + encodeURIComponent(monitorId) + '/alert');
-    loadDashboard();
-  } catch (e) {
-    alert(e.message);
   }
 }
 
@@ -1330,13 +1322,12 @@ function renderMonitorList(monitors) {
       : \`<button class="btn btn-ghost btn-sm" onclick="editDetails('\${esc(m.monitorId)}')">Edit details</button>
          <button class="btn btn-ghost btn-sm" onclick="editCheck('\${esc(m.monitorId)}')">Edit check</button>
          <button class="btn btn-ghost btn-sm" onclick="editAlert('\${esc(m.monitorId)}')">Edit alert</button>
-         <button class="btn btn-ghost btn-sm" onclick="deleteAlert('\${esc(m.monitorId)}')">Delete alert</button>
          <button class="btn btn-ghost btn-sm" onclick="duplicateMonitor('\${esc(m.monitorId)}')">Duplicate</button>
          <button class="btn btn-ghost btn-sm" onclick="runNow('\${esc(m.monitorId)}', this)">Run now</button>\`;
     return \`<div class="monitor-card">
       <div class="monitor-info"><h3>\${esc(m.name)}\${badge}</h3><p>\${esc(m.description || 'No description')}</p></div>
       <div class="monitor-actions">\${specific}
-        <button class="btn btn-danger btn-sm" onclick="deleteMonitor('\${esc(m.monitorId)}')">Delete</button>
+        <button class="btn btn-danger btn-sm" onclick="onDeleteMonitor('\${esc(m.monitorId)}')">Delete</button>
       </div>
     </div>\`;
   }).join('');

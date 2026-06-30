@@ -9,14 +9,21 @@ versioned yet, so entries are grouped by date. Format loosely follows
 ### Added
 - **Delete a monitor.** `DELETE /monitors/:id` removes a monitor of any type and
   everything scoped to it (check, alert, webhook secret, relay config, run
-  history); named secrets are left intact. Every monitor card now has a **Delete**
-  button (previously only a relay or an alert could be removed — a check monitor
-  had no delete path). Relay teardown is unified onto this (`DELETE /relays/:id`
-  stays as a type-guarded alias).
+  history); named secrets are left intact. Every monitor card now has a single
+  **Delete** button (previously a check monitor had no delete path at all). Relay
+  teardown is unified onto this (`DELETE /relays/:id` stays as a type-guarded
+  alias). The deletable key set lives in one place (`MONITOR_SCOPED_KEYS` /
+  `MONITOR_RUN_PREFIXES`), shared by the delete path and its test so they can't
+  drift.
 
 ### Fixed
 - **The "+ Add relay" modal now closes after create** (it lingered showing the
   fire URL). The fire URL is now also retrievable any time under **Edit relay**.
+- **Removed the redundant second delete button.** Cards briefly carried both
+  "Delete alert" and "Delete"; the card now shows just **Delete** (full monitor).
+  The alert-only delete (`DELETE /monitors/:id/alert`) remains API-available. The
+  dashboard delete handler is `onDeleteMonitor` to avoid colliding with the
+  server-side `deleteMonitor` import in the same file.
 
 ### Changed
 - Relay fire (`POST /relay/:monitorId/fire`) accepts the token as
