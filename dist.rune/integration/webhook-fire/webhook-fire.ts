@@ -1,7 +1,7 @@
 import { Monitor } from "../../impure/monitor/monitor.ts";
 import { Check } from "../../impure/check/check.ts";
 import { WebhookSecret } from "../../impure/webhookSecret/webhookSecret.ts";
-import { persistRunAndAlert, type PersistAndAlertResult } from "../_shared/persistRunAndAlert.ts";
+import { persistRunAndAlert, type PersistAndAlertResult, sanitizeCaptures } from "../_shared/persistRunAndAlert.ts";
 import type { FireAlertDto } from "../../dto/fire-alert-dto.ts";
 import { log, withRun } from "../../impure/_log.ts";
 
@@ -63,17 +63,4 @@ async function webhookFireRun(runId: string, input: WebhookFireInput): Promise<P
     source: "webhook",
     alertOverrides: (message || title) ? { message, title } : undefined,
   });
-}
-
-/** Keep only string-valued entries from an externally-supplied captures map so
- *  the stored RunResultDto.captures (Record<string,string>) stays well-typed and
- *  every value is safe to feed into the alert template engine. */
-function sanitizeCaptures(raw: unknown): Record<string, string> | undefined {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof v === "string") out[k] = v;
-    else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
 }

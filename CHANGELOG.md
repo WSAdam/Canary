@@ -4,6 +4,25 @@ All notable changes to Canary are documented here. The project is not formally
 versioned yet, so entries are grouped by date. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-06-30
+
+### Added
+- **SMS Relays.** A new lightweight inbound path: named relays that forward a raw
+  `error` straight to a fixed set of SMS numbers — no monitor, no check, no
+  `cnry_v1_` secret. `POST /relay/:name/fire` authenticates with a shared token
+  sent in the body as `test` (stored only as a SHA-256 hash, constant-time
+  compared); a missing/wrong token is `401`. Admin CRUD via `POST`/`GET /relays`
+  and `DELETE /relays/:name`, plus a **SMS Relays** section on the dashboard.
+  Each fire is persisted as a run and appears in the **Reports** tab as an
+  *Inbound SMS relay* with the usual drill-in. Relays reuse the existing
+  `ZAPIER_SMS_URL` webhook, the 4s SMS stagger, and the `{var}` template engine
+  (`{monitor}` `{error}` `{observed}` `{timestamp}` `{status}` + captures).
+
+### Fixed
+- **Alert channels no longer leak the upstream response body on success.** The
+  SMS/email/ntfy senders consumed the response only on the error path; the
+  success path now drains it too, releasing the stream/connection.
+
 ## 2026-06-24
 
 ### Added

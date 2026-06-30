@@ -76,6 +76,20 @@ export function clampRunRowToKvLimit(dto: RunResultDto, tag = "persist"): RunRes
   return d;
 }
 
+/** Keep only string-coercible entries from an externally-supplied captures map so
+ *  the stored RunResultDto.captures (Record<string,string>) stays well-typed and
+ *  every value is safe to feed into the alert template engine. Shared by every
+ *  caller that accepts caller-supplied captures (webhook-fire, relay-fire). */
+export function sanitizeCaptures(raw: unknown): Record<string, string> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === "string") out[k] = v;
+    else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 export async function persistRunAndAlert(input: PersistAndAlertInput): Promise<PersistAndAlertResult> {
   const tag = `${input.source}.persist`;
 

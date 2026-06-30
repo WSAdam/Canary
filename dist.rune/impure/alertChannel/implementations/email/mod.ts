@@ -48,6 +48,8 @@ export class Email extends BaseAlertChannel {
       const status = upstreamStatus(response.status);
       throw new CanaryError("send-failed", `Postmark returned ${response.status}: ${errBody}`, status);
     }
+    // Success path: drain the unused body so the stream/connection is released.
+    await response.body?.cancel();
   }
 }
 

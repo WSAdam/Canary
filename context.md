@@ -66,6 +66,12 @@ load check config → resolve `{{SECRET}}` refs → HTTP fetch → `Extractor.ap
   boot); admin seeded from `ADMIN_USERNAME`/`ADMIN_PASSWORD`.
 - **Inbound webhooks:** `POST /webhook/:monitorId/fire` with a per-monitor
   `cnry_v1_…` bearer secret (hashed at rest).
+- **Inbound SMS relays:** `POST /relay/:name/fire` with a shared token in the body
+  (field `test`, SHA-256 hashed at rest, constant-time compared) forwards a raw
+  `error` straight to a relay's 1–5 SMS numbers — no monitor or check. Configured
+  via `POST`/`GET /relays`, `DELETE /relays/:name` (impure `Relay`, integration
+  `relay-configure`/`-list`/`-delete`/`-fire`); each fire persists a run under a
+  synthetic `relay:<name>` id so it appears in the Reports tab.
 
 ## Conventions (important)
 
@@ -115,9 +121,19 @@ deno task test     # deno test dist.rune/
 deno task check    # type-check main.ts + e2e.ts
 ```
 
-## Current state (2026-06-09)
+## Current state (2026-06-30)
 
-Recently landed: a **Duplicate** action that clones a monitor's check + alert
+Most recently landed: **SMS Relays** — named inbound endpoints (`POST /relay/:name/fire`,
+token in the body as `test`) that forward a raw `error` straight to 1–5 SMS numbers
+with no monitor/check, managed in a dashboard panel + `POST`/`GET /relays` /
+`DELETE /relays/:name`, persisted to Reports as an *Inbound SMS relay*; reuses the
+4s SMS stagger and `{var}` template engine. The shared `sanitizeCaptures` helper
+moved to `_shared/persistRunAndAlert.ts`, and the SMS/email/ntfy channels now drain
+the upstream response body on the success path (was a stream leak). See
+[sms-bot-canary-handoff.md](sms-bot-canary-handoff.md) for wiring a Deno project's
+nightly health report into Canary (the producer/`reporter/` side).
+
+Earlier: a **Duplicate** action that clones a monitor's check + alert
 config into a prefilled create wizard (named `(Copy of) …`, persisted only on
 finish — no dedicated endpoint, reuses `POST /monitors` → `/check` → `/alert`),
 multiple SMS numbers per alert (up to 5, staggered 4s apart), monitor rename via

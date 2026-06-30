@@ -27,6 +27,9 @@ export class Sms extends BaseAlertChannel {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ number, message }),
     });
+    // We don't use the Zapier response body — drain it so the stream/connection
+    // is released (an unconsumed fetch body leaks).
+    await response.body?.cancel();
 
     if (!response.ok) {
       const status = upstreamStatus(response.status);

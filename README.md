@@ -26,6 +26,7 @@ Canary polls your HTTP endpoints on a cron schedule, extracts numeric values fro
 - **Structured leveled logs**: `LOG_LEVEL`-gated logging that stays quiet by default (a cold-start logs nothing) and tags every line of a single check run with `[run=<id>]` so its logs group together
 - **Diagnostic snapshot**: `GET /api/debug` returns the full KV state — what monitors/checks/alerts/webhooks exist, last cron tick, env presence
 - **Test-fire endpoint**: `POST /test-alert` sends one real SMS/email/ntfy push to verify creds without setting up a monitor
+- **SMS Relays**: named inbound endpoints that forward a raw `error` straight to SMS — `POST /relay/<name>/fire` with a shared token in the body, no monitor or `cnry_v1_` secret required
 - **Zero dependencies**: plain Deno with no third-party frameworks
 
 ---
@@ -424,6 +425,59 @@ All body fields are optional:
 - Secrets are stored hashed (SHA-256). The plaintext cannot be recovered — only rotated.
 - Rotation is the response to leakage. There is no rate limiting in v1, so a leaked secret can be used to fire arbitrary alerts until rotated.
 - The `cnry_v1_` prefix makes leaked keys easy to grep for in logs and git history.
+
+---
+
+### SMS Relays (raw error → SMS)
+
+A **relay** is the simplest possible inbound endpoint: a named target that forwards a raw `error` straight to a fixed set of SMS numbers — no monitor, no check, no per-monitor `cnry_v1_` secret. Authentication is a shared token you choose, sent **in the JSON body** as `test`. Configure relays in the dashboard's **SMS Relays** section or via the API; each relay is stored with its destination numbers, an optional message template, and the token (kept only as a SHA-256 hash).
+
+This is the lightweight option for a project that just wants to text someone when something breaks, without standing up the full monitor/webhook machinery.
+
+**Fire a relay** (from any project — token travels in the body):
+
+```bash
+curl -X POST $URL/relay/payments/fire \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "test": "hahathisisadecenttest",
+    "error": "Stripe webhook handler 500",
+    "captures": { "service": "payments-link" }
+  }'
+# { "runId": "...", "fired": true, "channels": ["sms"] }
+```
+
+All body fields except the token are optional:
+
+| Field | Type | Default | Effect |
+|-------|------|---------|--------|
+| `test` | string | — (required) | The shared token. `token` is accepted as an alias. A missing/wrong token → `401`. |
+| `error` | string | — | Surfaced as `{error}` and in the default SMS body. |
+| `observed` | number | `0` | Surfaced as `{observed}`. |
+| `captures` | object | — | Merged into the `{var}` table for template expansion (e.g. `{service}`). |
+| `message` | string | — | Overrides the relay's saved template for this fire only; `{var}` tokens still expand. |
+
+The SMS body is the relay's `template` (else the per-fire `message`, else a default `Canary FAILED: <name> — error: … at <timestamp>`), expanded with `{monitor}` (the relay name), `{error}`, `{observed}`, `{timestamp}`, `{status}`, plus any `captures`. Multiple numbers are sent staggered 4 seconds apart, same as monitor alerts. Every fire is persisted as a run and shows in the **Reports** tab (listed as an *Inbound SMS relay*) with the usual failed-run drill-in.
+
+**Management** (admin — dashboard or API):
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/relays` | Create or replace a relay (upsert by `name`). |
+| `GET`  | `/relays` | List relays (numbers + template presence; **never** the token). |
+| `DELETE` | `/relays/:name` | Delete a relay (fires get `401` until recreated). |
+
+```json
+POST /relays
+{
+  "name": "payments",
+  "numbers": ["18432222986", "18435551234"],
+  "token": "hahathisisadecenttest",
+  "template": "🚨 {monitor}: {error}"
+}
+```
+
+`name` may contain letters, numbers, hyphens, and underscores; `numbers` is 1–5 entries of 10 or 11 digits each; `token` is at least 8 characters. To rotate a token, `POST /relays` again with the same name and a new token. Relays send over the same `ZAPIER_SMS_URL` Zapier webhook as monitor SMS alerts — no extra env var.
 
 ---
 

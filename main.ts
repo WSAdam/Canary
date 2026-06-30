@@ -29,6 +29,12 @@ import { deleteSecret } from "./dist.rune/integration/secret-delete/secret-delet
 import { executeRunner } from "./dist.rune/integration/runner-execute/runner-execute.ts";
 import { createIntegration } from "./dist.rune/integration/integration-create/integration-create.ts";
 import { webhookFire } from "./dist.rune/integration/webhook-fire/webhook-fire.ts";
+import { configureRelay } from "./dist.rune/integration/relay-configure/relay-configure.ts";
+import { listRelays } from "./dist.rune/integration/relay-list/relay-list.ts";
+import { deleteRelay } from "./dist.rune/integration/relay-delete/relay-delete.ts";
+import { fireRelay } from "./dist.rune/integration/relay-fire/relay-fire.ts";
+import type { ConfigureRelayDto } from "./dist.rune/dto/configure-relay-dto.ts";
+import type { RelayFireDto } from "./dist.rune/dto/relay-fire-dto.ts";
 import { WebhookSecret } from "./dist.rune/impure/webhookSecret/webhookSecret.ts";
 import type { FireAlertDto } from "./dist.rune/dto/fire-alert-dto.ts";
 import { Email } from "./dist.rune/impure/alertChannel/implementations/email/mod.ts";
@@ -472,6 +478,22 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
   </div>
   <div class="error-msg" id="sec-err"></div>
   <div id="d-secret-list"></div>
+
+  <div class="section-header" style="margin-top:36px">
+    <span class="section-title">SMS Relays</span>
+  </div>
+  <p style="font-size:12px;color:#666;margin:-4px 0 12px">An inbound relay forwards a raw error straight to SMS — no monitor needed. Another project POSTs <span style="font-family:ui-monospace,Menlo,monospace;color:#FFD700">{ "test": "&lt;token&gt;", "error": "…" }</span> to <span style="font-family:ui-monospace,Menlo,monospace;color:#FFD700">/relay/&lt;name&gt;/fire</span>. The token is stored hashed — to change it, save the relay again.</p>
+  <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+    <input id="rel-name" placeholder="name (letters, numbers, -, _)" style="flex:1;min-width:150px">
+    <input id="rel-numbers" placeholder="SMS numbers, comma-separated" style="flex:2;min-width:220px">
+  </div>
+  <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+    <input id="rel-token" type="password" placeholder="token (min 8 chars)" style="flex:1;min-width:160px">
+    <input id="rel-template" placeholder="optional SMS template — {error} {monitor} {observed}" style="flex:2;min-width:220px">
+    <button class="btn btn-primary btn-sm" onclick="addRelay()">Save relay</button>
+  </div>
+  <div class="error-msg" id="rel-err"></div>
+  <div id="d-relay-list"></div>
 </div>
 </div>
 
@@ -1092,6 +1114,7 @@ async function loadDashboard() {
   }
 
   loadSecrets();
+  loadRelays();
 }
 
 async function loadSecrets() {
@@ -1140,6 +1163,66 @@ async function deleteSecret(key) {
     loadSecrets();
   } catch (e) {
     const err = document.getElementById('sec-err');
+    err.textContent = e.message; err.style.display = 'block';
+  }
+}
+
+// ─── Relays ─────────────────────────────────────────────────────────────────────
+async function loadRelays() {
+  const listEl = document.getElementById('d-relay-list');
+  if (!listEl) return;
+  try {
+    const data = await api('GET', '/relays');
+    const relays = data.relays || [];
+    if (!relays.length) {
+      listEl.innerHTML = '<div class="stat-sub" style="padding:6px 0">No relays yet.</div>';
+      return;
+    }
+    // Delete buttons use data-* + delegation (names are user-controlled).
+    listEl.innerHTML = relays.map(r =>
+      '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border:1px solid #222;border-radius:6px;margin-bottom:6px">'
+      + '<div><span style="font-family:ui-monospace,Menlo,monospace;color:#FFD700">/relay/' + esc(r.name) + '/fire</span>'
+      + '<div style="font-size:12px;color:#666;margin-top:2px">' + (r.numbers || []).length + ' number(s)' + (r.hasTemplate ? ' · custom template' : '') + '</div></div>'
+      + '<button class="btn btn-ghost btn-sm" data-del-relay="' + esc(r.name) + '">Delete</button>'
+      + '</div>'
+    ).join('');
+  } catch (e) {
+    listEl.innerHTML = '<div class="error-msg" style="display:block">' + esc(e.message) + '</div>';
+  }
+}
+
+async function addRelay() {
+  const name = document.getElementById('rel-name').value.trim();
+  const numbersRaw = document.getElementById('rel-numbers').value;
+  const token = document.getElementById('rel-token').value;
+  const template = document.getElementById('rel-template').value.trim();
+  const err = document.getElementById('rel-err');
+  err.textContent = ''; err.style.display = 'none';
+  const fail = (m) => { err.textContent = m; err.style.display = 'block'; };
+  if (!name) return fail('Relay name is required.');
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) return fail('Name may only contain letters, numbers, hyphens, and underscores.');
+  const numbers = numbersRaw.split(',').map(s => s.trim()).filter(Boolean);
+  if (!numbers.length) return fail('At least one SMS number is required.');
+  if (token.length < 8) return fail('Token must be at least 8 characters.');
+  try {
+    const body = { name: name, numbers: numbers, token: token };
+    if (template) body.template = template;
+    await api('POST', '/relays', body);
+    document.getElementById('rel-name').value = '';
+    document.getElementById('rel-numbers').value = '';
+    document.getElementById('rel-token').value = '';
+    document.getElementById('rel-template').value = '';
+    loadRelays();
+  } catch (e) { fail(e.message); }
+}
+
+async function deleteRelay(name) {
+  if (!confirm('Delete relay "' + name + '"? Projects firing /relay/' + name + '/fire will get 401 until it is recreated.')) return;
+  try {
+    await api('DELETE', '/relays/' + encodeURIComponent(name));
+    loadRelays();
+  } catch (e) {
+    const err = document.getElementById('rel-err');
     err.textContent = e.message; err.style.display = 'block';
   }
 }
@@ -1215,7 +1298,9 @@ function renderReports(reports) {
         + (rep.failed ? ' · <span style="color:var(--red)">' + rep.failed + ' failed</span>' : '')
         + ' · ' + rate + '%'
       : '<span style="color:var(--m)">No runs in this window</span>';
-    const ctx = rep.expression
+    const ctx = rep.kind === 'relay'
+      ? '<div style="font-size:12px;color:var(--m);margin-top:4px">📮 ' + esc(rep.description || 'Inbound SMS relay') + '</div>'
+      : rep.expression
       ? '<div style="font-size:12px;color:var(--m);font-family:ui-monospace,Menlo,monospace;margin-top:4px">' + esc(rep.expression) + ' ' + esc(rep.comparatorOp) + ' ' + esc(rep.threshold) + '</div>'
       : '<div style="font-size:12px;color:var(--m);margin-top:4px">No check configured</div>';
 
@@ -2485,6 +2570,12 @@ document.getElementById('li-user').addEventListener('keydown', e => { if (e.key 
     const b = e.target.closest('[data-del-secret]');
     if (b) deleteSecret(b.getAttribute('data-del-secret'));
   });
+  // Delegated delete for relay rows (names are user-controlled — no inline JS).
+  const rl2 = document.getElementById('d-relay-list');
+  if (rl2) rl2.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-del-relay]');
+    if (b) deleteRelay(b.getAttribute('data-del-relay'));
+  });
   buildTimeOptions();
 })();
 </script>
@@ -2682,6 +2773,26 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
       });
     }
 
+    // Public: relay fire (external projects push a raw error to a named relay's
+    // SMS numbers; the shared token travels in the body as `test` — no monitor,
+    // no per-monitor secret, no admin session).
+    const relayFireMatch = pathname.match(/^\/relay\/([^/]+)\/fire$/);
+    if (relayFireMatch && method === "POST") {
+      const name = safeDecode(relayFireMatch[1]);
+      const payload = await parseBody<RelayFireDto>(req);
+      // Token field is `test` (the field the relay is driven by), `token` accepted
+      // as an alias. A missing/non-string token is unauthorized, same as a wrong one.
+      const token = typeof payload.test === "string"
+        ? payload.test
+        : (typeof payload.token === "string" ? payload.token : "");
+      if (!token) {
+        throw new CanaryError("unauthorized", "Missing relay token (send it as \"test\" in the JSON body)", 401);
+      }
+      log.info(`📮 POST /relay/${name}/fire hasError=${!!payload.error} hasOverride=${!!payload.message}`);
+      const result = await fireRelay({ name, token, payload });
+      return json(result);
+    }
+
     // ── All routes below require auth ────────────────────────────────────────
     const token = extractToken(req);
     await validateSession(token);
@@ -2828,6 +2939,34 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
           expression: check?.expression ?? null,
           comparatorOp: check?.comparatorOp ?? null,
           threshold: check?.threshold ?? null,
+          total: runs.length,
+          passed,
+          failed: runs.length - passed,
+          capped,
+          runs,
+          corrupt,
+        });
+      }
+
+      // Relays persist their fires under a synthetic "relay:<name>" monitorId, so
+      // they don't appear in listMonitors() above — scan them separately and tag
+      // each entry kind:"relay" (no check context) so the UI can label them.
+      const relaysResult = await listRelays();
+      for (const r of relaysResult.relays) {
+        const relayMonitorId = `relay:${r.name}`;
+        const { runs, passed, corrupt, capped } = await RunResult.scanWindow(
+          relayMonitorId,
+          cutoff,
+          PER_CHECK_CAP,
+        );
+        reports.push({
+          monitorId: relayMonitorId,
+          name: r.name,
+          kind: "relay",
+          description: `Inbound SMS relay → ${r.numbers.length} number(s)`,
+          expression: null,
+          comparatorOp: null,
+          threshold: null,
           total: runs.length,
           passed,
           failed: runs.length - passed,
@@ -3104,6 +3243,27 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
       log.debug(`🔍 DELETE /secrets/${secretKey}`);
       const result = await deleteSecret({ secretKey });
       log.debug(`✅ DELETE /secrets/${secretKey} → 200`);
+      return json(result);
+    }
+
+    // Relays (configurable inbound SMS relays — admin manages, fired publicly above)
+    if (method === "POST" && pathname === "/relays") {
+      const body = await parseBody<ConfigureRelayDto>(req);
+      const result = await configureRelay(body);
+      log.debug(`✅ POST /relays → 200 name=${result.name}`);
+      return json(result);
+    }
+    if (method === "GET" && pathname === "/relays") {
+      const result = await listRelays();
+      log.debug(`✅ GET /relays → 200 count=${result.relays.length}`);
+      return json(result);
+    }
+    const relayMatch = pathname.match(/^\/relays\/([^/]+)$/);
+    if (relayMatch && method === "DELETE") {
+      const name = safeDecode(relayMatch[1]);
+      log.debug(`🔍 DELETE /relays/${name}`);
+      const result = await deleteRelay({ name });
+      log.debug(`✅ DELETE /relays/${name} → 200`);
       return json(result);
     }
 
