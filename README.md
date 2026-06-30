@@ -16,7 +16,7 @@ Canary polls your HTTP endpoints on a cron schedule, extracts numeric values fro
 - **JSON metric extraction**: dot-notation path extraction from any JSON response
 - **Threshold comparisons**: `gt`, `lt`, `gte`, `lte`, `eq`
 - **Multi-channel alerts**: SMS via Zapier webhook, email via Postmark, or push via [ntfy.sh](https://ntfy.sh); mix recipients per monitor — up to **5 SMS numbers** per alert, sent 4 seconds apart
-- **Message templating**: `{monitor}` `{status}` `{observed}` `{timestamp}` plus user-defined captures from the response
+- **Message templating**: `{monitor}` `{status}` `{observed}` `{timestamp}` `{error}` plus user-defined captures from the response — and a check's `error` is always appended to a custom message that doesn't already include it, so a transport/auth failure can't masquerade as a metric breach
 - **Recovery notifications**: optional alert when a failing monitor returns to healthy
 - **Stateless HMAC auth**: admin + invited users, 24-hour sessions, no per-request DB lookup
 - **Push webhooks**: per-monitor `cnry_v1_…` bearer secrets, hashed at rest, rotate/revoke from the UI
@@ -255,6 +255,8 @@ POST /monitors/:id/alert
 Include up to **5** `sms` recipients per alert (add more numbers with the **+ Add number** button in the wizard). When the alert fires, the SMS sends are **staggered 4 seconds apart** — first immediate, each subsequent +4s — so a fan-out doesn't hammer the Zapier webhook; email and ntfy fire immediately. The same `smsMessage` template is sent to every number.
 
 The `ntfy` address can be a bare topic name (`adam-code-alerts` → `https://ntfy.sh/adam-code-alerts`), `ntfy.sh/<topic>`, or a full URL to a self-hosted ntfy server. Failing checks send with `Priority: high` + `Tags: warning`; recoveries send with `Priority: default` + `Tags: white_check_mark`.
+
+> **Custom templates always surface a failure's error.** A custom `smsMessage` / `emailMessage` / `ntfyMessage` is written for a metric breach, but a check can also fail for a transport reason (HTTP 401, timeout, extraction error) — where the metric was never measured. To stop such a failure from masquerading as a metric result, Canary appends the run's `error` to the rendered message whenever the message doesn't already include it (so a template that uses `{error}` isn't double-tagged). Reference `{error}` explicitly to place it yourself.
 
 ---
 

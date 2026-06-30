@@ -61,7 +61,11 @@ load check config → resolve `{{SECRET}}` refs → HTTP fetch → `Extractor.ap
   (Postmark), `sms` (Zapier webhook), `ntfy`. `Promise.allSettled` — one channel
   failing never blocks the others. An alert may carry up to 5 `sms` recipients;
   SMS sends are **staggered apart** (`AlertChannel.send`, `SMS_STAGGER_MS`, default
-  4s) while email/ntfy fire immediately.
+  4s) while email/ntfy fire immediately. Message bodies go through
+  `renderAlertMessage` (shared/mod.ts): a custom template renders normally, but a
+  failure's `error` is appended when the rendered text doesn't already include it —
+  so a transport/auth failure (e.g. a 401 from the polled endpoint) can't be sent
+  as a bare metric-breach template and masquerade as a real metric result.
 - **Monitor delete:** `DELETE /monitors/:id` (`deleteMonitor`) removes a monitor
   of any type + all scoped rows (check, alert, webhook_secret, relay config,
   run/run_idx, corrupt-ack); named secrets are left intact. `deleteRelay`

@@ -20,6 +20,31 @@ export function applyVars(template: string, vars: Record<string, string>): strin
 }
 
 /**
+ * Build an alert's message body: render the operator's custom template (or the
+ * channel's default), then GUARANTEE a failure's error is surfaced.
+ *
+ * Without this, a custom template tuned for a metric breach — e.g. an
+ * "Activations SMS" monitor whose smsMessage is "Send some activation texts" —
+ * is sent VERBATIM when the check actually failed for a transport reason (HTTP
+ * 401 / timeout / extraction error). The check never measured the metric, yet the
+ * recipient gets a message implying it did, so a monitoring/auth failure
+ * masquerades as a real metric result. If the run errored and the rendered text
+ * doesn't already mention the error (template has no {error} token), append it so
+ * the alert is honest. Templates that DO use {error} (relays, error-formatting
+ * webhooks) already contain it, so nothing is appended twice.
+ */
+export function renderAlertMessage(
+  template: string | undefined,
+  run: RunResultDto,
+  vars: Record<string, string>,
+  fallback: string,
+): string {
+  const base = template ? applyVars(template, vars) : fallback;
+  if (run.error && !base.includes(run.error)) return `${base} — error: ${run.error}`;
+  return base;
+}
+
+/**
  * Standard template variables available to every alert channel. Includes
  * `error` so that down/erroring runs produce a meaningful message instead of
  * a bare "observed: 0". Capture values are spread last so a check can expose

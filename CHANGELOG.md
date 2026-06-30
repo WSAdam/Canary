@@ -4,6 +4,21 @@ All notable changes to Canary are documented here. The project is not formally
 versioned yet, so entries are grouped by date. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-06-30 (alert honesty)
+
+### Fixed
+- **A custom alert template no longer masks a transport failure.** A monitor with
+  a metric-tuned `smsMessage`/`emailMessage`/`ntfyMessage` (e.g. "Send some
+  activation texts") would send that text **verbatim** when the check actually
+  failed for a transport reason (HTTP 401 / timeout / extraction error) — so a
+  monitoring/auth failure masqueraded as a real metric breach (the recipient
+  thinks the metric tripped when the check never measured it). All channels now
+  route the body through `renderAlertMessage`, which appends the run's `error`
+  when the rendered message doesn't already mention it. Templates that use
+  `{error}` (relays, error-formatting webhooks) are unchanged — the error is
+  already present, so nothing is appended twice; a clean metric breach (no error)
+  still sends the custom message verbatim.
+
 ## 2026-06-30 (later)
 
 ### Added

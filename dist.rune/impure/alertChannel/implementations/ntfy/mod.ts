@@ -1,4 +1,4 @@
-import { applyVars, BaseAlertChannel, buildVars } from "../../shared/mod.ts";
+import { applyVars, BaseAlertChannel, buildVars, renderAlertMessage } from "../../shared/mod.ts";
 import type { RunResultDto } from "../../../../dto/run-result-dto.ts";
 import type { AlertDto } from "../../../../dto/alert-dto.ts";
 import { CanaryError, upstreamStatus } from "../../../../dto/_shared.ts";
@@ -74,7 +74,7 @@ export class Ntfy extends BaseAlertChannel {
       `Timestamp: ${run.timestamp}`,
       run.error ? `Error: ${run.error}` : null,
     ].filter(Boolean).join("\n");
-    const message = alert.ntfyMessage ? applyVars(alert.ntfyMessage, vars) : defaultBody;
+    const message = renderAlertMessage(alert.ntfyMessage, run, vars, defaultBody);
 
     const priority = run.passed ? "default" : "high";
     const tags = run.passed ? "white_check_mark" : "warning";

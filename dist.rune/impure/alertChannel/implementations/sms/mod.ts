@@ -1,4 +1,4 @@
-import { applyVars, BaseAlertChannel, buildVars } from "../../shared/mod.ts";
+import { BaseAlertChannel, buildVars, renderAlertMessage } from "../../shared/mod.ts";
 import type { RunResultDto } from "../../../../dto/run-result-dto.ts";
 import type { AlertDto } from "../../../../dto/alert-dto.ts";
 import { CanaryError, upstreamStatus } from "../../../../dto/_shared.ts";
@@ -18,7 +18,9 @@ export class Sms extends BaseAlertChannel {
     const vars = buildVars(run);
     const detail = run.error ? `error: ${run.error}` : `observed: ${run.observed}`;
     const defaultMessage = `Canary ${status}: ${monitorLabel} — ${detail} at ${run.timestamp}`;
-    const message = alert.smsMessage ? applyVars(alert.smsMessage, vars) : defaultMessage;
+    // Always surface a failure's error, even under a custom template — see
+    // renderAlertMessage (a metric-breach template must not mask a 401/timeout).
+    const message = renderAlertMessage(alert.smsMessage, run, vars, defaultMessage);
 
     const number = this.phoneNumber.replace(/^\+/, "");
     log.info(`📱 sms.send: to=${number}`);
