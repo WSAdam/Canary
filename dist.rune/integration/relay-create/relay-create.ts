@@ -1,7 +1,7 @@
 import type { CreateRelayDto } from "../../dto/create-relay-dto.ts";
 import { createMonitor } from "../monitor-create/monitor-create.ts";
 import { configureRelay } from "../relay-configure/relay-configure.ts";
-import { kv } from "../../impure/_kv.ts";
+import { purgeRelayMonitorKeys } from "../_shared/purgeRelayMonitor.ts";
 import { log } from "../../impure/_log.ts";
 
 export interface RelayCreateResult {
@@ -34,17 +34,7 @@ export async function createRelayMonitor(input: CreateRelayDto): Promise<RelayCr
     });
   } catch (err) {
     log.warn(`⚠️ relay.createMonitor: config failed for "${monitor.name}" — rolling back: ${(err as Error).message}`);
-    for (const op of [
-      () => kv.delete(["monitor", monitor.monitorId]),
-      () => kv.delete(["monitor_name", monitor.name]),
-      () => kv.delete(["relay", monitor.monitorId]),
-    ]) {
-      try {
-        await op();
-      } catch (e) {
-        log.warn(`⚠️ relay.createMonitor: rollback step failed (ignored): ${(e as Error).message}`);
-      }
-    }
+    await purgeRelayMonitorKeys(monitor.monitorId, monitor.name);
     throw err;
   }
 

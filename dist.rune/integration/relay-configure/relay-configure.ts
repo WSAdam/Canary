@@ -1,6 +1,7 @@
 import type { ConfigureRelayDto } from "../../dto/configure-relay-dto.ts";
 import type { RelayPublicDto } from "../../dto/relay-dto.ts";
 import { Relay } from "../../impure/relay/relay.ts";
+import { Monitor } from "../../impure/monitor/monitor.ts";
 import { CanaryError } from "../../dto/_shared.ts";
 import { log } from "../../impure/_log.ts";
 
@@ -51,6 +52,17 @@ export async function configureRelay(input: ConfigureRelayDto): Promise<RelayPub
     if (input.template.length > MAX_TEMPLATE_LENGTH) {
       throw new CanaryError("validation-error", `template must be at most ${MAX_TEMPLATE_LENGTH} characters`, 400);
     }
+  }
+
+  // The monitor must exist and be a relay — otherwise this would write a
+  // ["relay", id] config onto a check monitor's id, and a later fire would
+  // authenticate against it (verify only reads the relay row) and page on a
+  // type:"check" monitor. Guard at the boundary, mirroring deleteRelay.
+  // createRelayMonitor is unaffected: it creates the type:"relay" monitor first,
+  // then calls this, so the monitor already exists and is typed relay here.
+  const monitor = await new Monitor().get(input.monitorId); // throws not-found
+  if (monitor.type !== "relay") {
+    throw new CanaryError("validation-error", `Monitor "${input.monitorId}" is not a relay`, 400);
   }
 
   const relay = new Relay();

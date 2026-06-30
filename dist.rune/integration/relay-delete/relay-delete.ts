@@ -1,6 +1,6 @@
 import { Monitor } from "../../impure/monitor/monitor.ts";
-import { Relay } from "../../impure/relay/relay.ts";
 import { kv } from "../../impure/_kv.ts";
+import { purgeRelayMonitorKeys } from "../_shared/purgeRelayMonitor.ts";
 import { CanaryError } from "../../dto/_shared.ts";
 import { log } from "../../impure/_log.ts";
 
@@ -19,9 +19,12 @@ export async function deleteRelay(input: { monitorId: string }): Promise<{ ok: t
   }
 
   // Drop run history first (best-effort, per-row) so a relay's rows don't linger
-  // orphaned in KV; then the config, name index, and monitor record.
+  // orphaned in KV; then the monitor's defining key triple. Strong consistency on
+  // the scan so a run row written moments earlier by a fire (a single public POST
+  // could be immediately followed by a delete) is visible and swept, not orphaned
+  // under a now-deleted monitor — matching relay.ts's strong-consistency reads.
   for (const prefix of [["run", input.monitorId], ["run_idx", input.monitorId]]) {
-    for await (const entry of kv.list({ prefix })) {
+    for await (const entry of kv.list({ prefix }, { consistency: "strong" })) {
       try {
         await kv.delete(entry.key);
       } catch (e) {
@@ -29,9 +32,7 @@ export async function deleteRelay(input: { monitorId: string }): Promise<{ ok: t
       }
     }
   }
-  await new Relay().delete(input.monitorId);
-  await kv.delete(["monitor_name", monitor.name]);
-  await kv.delete(["monitor", input.monitorId]);
+  await purgeRelayMonitorKeys(input.monitorId, monitor.name);
   log.debug(`✅ relay.delete: removed relay monitor ${input.monitorId} ("${monitor.name}")`);
   return { ok: true };
 }
