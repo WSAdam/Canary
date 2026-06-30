@@ -72,6 +72,43 @@ Deno.test("fireRelay - a per-fire message overrides the saved template and still
   }
 });
 
+Deno.test("fireRelay - extra top-level fields are folded into captures and expand in the template", async () => {
+  const stub = smsStub();
+  const { monitorId } = await createRelayMonitor({
+    name: uniq("relay"),
+    numbers: ["18432222986"],
+    token: TOKEN,
+    template: "{kind}: {error} ({phone}, {attempts}x)",
+  });
+  try {
+    // The SMS bot's contract: structured failure fields at the top level.
+    await fireRelay({
+      monitorId,
+      token: TOKEN,
+      payload: {
+        source: "sms-bot",
+        kind: "injection-failure",
+        phone: "6142967343",
+        error: "ODR injection failed",
+        attempts: 5,
+        ts: "2026-06-30T14:00:00Z",
+      } as unknown as Parameters<typeof fireRelay>[0]["payload"],
+    });
+    // Persisted as captures (numbers/strings coerced to strings).
+    const latest = await RunResult.getLatest(monitorId);
+    assertEquals(latest?.captures?.source, "sms-bot");
+    assertEquals(latest?.captures?.kind, "injection-failure");
+    assertEquals(latest?.captures?.phone, "6142967343");
+    assertEquals(latest?.captures?.attempts, "5");
+    assertEquals(latest?.captures?.ts, "2026-06-30T14:00:00Z");
+    // …and available as {var} in the SMS template.
+    assertEquals(stub.bodies[0].message, "injection-failure: ODR injection failed (6142967343, 5x)");
+  } finally {
+    await deleteRelay({ monitorId });
+    await stub.close();
+  }
+});
+
 Deno.test("fireRelay - an SMS dispatch failure is non-fatal: fired:false but the run is still persisted", async () => {
   const stub = smsStub(500); // Zapier non-2xx → Sms.send throws → AlertChannel.send rejects
   const { monitorId } = await createRelayMonitor({ name: uniq("relay"), numbers: ["18432222986"], token: TOKEN });

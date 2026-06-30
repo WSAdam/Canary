@@ -1,7 +1,7 @@
 import type { CreateRelayDto } from "../../dto/create-relay-dto.ts";
 import { createMonitor } from "../monitor-create/monitor-create.ts";
 import { configureRelay } from "../relay-configure/relay-configure.ts";
-import { purgeRelayMonitorKeys } from "../_shared/purgeRelayMonitor.ts";
+import { purgeRelayMonitorKeys } from "../_shared/purgeRelayMonitorKeys.ts";
 import { log } from "../../impure/_log.ts";
 
 export interface RelayCreateResult {

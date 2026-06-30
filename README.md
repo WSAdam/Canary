@@ -430,7 +430,7 @@ All body fields are optional:
 
 ### SMS Relays (push a raw error → SMS)
 
-A **relay** is a **monitor of type `relay`**: instead of polling an endpoint on a schedule, it *receives* a push. Another project POSTs a raw `error` to its fire URL and Canary forwards it straight to the relay's SMS numbers — no check, no cron, no `cnry_v1_` header secret. Authentication is a shared token you choose, sent **in the JSON body** as `test`.
+A **relay** is a **monitor of type `relay`**: instead of polling an endpoint on a schedule, it *receives* a push. Another project POSTs a raw `error` to its fire URL and Canary forwards it straight to the relay's SMS numbers — no check, no cron, no `cnry_v1_` header secret. Authentication is a shared token you choose, sent as `Authorization: Bearer <token>` (or, equivalently, in the JSON body as `test`).
 
 This is the inbound direction: **your project posts failures to Canary, and Canary texts them.** (The opposite direction — Canary polling your project for its error count — is an [integration](#integrations-one-step-setup).) A relay shows up in the monitor list (with a **RELAY** badge) and in **Reports** like any other monitor.
 
@@ -449,28 +449,30 @@ POST /relays
 
 This provisions a `type: "relay"` monitor plus its config. `name` is the monitor's display name; `numbers` is 1–5 entries of 10 or 11 digits each; `token` is ≥ 16 characters (a machine-to-machine secret, stored as an unsalted SHA-256 hash — prefer a long, high-entropy value). The token is never returned.
 
-**Fire it** (from your project — token travels in the body, URL keyed by `monitorId`):
+**Fire it** (from your project — Bearer-token auth, URL keyed by `monitorId`):
 
 ```bash
 curl -X POST $URL/relay/$MONITOR_ID/fire \
+  -H 'Authorization: Bearer a-long-high-entropy-shared-secret' \
   -H 'Content-Type: application/json' \
   -d '{
-    "test": "a-long-high-entropy-shared-secret",
-    "error": "Stripe webhook handler 500",
-    "captures": { "service": "payments-link" }
+    "error": "ODR injection failed: …",
+    "source": "sms-bot", "kind": "injection-failure",
+    "phone": "6142967343", "attempts": 5, "ts": "2026-06-30T14:00:00Z"
   }'
 # { "runId": "...", "fired": true, "channels": ["sms"] }
 ```
 
-All body fields except the token are optional:
+**Any extra top-level field** you send (`source`, `kind`, `phone`, `attempts`, `ts`, …) is folded into the run's **captures** — preserved in Reports and usable as a `{var}` in the SMS template (e.g. `template: "{kind}: {error} ({phone}, {attempts}x)"`). So a structured failure payload needs no nesting under `captures`. All fields except the token are optional:
 
 | Field | Type | Default | Effect |
 |-------|------|---------|--------|
-| `test` | string | — (required) | The shared token. A missing/wrong token → `401`. |
+| `Authorization: Bearer` / `test` | string | — (required) | The shared token (header preferred; `test` body field also accepted). A missing/wrong token → `401`. |
 | `error` | string | — | Surfaced as `{error}` and in the default SMS body. |
 | `observed` | number | `0` | Surfaced as `{observed}`. |
-| `captures` | object | — | Merged into the `{var}` table for template expansion (e.g. `{service}`). |
+| `captures` | object | — | Explicit `{var}` map; merged with (and wins over) the extra top-level fields above. |
 | `message` | string | — | Overrides the relay's saved template for this fire only; `{var}` tokens still expand. |
+| *(any other field)* | — | — | Folded into captures (string-coerced) — surfaced in Reports and as a `{var}`. |
 
 The SMS body is the per-fire `message` (else the relay's saved `template`, else a default `Canary FAILED: <name> — error: … at <timestamp>`), expanded with `{monitor}` (the relay's name), `{error}`, `{observed}`, `{timestamp}`, `{status}`, plus any `captures`. Multiple numbers fan out staggered `SMS_STAGGER_MS` apart (default 4s), same as monitor alerts. Every fire is persisted as a run under the relay's `monitorId` and shows in **Reports** with the usual drill-in.
 

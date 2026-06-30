@@ -5,6 +5,7 @@ import { fireRelay } from "../relay-fire/relay-fire.ts";
 import { createMonitor } from "../monitor-create/monitor-create.ts";
 import { getMonitor } from "../monitor-get/monitor-get.ts";
 import { RunResult } from "../../impure/runResult/runResult.ts";
+import { Relay } from "../../impure/relay/relay.ts";
 import { kv } from "../../impure/_kv.ts";
 import { CanaryError } from "../../dto/_shared.ts";
 
@@ -24,20 +25,24 @@ Deno.test("deleteRelay - refuses to delete a check monitor (type guard)", async 
   assertEquals((await getMonitor({ monitorId: m.monitorId })).monitorId, m.monitorId);
 });
 
-Deno.test("deleteRelay - clears the monitor and its run/run_idx history", async () => {
-  // Dead SMS endpoint so the fire's dispatch fails fast (no real SMS); the run is
-  // still persisted before dispatch, which is what we're testing the sweep on.
+Deno.test("deleteRelay - clears the monitor, its relay config, and its run/run_idx history", async () => {
+  // Belt-and-suspenders so no real SMS goes out; but the run persists BEFORE
+  // dispatch, so this test's subject (persist → sweep) is independent of the
+  // dispatch outcome — hence the try/catch rather than relying on port 9 failing.
   Deno.env.set("ZAPIER_SMS_URL", "http://127.0.0.1:9/dead");
   const { monitorId } = await createRelayMonitor({ name: uniq("relay"), numbers: ["18432222986"], token: TOKEN });
   try {
-    await fireRelay({ monitorId, token: TOKEN, payload: { error: "boom" } });
+    try {
+      await fireRelay({ monitorId, token: TOKEN, payload: { error: "boom" } });
+    } catch { /* dispatch outcome is irrelevant — the run is persisted before it */ }
     assert((await RunResult.getLatest(monitorId)) !== null, "run should be persisted before delete");
     assert((await countPrefix(["run", monitorId])) > 0);
 
     await deleteRelay({ monitorId });
 
-    // Monitor gone, and no orphaned run/run_idx rows left behind.
+    // Monitor gone, relay config gone, and no orphaned run/run_idx rows.
     await assertRejects(() => getMonitor({ monitorId }), CanaryError, "not found");
+    assertEquals(await new Relay().peek(monitorId), null); // the ["relay", id] key is swept too
     assertEquals(await RunResult.getLatest(monitorId), null);
     assertEquals(await countPrefix(["run", monitorId]), 0);
     assertEquals(await countPrefix(["run_idx", monitorId]), 0);

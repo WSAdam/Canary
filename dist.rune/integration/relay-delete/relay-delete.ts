@@ -1,6 +1,6 @@
 import { Monitor } from "../../impure/monitor/monitor.ts";
 import { kv } from "../../impure/_kv.ts";
-import { purgeRelayMonitorKeys } from "../_shared/purgeRelayMonitor.ts";
+import { purgeRelayMonitorKeys } from "../_shared/purgeRelayMonitorKeys.ts";
 import { CanaryError } from "../../dto/_shared.ts";
 import { log } from "../../impure/_log.ts";
 

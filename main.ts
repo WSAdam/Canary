@@ -2846,17 +2846,19 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
     }
 
     // Public: relay fire (external projects push a raw error to a relay monitor's
-    // SMS numbers; the shared token travels in the body as `test` — parallels
-    // /webhook/:monitorId/fire, but body-token auth instead of a header secret).
+    // SMS numbers). The shared token is accepted EITHER as `Authorization: Bearer`
+    // (the conventional path, matching /webhook/:monitorId/fire) OR in the body as
+    // `test`. Any extra top-level body fields (source, kind, phone, …) are folded
+    // into the run's captures by fireRelay.
     const relayFireMatch = pathname.match(/^\/relay\/([^/]+)\/fire$/);
     if (relayFireMatch && method === "POST") {
       const monitorId = safeDecode(relayFireMatch[1]);
       const payload = await parseBody<RelayFireDto>(req);
-      // The shared token travels in the body as `test`. A missing/non-string
-      // token is unauthorized, same as a wrong one.
-      const token = typeof payload.test === "string" ? payload.test : "";
+      const auth = req.headers.get("Authorization") ?? "";
+      const headerToken = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+      const token = headerToken || (typeof payload.test === "string" ? payload.test : "");
       if (!token) {
-        throw new CanaryError("unauthorized", "Missing relay token (send it as \"test\" in the JSON body)", 401);
+        throw new CanaryError("unauthorized", "Missing relay token (send Authorization: Bearer <token>, or \"test\" in the JSON body)", 401);
       }
       log.info(`📮 POST /relay/${monitorId}/fire hasError=${!!payload.error} hasOverride=${!!payload.message}`);
       const result = await fireRelay({ monitorId, token, payload });

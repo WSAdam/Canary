@@ -54,12 +54,11 @@ export async function configureRelay(input: ConfigureRelayDto): Promise<RelayPub
     }
   }
 
-  // The monitor must exist and be a relay — otherwise this would write a
-  // ["relay", id] config onto a check monitor's id, and a later fire would
-  // authenticate against it (verify only reads the relay row) and page on a
-  // type:"check" monitor. Guard at the boundary, mirroring deleteRelay.
-  // createRelayMonitor is unaffected: it creates the type:"relay" monitor first,
-  // then calls this, so the monitor already exists and is typed relay here.
+  // Require an existing relay monitor: else we'd write a ["relay", id] config
+  // onto a check monitor, and a later fire would authenticate via verify() and
+  // page a type:"check" monitor. (createRelayMonitor creates-then-configures, so
+  // this passes.) Must stay AFTER the input-shape checks above so a malformed
+  // request gets its 400, not a "not found".
   const monitor = await new Monitor().get(input.monitorId); // throws not-found
   if (monitor.type !== "relay") {
     throw new CanaryError("validation-error", `Monitor "${input.monitorId}" is not a relay`, 400);

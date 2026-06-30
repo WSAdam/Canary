@@ -7,6 +7,10 @@ import type { RelayFireDto } from "../../dto/relay-fire-dto.ts";
 import type { AlertDto } from "../../dto/alert-dto.ts";
 import { log, withRun } from "../../impure/_log.ts";
 
+// Control fields the relay interprets itself; every OTHER top-level body field is
+// treated as a capture. `test`/`token` are auth, the rest shape the run/alert.
+const RESERVED_FIELDS = new Set(["test", "token", "error", "observed", "message", "captures"]);
+
 export interface RelayFireInput {
   monitorId: string;
   token: string;
@@ -42,7 +46,19 @@ async function fireRelayRun(runId: string, input: RelayFireInput): Promise<Relay
   const error = typeof input.payload.error === "string" ? input.payload.error : undefined;
   const message = typeof input.payload.message === "string" ? input.payload.message : undefined;
   const observed = typeof input.payload.observed === "number" ? input.payload.observed : 0;
-  const captures = sanitizeCaptures(input.payload.captures);
+  // Any extra top-level field a caller sends (source, kind, phone, attempts, ts,
+  // …) becomes a capture, so a structured failure payload is preserved in the run
+  // and usable as a {var} in the SMS template — without hardcoding field names.
+  // An explicit nested `captures` object is merged in and wins on key collision.
+  const raw = input.payload as Record<string, unknown>;
+  const extras: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (!RESERVED_FIELDS.has(k)) extras[k] = v;
+  }
+  const explicit = raw.captures && typeof raw.captures === "object" && !Array.isArray(raw.captures)
+    ? raw.captures as Record<string, unknown>
+    : {};
+  const captures = sanitizeCaptures({ ...extras, ...explicit });
 
   // Persist the fire as a run under the monitor's own id so it lands in the
   // Reports tab natively (drill-in + purge come for free) — no synthetic id.
