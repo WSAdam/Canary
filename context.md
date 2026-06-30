@@ -62,6 +62,10 @@ load check config → resolve `{{SECRET}}` refs → HTTP fetch → `Extractor.ap
   failing never blocks the others. An alert may carry up to 5 `sms` recipients;
   SMS sends are **staggered apart** (`AlertChannel.send`, `SMS_STAGGER_MS`, default
   4s) while email/ntfy fire immediately.
+- **Monitor delete:** `DELETE /monitors/:id` (`deleteMonitor`) removes a monitor
+  of any type + all scoped rows (check, alert, webhook_secret, relay config,
+  run/run_idx, corrupt-ack); named secrets are left intact. `deleteRelay`
+  (`DELETE /relays/:id`) is a type-guarded alias that delegates to it.
 - **Auth:** stateless HMAC session tokens (key auto-generated into KV on first
   boot); admin seeded from `ADMIN_USERNAME`/`ADMIN_PASSWORD`.
 - **Inbound webhooks:** `POST /webhook/:monitorId/fire` with a per-monitor

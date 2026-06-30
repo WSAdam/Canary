@@ -17,6 +17,7 @@ import { createMonitor } from "./dist.rune/integration/monitor-create/monitor-cr
 import { listMonitors } from "./dist.rune/integration/monitor-list/monitor-list.ts";
 import { getMonitor } from "./dist.rune/integration/monitor-get/monitor-get.ts";
 import { updateMonitor } from "./dist.rune/integration/monitor-update/monitor-update.ts";
+import { deleteMonitor } from "./dist.rune/integration/monitor-delete/monitor-delete.ts";
 import { configureCheck } from "./dist.rune/integration/check-configure/check-configure.ts";
 import { getCheck } from "./dist.rune/integration/check-get/check-get.ts";
 import { buildSchedule } from "./dist.rune/integration/schedule-build/schedule-build.ts";
@@ -1212,7 +1213,7 @@ async function editRelay(monitorId) {
   document.getElementById('relay-submit-btn').textContent = 'Save relay';
   // Name is the monitor's — rename via "Edit details", not here — so lock it.
   const nameEl = document.getElementById('relay-name');
-  nameEl.value = _relayNames[monitorId] || ''; nameEl.disabled = true;
+  nameEl.value = _monitorNames[monitorId] || ''; nameEl.disabled = true;
   document.getElementById('relay-token').value = '';
   // On edit the token is optional (blank = keep current); say so.
   document.getElementById('relay-token-label').textContent = 'Token (blank = keep current)';
@@ -1220,7 +1221,11 @@ async function editRelay(monitorId) {
   document.getElementById('relay-template').value = '';
   document.getElementById('relay-err').textContent = '';
   document.getElementById('relay-ok').textContent = '';
-  document.getElementById('relay-result').innerHTML = '';
+  // Surface the fire URL so it's retrievable any time after create.
+  document.getElementById('relay-result').innerHTML = '<div style="font-size:13px;border:1px solid var(--b);border-radius:8px;padding:12px">'
+    + '<div style="margin-bottom:6px;color:var(--m)">Fire URL (POST, Authorization: Bearer &lt;token&gt;):</div>'
+    + '<pre style="white-space:pre-wrap;word-break:break-all;font-size:12px;margin:0">' + esc(relayFireUrl(monitorId)) + '</pre>'
+    + '</div>';
   document.getElementById('relay-modal').classList.add('open');
   try {
     const cfg = await api('GET', '/monitors/' + encodeURIComponent(monitorId) + '/relay');
@@ -1266,12 +1271,11 @@ async function submitRelay() {
       const body = { name: name, numbers: numbers, token: token };
       if (template) body.template = template;
       const res = await api('POST', '/relays', body);
-      ok.textContent = 'Relay created!';
-      result.innerHTML = '<div style="font-size:13px;border:1px solid var(--b);border-radius:8px;padding:12px">'
-        + '<div style="margin-bottom:6px;color:var(--m)">Fire URL (POST, body { "test": "&lt;token&gt;", "error": "..." }):</div>'
-        + '<pre style="white-space:pre-wrap;word-break:break-all;font-size:12px;margin:0">' + esc(relayFireUrl(res.monitorId)) + '</pre>'
-        + '</div>';
+      ok.textContent = 'Relay created! Fire URL: ' + relayFireUrl(res.monitorId) + ' (also under Edit relay)';
       loadDashboard();
+      // Close shortly after so the success/URL is readable but the modal doesn't
+      // linger; the fire URL stays retrievable from the relay card's Edit relay.
+      setTimeout(closeRelayModal, 2500);
     }
   } catch (e) { fail(e.message); }
   finally { btn.disabled = false; btn.textContent = _relayEditId ? 'Save relay' : 'Create relay'; }
@@ -1282,14 +1286,14 @@ function relayFireUrl(monitorId) {
   return location.origin + '/relay/' + monitorId + '/fire';
 }
 
-async function deleteRelay(monitorId) {
-  const name = _relayNames[monitorId] || monitorId;
-  if (!confirm('Delete relay "' + name + '"? This removes the monitor, its fire token, and its run history. This cannot be undone.')) return;
+async function deleteMonitor(monitorId) {
+  const name = _monitorNames[monitorId] || monitorId;
+  if (!confirm('Delete monitor "' + name + '"? This permanently removes it and all its history (check, alert, webhook, relay, runs). This cannot be undone.')) return;
   try {
-    await api('DELETE', '/relays/' + encodeURIComponent(monitorId));
+    await api('DELETE', '/monitors/' + encodeURIComponent(monitorId));
     loadDashboard();
   } catch (e) {
-    alert('Could not delete relay: ' + e.message);
+    alert('Could not delete monitor: ' + e.message);
   }
 }
 
@@ -1303,26 +1307,26 @@ async function deleteAlert(monitorId) {
   }
 }
 
-// Names for relay cards' edit/delete handlers — kept in a render-time map so the
-// (user-controlled) name is never interpolated into an inline onclick attribute.
-let _relayNames = {};
+// Monitor names by id — a render-time map so the (user-controlled) name is never
+// interpolated into an inline onclick attribute (delete uses the id, shows name).
+let _monitorNames = {};
 function renderMonitorList(monitors) {
   const el = document.getElementById('d-monitor-list');
   if (!monitors.length) {
     el.innerHTML = '<div class="empty-state"><div style="font-size:32px">🐦</div><p>No monitors yet. Add one to get started.</p></div>';
     return;
   }
-  _relayNames = {};
+  _monitorNames = {};
   el.innerHTML = monitors.map(m => {
+    _monitorNames[m.monitorId] = m.name;
     const isRelay = m.type === 'relay';
-    if (isRelay) _relayNames[m.monitorId] = m.name;
     const badge = isRelay
       ? '<span style="margin-left:8px;font-size:10px;font-weight:700;letter-spacing:.04em;color:#FFD700;border:1px solid #FFD70055;border-radius:4px;padding:1px 6px;vertical-align:middle">RELAY</span>'
       : '';
-    const actions = isRelay
+    // Type-specific actions, then a shared "Delete" that removes the whole monitor.
+    const specific = isRelay
       ? \`<button class="btn btn-ghost btn-sm" onclick="editDetails('\${esc(m.monitorId)}')">Edit details</button>
-         <button class="btn btn-ghost btn-sm" onclick="editRelay('\${esc(m.monitorId)}')">Edit relay</button>
-         <button class="btn btn-ghost btn-sm" onclick="deleteRelay('\${esc(m.monitorId)}')">Delete relay</button>\`
+         <button class="btn btn-ghost btn-sm" onclick="editRelay('\${esc(m.monitorId)}')">Edit relay</button>\`
       : \`<button class="btn btn-ghost btn-sm" onclick="editDetails('\${esc(m.monitorId)}')">Edit details</button>
          <button class="btn btn-ghost btn-sm" onclick="editCheck('\${esc(m.monitorId)}')">Edit check</button>
          <button class="btn btn-ghost btn-sm" onclick="editAlert('\${esc(m.monitorId)}')">Edit alert</button>
@@ -1331,7 +1335,9 @@ function renderMonitorList(monitors) {
          <button class="btn btn-ghost btn-sm" onclick="runNow('\${esc(m.monitorId)}', this)">Run now</button>\`;
     return \`<div class="monitor-card">
       <div class="monitor-info"><h3>\${esc(m.name)}\${badge}</h3><p>\${esc(m.description || 'No description')}</p></div>
-      <div class="monitor-actions">\${actions}</div>
+      <div class="monitor-actions">\${specific}
+        <button class="btn btn-danger btn-sm" onclick="deleteMonitor('\${esc(m.monitorId)}')">Delete</button>
+      </div>
     </div>\`;
   }).join('');
 }
@@ -3191,6 +3197,13 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
       // Path id wins over any id in the body.
       const result = await updateMonitor({ ...(body as Record<string, unknown>), monitorId } as Parameters<typeof updateMonitor>[0]);
       log.info(`✅ PATCH /monitors/${monitorId} → 200 name="${result.name}"`);
+      return json(result);
+    }
+    if (monitorMatch && method === "DELETE") {
+      const monitorId = safeDecode(monitorMatch[1]);
+      log.info(`🗑️ DELETE /monitors/${monitorId}`);
+      const result = await deleteMonitor({ monitorId });
+      log.debug(`✅ DELETE /monitors/${monitorId} → 200`);
       return json(result);
     }
 

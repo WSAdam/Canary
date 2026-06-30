@@ -168,6 +168,7 @@ Pull (not push) is deliberate — Canary polling the endpoint detects both repor
 | `GET` | `/monitors` | List all monitors |
 | `GET` | `/monitors/:id` | Get a monitor |
 | `PATCH` | `/monitors/:id` | Rename / edit a monitor's name + description |
+| `DELETE` | `/monitors/:id` | Delete a monitor of **any** type and everything scoped to it (check, alert, webhook secret, relay config, run history). Named secrets are left intact. |
 
 **Create a monitor**
 
@@ -483,9 +484,9 @@ The SMS body is the per-fire `message` (else the relay's saved `template`, else 
 | `POST` | `/relays` | Provision a relay monitor (monitor + config) in one call. |
 | `GET`  | `/monitors/:id/relay` | Read the relay config (numbers + template presence; **never** the token). |
 | `POST` | `/monitors/:id/relay` | Reconfigure (numbers/template, and `token` to rotate — omit `token` to keep the current one). |
-| `DELETE` | `/relays/:id` | Delete the relay monitor entirely (record, token, and run history). |
+| `DELETE` | `/monitors/:id` | Delete the relay monitor entirely (record, token, run history). The dashboard's **Delete** button uses this; `DELETE /relays/:id` is a type-guarded alias. |
 
-Relays send over the same `ZAPIER_SMS_URL` Zapier webhook as monitor SMS alerts — no extra env var.
+Relays send over the same `ZAPIER_SMS_URL` Zapier webhook as monitor SMS alerts — no extra env var. A relay's fire URL is shown under **Edit relay** any time after creation.
 
 > **Security note** (same posture as webhook-fire): the fire route is public, authenticated only by the body token, and **not rate-limited in v1** — a leaked token can fire arbitrary SMS until you rotate it (`POST /monitors/:id/relay` with a new `token`). Use a long random token and rotate on any suspected leak.
 

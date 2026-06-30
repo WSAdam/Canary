@@ -4,6 +4,27 @@ All notable changes to Canary are documented here. The project is not formally
 versioned yet, so entries are grouped by date. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-06-30 (later)
+
+### Added
+- **Delete a monitor.** `DELETE /monitors/:id` removes a monitor of any type and
+  everything scoped to it (check, alert, webhook secret, relay config, run
+  history); named secrets are left intact. Every monitor card now has a **Delete**
+  button (previously only a relay or an alert could be removed — a check monitor
+  had no delete path). Relay teardown is unified onto this (`DELETE /relays/:id`
+  stays as a type-guarded alias).
+
+### Fixed
+- **The "+ Add relay" modal now closes after create** (it lingered showing the
+  fire URL). The fire URL is now also retrievable any time under **Edit relay**.
+
+### Changed
+- Relay fire (`POST /relay/:monitorId/fire`) accepts the token as
+  `Authorization: Bearer` (in addition to the body `test` field), and folds any
+  extra top-level body field (`source`, `kind`, `phone`, …) into the run's
+  captures — so a structured failure payload from a producer (e.g. the SMS bot)
+  is preserved and usable in the SMS template without nesting under `captures`.
+
 ## 2026-06-30
 
 ### Added
