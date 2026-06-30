@@ -9,13 +9,13 @@ import { log } from "../../impure/_log.ts";
 // the history partitions to scan. The monitor record + name index + relay config
 // are handled by purgeRelayMonitorKeys. Named secrets (["secret", KEY]) are
 // deliberately excluded — they're shared resources another monitor may reference.
-export const MONITOR_SCOPED_KEYS = (monitorId: string): Deno.KvKey[] => [
+export const monitorScopedKeys = (monitorId: string): Deno.KvKey[] => [
   ["check", monitorId],
   ["alert", monitorId],
   ["webhook_secret", monitorId],
   ["run_corrupt_ack", monitorId],
 ];
-export const MONITOR_RUN_PREFIXES = (monitorId: string): Deno.KvKey[] => [
+export const monitorRunPrefixes = (monitorId: string): Deno.KvKey[] => [
   ["run", monitorId],
   ["run_idx", monitorId],
 ];
@@ -42,12 +42,12 @@ export async function deleteMonitor(input: { monitorId: string }): Promise<{ ok:
 
   // Run history first, strong-consistency so a just-written row is visible and
   // swept, not orphaned under a now-deleted monitor.
-  for (const prefix of MONITOR_RUN_PREFIXES(input.monitorId)) {
+  for (const prefix of monitorRunPrefixes(input.monitorId)) {
     for await (const entry of kv.list({ prefix }, { consistency: "strong" })) {
       await bestEffortDelete(entry.key, "run row");
     }
   }
-  for (const key of MONITOR_SCOPED_KEYS(input.monitorId)) {
+  for (const key of monitorScopedKeys(input.monitorId)) {
     await bestEffortDelete(key, key[0] as string);
   }
   // Relay config + name index + monitor record (shared key triple).
