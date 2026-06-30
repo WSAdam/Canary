@@ -27,13 +27,16 @@ export class Sms extends BaseAlertChannel {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ number, message }),
     });
-    // We don't use the Zapier response body — drain it so the stream/connection
-    // is released (an unconsumed fetch body leaks).
-    await response.body?.cancel();
 
     if (!response.ok) {
+      // Read the upstream body on the error path (matching email/ntfy) so the
+      // failure carries Zapier's reason, not just the status. This consumes the
+      // body, so the success path below drains it instead.
+      const errBody = await response.text().catch(() => "");
       const status = upstreamStatus(response.status);
-      throw new CanaryError("send-failed", `Zapier SMS webhook returned ${response.status}`, status);
+      throw new CanaryError("send-failed", `Zapier SMS webhook returned ${response.status}: ${errBody}`, status);
     }
+    // Success path: drain the unused body so the stream/connection is released.
+    await response.body?.cancel();
   }
 }

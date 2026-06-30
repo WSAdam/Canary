@@ -60,8 +60,8 @@ load check config → resolve `{{SECRET}}` refs → HTTP fetch → `Extractor.ap
 - **Alert channels** ([impure/alertChannel](dist.rune/impure/alertChannel)): `email`
   (Postmark), `sms` (Zapier webhook), `ntfy`. `Promise.allSettled` — one channel
   failing never blocks the others. An alert may carry up to 5 `sms` recipients;
-  SMS sends are **staggered 4s apart** (`AlertChannel.send`) while email/ntfy fire
-  immediately.
+  SMS sends are **staggered apart** (`AlertChannel.send`, `SMS_STAGGER_MS`, default
+  4s) while email/ntfy fire immediately.
 - **Auth:** stateless HMAC session tokens (key auto-generated into KV on first
   boot); admin seeded from `ADMIN_USERNAME`/`ADMIN_PASSWORD`.
 - **Inbound webhooks:** `POST /webhook/:monitorId/fire` with a per-monitor

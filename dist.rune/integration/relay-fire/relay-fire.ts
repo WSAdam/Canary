@@ -40,11 +40,17 @@ async function fireRelayRun(runId: string, input: RelayFireInput): Promise<Relay
 
   // Persist the fire as a run so it lands in the Reports tab (drill-in + purge
   // come for free). monitorId is namespaced "relay:<name>" so it never collides
-  // with a monitor's UUID-keyed history; monitorName is the relay name so the
-  // default SMS reads "Canary FAILED: <name> — error: …". A relay fire is always
-  // a failure-style alert — there are no recovery semantics.
+  // with a monitor's UUID-keyed run history.
   const monitorId = `relay:${input.name}`;
-  const runResult = RunResult.build(monitorId, observed, false, input.name, error, captures, { runId });
+  const runResult = RunResult.build(
+    monitorId,
+    observed,
+    false, // always a failure-style alert — a relay has no recovery semantics
+    input.name, // monitorName → the default SMS reads "Canary FAILED: <name> — error: …"
+    error,
+    captures,
+    { runId },
+  );
   // Clamp at the same chokepoint cron/webhook use — a caller-supplied error or
   // captures of arbitrary size would otherwise throw on KV save and be dropped.
   const runResultDto = clampRunRowToKvLimit(runResult.toDto(), "relay.persist");

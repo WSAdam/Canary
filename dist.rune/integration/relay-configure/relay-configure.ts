@@ -6,7 +6,12 @@ import { log } from "../../impure/_log.ts";
 
 const MAX_NAME_LENGTH = 64;
 const MAX_NUMBERS = 5; // matches the per-alert SMS fan-out cap (staggered 4s apart at send time)
-const MIN_TOKEN_LENGTH = 8; // mirrors the account password policy
+// A relay token is a machine-to-machine secret guarding a public, SMS-triggering
+// endpoint — require more entropy than a human password (the unsalted SHA-256 of
+// a short shared secret would be the weak link if KV were ever dumped). 16+ chars
+// of caller-chosen entropy keeps offline brute force infeasible without forcing a
+// slow KDF onto the verify hot path.
+const MIN_TOKEN_LENGTH = 16;
 const MAX_TOKEN_LENGTH = 256;
 const MAX_TEMPLATE_LENGTH = 1000;
 

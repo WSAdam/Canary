@@ -488,7 +488,7 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
     <input id="rel-numbers" placeholder="SMS numbers, comma-separated" style="flex:2;min-width:220px">
   </div>
   <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
-    <input id="rel-token" type="password" placeholder="token (min 8 chars)" style="flex:1;min-width:160px">
+    <input id="rel-token" type="password" placeholder="token (min 16 chars)" style="flex:1;min-width:160px">
     <input id="rel-template" placeholder="optional SMS template — {error} {monitor} {observed}" style="flex:2;min-width:220px">
     <button class="btn btn-primary btn-sm" onclick="addRelay()">Save relay</button>
   </div>
@@ -1199,11 +1199,14 @@ async function addRelay() {
   const err = document.getElementById('rel-err');
   err.textContent = ''; err.style.display = 'none';
   const fail = (m) => { err.textContent = m; err.style.display = 'block'; };
+  // Presence checks only (avoid a pointless round-trip on an empty form); the
+  // server in relay-configure.ts is the single source of truth for the format
+  // rules (charset, token length, digit/number caps) and its 400 messages are
+  // surfaced verbatim by fail(e.message) below.
   if (!name) return fail('Relay name is required.');
-  if (!/^[A-Za-z0-9_-]+$/.test(name)) return fail('Name may only contain letters, numbers, hyphens, and underscores.');
   const numbers = numbersRaw.split(',').map(s => s.trim()).filter(Boolean);
   if (!numbers.length) return fail('At least one SMS number is required.');
-  if (token.length < 8) return fail('Token must be at least 8 characters.');
+  if (!token) return fail('A token is required.');
   try {
     const body = { name: name, numbers: numbers, token: token };
     if (template) body.template = template;
@@ -2780,11 +2783,9 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
     if (relayFireMatch && method === "POST") {
       const name = safeDecode(relayFireMatch[1]);
       const payload = await parseBody<RelayFireDto>(req);
-      // Token field is `test` (the field the relay is driven by), `token` accepted
-      // as an alias. A missing/non-string token is unauthorized, same as a wrong one.
-      const token = typeof payload.test === "string"
-        ? payload.test
-        : (typeof payload.token === "string" ? payload.token : "");
+      // The shared token travels in the body as `test`. A missing/non-string
+      // token is unauthorized, same as a wrong one.
+      const token = typeof payload.test === "string" ? payload.test : "";
       if (!token) {
         throw new CanaryError("unauthorized", "Missing relay token (send it as \"test\" in the JSON body)", 401);
       }

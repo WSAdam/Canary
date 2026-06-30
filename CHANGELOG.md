@@ -15,13 +15,18 @@ versioned yet, so entries are grouped by date. Format loosely follows
   and `DELETE /relays/:name`, plus a **SMS Relays** section on the dashboard.
   Each fire is persisted as a run and appears in the **Reports** tab as an
   *Inbound SMS relay* with the usual drill-in. Relays reuse the existing
-  `ZAPIER_SMS_URL` webhook, the 4s SMS stagger, and the `{var}` template engine
-  (`{monitor}` `{error}` `{observed}` `{timestamp}` `{status}` + captures).
+  `ZAPIER_SMS_URL` webhook, the SMS stagger, and the `{var}` template engine
+  (`{monitor}` `{error}` `{observed}` `{timestamp}` `{status}` + captures). Relay
+  tokens require ≥ 16 chars (a machine-to-machine secret).
+- **`SMS_STAGGER_MS` env var.** The previously-hardcoded 4s SMS fan-out throttle
+  is now configurable (default `4000`; `0` sends all at once).
 
 ### Fixed
 - **Alert channels no longer leak the upstream response body on success.** The
   SMS/email/ntfy senders consumed the response only on the error path; the
-  success path now drains it too, releasing the stream/connection.
+  success path now drains it too, releasing the stream/connection. The SMS sender
+  also now reads the upstream body on the error path (matching email/ntfy), so a
+  failed send carries Zapier's reason, not just the status code.
 
 ## 2026-06-24
 

@@ -8,8 +8,15 @@ import { Ntfy } from "./implementations/ntfy/mod.ts";
 import { log } from "../_log.ts";
 
 // Throttle: space consecutive SMS sends apart so we don't hammer the Zapier
-// webhook / carrier when an alert fans out to several numbers.
-const SMS_STAGGER_MS = 4000;
+// webhook / carrier when an alert fans out to several numbers. Resolved per-send
+// so SMS_STAGGER_MS can tune it (e.g. 0 in tests for instant fan-out); defaults
+// to 4s. A negative/NaN value falls back to the default.
+const DEFAULT_SMS_STAGGER_MS = 4000;
+
+function smsStaggerMs(): number {
+  const v = Number(Deno.env.get("SMS_STAGGER_MS"));
+  return Number.isFinite(v) && v >= 0 ? v : DEFAULT_SMS_STAGGER_MS;
+}
 
 export class AlertChannel {
   private constructor(
@@ -42,18 +49,19 @@ export class AlertChannel {
   async send(run: RunResultDto): Promise<void> {
     // allSettled, not all: one channel's failure (e.g. a bad ntfy address) must
     // never suppress the others. We attempt every channel, then report.
-    // SMS channels are staggered SMS_STAGGER_MS apart (first immediate, 2nd +4s,
+    // SMS channels are staggered smsStaggerMs() apart (first immediate, 2nd +Δ,
     // …) to throttle the webhook; email/ntfy fire immediately. Mapping over
     // this.channels in order keeps results[i] aligned with this.labels[i].
+    const staggerMs = smsStaggerMs();
     let smsIndex = 0;
     const tasks = this.channels.map((c, i) => {
-      const delayMs = this.labels[i] === "sms" ? smsIndex++ * SMS_STAGGER_MS : 0;
+      const delayMs = this.labels[i] === "sms" ? smsIndex++ * staggerMs : 0;
       return (async () => {
         if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
         return c.send(run, this.alert);
       })();
     });
-    if (smsIndex > 1) log.debug(`📱 AlertChannel.send: staggering ${smsIndex} sms send(s) ${SMS_STAGGER_MS}ms apart`);
+    if (smsIndex > 1) log.debug(`📱 AlertChannel.send: staggering ${smsIndex} sms send(s) ${staggerMs}ms apart`);
     const results = await Promise.allSettled(tasks);
     results.forEach((res, i) => {
       const label = this.labels[i] ?? "channel";

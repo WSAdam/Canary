@@ -1,11 +1,10 @@
 /**
  * request body for POST /relay/:name/fire — push a raw error to a relay's SMS
- * numbers. `test` carries the shared token (the field name the relay is driven
- * by); `token` is accepted as a friendlier alias. All other fields are optional.
+ * numbers. `test` carries the shared token (the field the relay is driven by).
+ * All other fields are optional.
  */
 export interface RelayFireDto {
-  test?: string; // the shared token (primary field name)
-  token?: string; // alias for `test`
+  test?: string; // the shared token
   error?: string; // surfaced as {error} and in the default SMS body
   observed?: number; // default 0, surfaced as {observed}
   captures?: Record<string, string>; // added to the {var} table for template expansion

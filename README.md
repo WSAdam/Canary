@@ -477,7 +477,9 @@ POST /relays
 }
 ```
 
-`name` may contain letters, numbers, hyphens, and underscores; `numbers` is 1–5 entries of 10 or 11 digits each; `token` is at least 8 characters. To rotate a token, `POST /relays` again with the same name and a new token. Relays send over the same `ZAPIER_SMS_URL` Zapier webhook as monitor SMS alerts — no extra env var.
+`name` may contain letters, numbers, hyphens, and underscores; `numbers` is 1–5 entries of 10 or 11 digits each; `token` is at least 16 characters (it's a machine-to-machine secret stored as an unsalted SHA-256 hash, so prefer a long, high-entropy value). To rotate a token, `POST /relays` again with the same name and a new token. Relays send over the same `ZAPIER_SMS_URL` Zapier webhook as monitor SMS alerts — no extra env var.
+
+> **Security note** (same posture as webhook-fire): the fire route is public, authenticated only by the body token, and **not rate-limited in v1** — a leaked token can fire arbitrary SMS until you rotate it (re-save the relay). Use a long random token and rotate on any suspected leak.
 
 ---
 
@@ -554,6 +556,7 @@ Deno Deploy provides Deno KV out of the box. No additional database setup requir
 | `FETCH_TIMEOUT_MS` | No (default `10000`) | Per-check request timeout in milliseconds. A check exceeding it fails with a `timed-out` error (which alerts). |
 | `LOG_LEVEL` | No (default `info`) | Minimum log level to emit: `debug`, `info`, `warn`, or `error`. At `info`, bootstrap/idle-cron chatter is suppressed (a cold-start logs nothing) and only real activity — runs, alerts, warnings, errors — shows. Set `debug` for the full firehose. Each line is tagged `[level]`, and lines inside a check run also carry `[run=<id>]` (matching the stored run's `runId`) so one run's logs group together. |
 | `ALLOW_PRIVATE_FETCH` | No (default off) | SSRF guard escape hatch. By default the check runner and the `/test-request` proxy refuse to fetch loopback/link-local/private/cloud-metadata hosts. Set to `1` to allow them — only when intentionally monitoring an internal service on a trusted private network. |
+| `SMS_STAGGER_MS` | No (default `4000`) | Delay between consecutive SMS sends when an alert/relay fans out to multiple numbers (first immediate, each subsequent +Δ), throttling the Zapier webhook. Lower it for a faster provider, or `0` to send all at once. |
 
 ntfy doesn't need any env vars — the topic is configured per-recipient on each monitor.
 
