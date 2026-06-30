@@ -2,64 +2,50 @@ import { assertEquals, assertRejects } from "jsr:@std/assert";
 import { Relay } from "./relay.ts";
 import { CanaryError } from "../../dto/_shared.ts";
 
-// Exercises the real (local) Deno KV store. Names are unique per run so repeated
-// runs don't collide.
-const uid = () => "test_" + crypto.randomUUID().replace(/-/g, "_");
+// Exercises the real (local) Deno KV store, keyed by monitorId. IDs are unique
+// per run so repeated runs don't collide.
+const uid = () => crypto.randomUUID();
 
-Deno.test("Relay - upsert, get, list, verify, delete roundtrip", async () => {
+Deno.test("Relay - upsert, get, peek, verify, delete roundtrip", async () => {
   const relay = new Relay();
-  const name = uid();
+  const monitorId = uid();
+  const tokenHash = await Relay.hash("a-long-relay-token");
 
-  const pub = await relay.upsert({ name, numbers: ["18432222986"], token: "supersecret", template: "{error}" });
-  assertEquals(pub.name, name);
+  const pub = await relay.upsert(monitorId, ["18432222986"], tokenHash, "{error}");
   assertEquals(pub.numbers, ["18432222986"]);
   assertEquals(pub.hasTemplate, true);
   // The public projection must NEVER carry the token hash.
   assertEquals((pub as unknown as Record<string, unknown>).tokenHash, undefined);
 
-  const got = await relay.get(name);
-  assertEquals(got.name, name);
-  assertEquals(got.hasTemplate, true);
+  const got = await relay.get(monitorId);
+  assertEquals(got.numbers, ["18432222986"]);
+  assertEquals((got as unknown as Record<string, unknown>).tokenHash, undefined);
 
-  const listed = await relay.list();
-  const entry = listed.relays.find((r) => r.name === name);
-  assertEquals(entry?.numbers, ["18432222986"]);
-  assertEquals((entry as unknown as Record<string, unknown>).tokenHash, undefined);
+  // peek returns the raw config including the hash (server-side only).
+  const raw = await relay.peek(monitorId);
+  assertEquals(raw?.tokenHash, tokenHash);
+  assertEquals(raw?.template, "{error}");
 
-  // verify returns the stored dto (numbers + template) on the correct token.
-  const stored = await relay.verify(name, "supersecret");
+  // verify returns the stored config on the correct token.
+  const stored = await relay.verify(monitorId, "a-long-relay-token");
   assertEquals(stored.numbers, ["18432222986"]);
-  assertEquals(stored.template, "{error}");
 
-  await relay.delete(name);
-  await assertRejects(() => relay.get(name), CanaryError, "not found");
+  await relay.delete(monitorId);
+  await assertRejects(() => relay.get(monitorId), CanaryError, "not found");
+  assertEquals(await relay.peek(monitorId), null);
 });
 
 Deno.test("Relay.verify - wrong token is unauthorized (401)", async () => {
   const relay = new Relay();
-  const name = uid();
-  await relay.upsert({ name, numbers: ["18432222986"], token: "rightToken1" });
-  const err = await assertRejects(() => relay.verify(name, "wrongToken1"), CanaryError, "Invalid relay token");
+  const monitorId = uid();
+  await relay.upsert(monitorId, ["18432222986"], await Relay.hash("the-right-token-x"));
+  const err = await assertRejects(() => relay.verify(monitorId, "the-wrong-token-x"), CanaryError, "Invalid relay token");
   assertEquals((err as CanaryError).status, 401);
-  await relay.delete(name);
+  await relay.delete(monitorId);
 });
 
-Deno.test("Relay.verify - unknown relay is unauthorized, not 404 (names can't be probed)", async () => {
+Deno.test("Relay.verify - a monitor with no relay config is unauthorized, not 404", async () => {
   const relay = new Relay();
-  const err = await assertRejects(
-    () => relay.verify("missing_" + crypto.randomUUID().replace(/-/g, ""), "whatever"),
-    CanaryError,
-    "Invalid relay token",
-  );
+  const err = await assertRejects(() => relay.verify(uid(), "whatever-token-x"), CanaryError, "Invalid relay token");
   assertEquals((err as CanaryError).status, 401);
-});
-
-Deno.test("Relay.upsert - re-saving the same name rotates the token", async () => {
-  const relay = new Relay();
-  const name = uid();
-  await relay.upsert({ name, numbers: ["18432222986"], token: "tokenOne1" });
-  await relay.upsert({ name, numbers: ["18432222986"], token: "tokenTwo2" });
-  await assertRejects(() => relay.verify(name, "tokenOne1"), CanaryError, "Invalid relay token");
-  await relay.verify(name, "tokenTwo2"); // new token authenticates
-  await relay.delete(name);
 });

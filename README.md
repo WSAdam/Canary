@@ -26,7 +26,7 @@ Canary polls your HTTP endpoints on a cron schedule, extracts numeric values fro
 - **Structured leveled logs**: `LOG_LEVEL`-gated logging that stays quiet by default (a cold-start logs nothing) and tags every line of a single check run with `[run=<id>]` so its logs group together
 - **Diagnostic snapshot**: `GET /api/debug` returns the full KV state — what monitors/checks/alerts/webhooks exist, last cron tick, env presence
 - **Test-fire endpoint**: `POST /test-alert` sends one real SMS/email/ntfy push to verify creds without setting up a monitor
-- **SMS Relays**: named inbound endpoints that forward a raw `error` straight to SMS — `POST /relay/<name>/fire` with a shared token in the body, no monitor or `cnry_v1_` secret required
+- **SMS Relays**: a push-driven monitor type — another project POSTs a raw `error` to `POST /relay/<monitorId>/fire` with a shared token in the body, and Canary forwards it straight to SMS (no check, no cron, no `cnry_v1_` header secret)
 - **Zero dependencies**: plain Deno with no third-party frameworks
 
 ---
@@ -428,19 +428,34 @@ All body fields are optional:
 
 ---
 
-### SMS Relays (raw error → SMS)
+### SMS Relays (push a raw error → SMS)
 
-A **relay** is the simplest possible inbound endpoint: a named target that forwards a raw `error` straight to a fixed set of SMS numbers — no monitor, no check, no per-monitor `cnry_v1_` secret. Authentication is a shared token you choose, sent **in the JSON body** as `test`. Configure relays in the dashboard's **SMS Relays** section or via the API; each relay is stored with its destination numbers, an optional message template, and the token (kept only as a SHA-256 hash).
+A **relay** is a **monitor of type `relay`**: instead of polling an endpoint on a schedule, it *receives* a push. Another project POSTs a raw `error` to its fire URL and Canary forwards it straight to the relay's SMS numbers — no check, no cron, no `cnry_v1_` header secret. Authentication is a shared token you choose, sent **in the JSON body** as `test`.
 
-This is the lightweight option for a project that just wants to text someone when something breaks, without standing up the full monitor/webhook machinery.
+This is the inbound direction: **your project posts failures to Canary, and Canary texts them.** (The opposite direction — Canary polling your project for its error count — is an [integration](#integrations-one-step-setup).) A relay shows up in the monitor list (with a **RELAY** badge) and in **Reports** like any other monitor.
 
-**Fire a relay** (from any project — token travels in the body):
+Create one with the dashboard's **+ Add relay** button, or in one API call:
+
+```json
+POST /relays
+{
+  "name": "payments-sms",
+  "numbers": ["18432222986", "18435551234"],
+  "token": "a-long-high-entropy-shared-secret",
+  "template": "🚨 {monitor}: {error}"
+}
+// → { "monitorId": "…", "name": "payments-sms" }
+```
+
+This provisions a `type: "relay"` monitor plus its config. `name` is the monitor's display name; `numbers` is 1–5 entries of 10 or 11 digits each; `token` is ≥ 16 characters (a machine-to-machine secret, stored as an unsalted SHA-256 hash — prefer a long, high-entropy value). The token is never returned.
+
+**Fire it** (from your project — token travels in the body, URL keyed by `monitorId`):
 
 ```bash
-curl -X POST $URL/relay/payments/fire \
+curl -X POST $URL/relay/$MONITOR_ID/fire \
   -H 'Content-Type: application/json' \
   -d '{
-    "test": "hahathisisadecenttest",
+    "test": "a-long-high-entropy-shared-secret",
     "error": "Stripe webhook handler 500",
     "captures": { "service": "payments-link" }
   }'
@@ -451,35 +466,26 @@ All body fields except the token are optional:
 
 | Field | Type | Default | Effect |
 |-------|------|---------|--------|
-| `test` | string | — (required) | The shared token. `token` is accepted as an alias. A missing/wrong token → `401`. |
+| `test` | string | — (required) | The shared token. A missing/wrong token → `401`. |
 | `error` | string | — | Surfaced as `{error}` and in the default SMS body. |
 | `observed` | number | `0` | Surfaced as `{observed}`. |
 | `captures` | object | — | Merged into the `{var}` table for template expansion (e.g. `{service}`). |
 | `message` | string | — | Overrides the relay's saved template for this fire only; `{var}` tokens still expand. |
 
-The SMS body is the relay's `template` (else the per-fire `message`, else a default `Canary FAILED: <name> — error: … at <timestamp>`), expanded with `{monitor}` (the relay name), `{error}`, `{observed}`, `{timestamp}`, `{status}`, plus any `captures`. Multiple numbers are sent staggered 4 seconds apart, same as monitor alerts. Every fire is persisted as a run and shows in the **Reports** tab (listed as an *Inbound SMS relay*) with the usual failed-run drill-in.
+The SMS body is the per-fire `message` (else the relay's saved `template`, else a default `Canary FAILED: <name> — error: … at <timestamp>`), expanded with `{monitor}` (the relay's name), `{error}`, `{observed}`, `{timestamp}`, `{status}`, plus any `captures`. Multiple numbers fan out staggered `SMS_STAGGER_MS` apart (default 4s), same as monitor alerts. Every fire is persisted as a run under the relay's `monitorId` and shows in **Reports** with the usual drill-in.
 
 **Management** (admin — dashboard or API):
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/relays` | Create or replace a relay (upsert by `name`). |
-| `GET`  | `/relays` | List relays (numbers + template presence; **never** the token). |
-| `DELETE` | `/relays/:name` | Delete a relay (fires get `401` until recreated). |
+| `POST` | `/relays` | Provision a relay monitor (monitor + config) in one call. |
+| `GET`  | `/monitors/:id/relay` | Read the relay config (numbers + template presence; **never** the token). |
+| `POST` | `/monitors/:id/relay` | Reconfigure (numbers/template, and `token` to rotate — omit `token` to keep the current one). |
+| `DELETE` | `/relays/:id` | Delete the relay monitor entirely (record, token, and run history). |
 
-```json
-POST /relays
-{
-  "name": "payments",
-  "numbers": ["18432222986", "18435551234"],
-  "token": "hahathisisadecenttest",
-  "template": "🚨 {monitor}: {error}"
-}
-```
+Relays send over the same `ZAPIER_SMS_URL` Zapier webhook as monitor SMS alerts — no extra env var.
 
-`name` may contain letters, numbers, hyphens, and underscores; `numbers` is 1–5 entries of 10 or 11 digits each; `token` is at least 16 characters (it's a machine-to-machine secret stored as an unsalted SHA-256 hash, so prefer a long, high-entropy value). To rotate a token, `POST /relays` again with the same name and a new token. Relays send over the same `ZAPIER_SMS_URL` Zapier webhook as monitor SMS alerts — no extra env var.
-
-> **Security note** (same posture as webhook-fire): the fire route is public, authenticated only by the body token, and **not rate-limited in v1** — a leaked token can fire arbitrary SMS until you rotate it (re-save the relay). Use a long random token and rotate on any suspected leak.
+> **Security note** (same posture as webhook-fire): the fire route is public, authenticated only by the body token, and **not rate-limited in v1** — a leaked token can fire arbitrary SMS until you rotate it (`POST /monitors/:id/relay` with a new `token`). Use a long random token and rotate on any suspected leak.
 
 ---
 

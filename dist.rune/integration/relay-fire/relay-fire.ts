@@ -1,4 +1,5 @@
 import { Relay } from "../../impure/relay/relay.ts";
+import { Monitor } from "../../impure/monitor/monitor.ts";
 import { RunResult } from "../../impure/runResult/runResult.ts";
 import { AlertChannel } from "../../impure/alertChannel/mod.ts";
 import { clampRunRowToKvLimit, sanitizeCaptures } from "../_shared/persistRunAndAlert.ts";
@@ -7,7 +8,7 @@ import type { AlertDto } from "../../dto/alert-dto.ts";
 import { log, withRun } from "../../impure/_log.ts";
 
 export interface RelayFireInput {
-  name: string;
+  monitorId: string;
   token: string;
   payload: RelayFireDto;
 }
@@ -25,11 +26,16 @@ export function fireRelay(input: RelayFireInput): Promise<RelayFireResult> {
 }
 
 async function fireRelayRun(runId: string, input: RelayFireInput): Promise<RelayFireResult> {
-  log.info(`📮 relay.fire: starting for name=${input.name}`);
+  log.info(`📮 relay.fire: starting for monitorId=${input.monitorId}`);
 
-  // Auth — throws CanaryError(unauthorized, 401) on a missing relay or bad token.
-  // Returns the stored relay (numbers + template) so we don't re-read KV.
-  const relay = await new Relay().verify(input.name, input.token);
+  // Auth — throws CanaryError(unauthorized, 401) when the monitor has no relay
+  // config or the token doesn't match. Returns the config (numbers + template).
+  const relay = await new Relay().verify(input.monitorId, input.token);
+
+  // The monitor record supplies the display name (relays ARE monitors). A relay
+  // whose config exists but whose monitor record is gone is a corrupt state — let
+  // Monitor.get throw 404 rather than firing an unnamed run.
+  const monitor = await new Monitor().get(input.monitorId);
 
   // The payload is from an untrusted external caller — coerce/ignore wrong types
   // so nothing bad reaches the persisted RunResultDto or the template engine.
@@ -38,15 +44,13 @@ async function fireRelayRun(runId: string, input: RelayFireInput): Promise<Relay
   const observed = typeof input.payload.observed === "number" ? input.payload.observed : 0;
   const captures = sanitizeCaptures(input.payload.captures);
 
-  // Persist the fire as a run so it lands in the Reports tab (drill-in + purge
-  // come for free). monitorId is namespaced "relay:<name>" so it never collides
-  // with a monitor's UUID-keyed run history.
-  const monitorId = `relay:${input.name}`;
+  // Persist the fire as a run under the monitor's own id so it lands in the
+  // Reports tab natively (drill-in + purge come for free) — no synthetic id.
   const runResult = RunResult.build(
-    monitorId,
+    input.monitorId,
     observed,
     false, // always a failure-style alert — a relay has no recovery semantics
-    input.name, // monitorName → the default SMS reads "Canary FAILED: <name> — error: …"
+    monitor.name, // monitorName → the default SMS reads "Canary FAILED: <name> — error: …"
     error,
     captures,
     { runId },
@@ -65,11 +69,11 @@ async function fireRelayRun(runId: string, input: RelayFireInput): Promise<Relay
 
   // Dispatch to the relay's SMS numbers. The per-fire `message` (else the relay's
   // saved template) is applyVars'd with {monitor} {error} {observed} {timestamp}
-  // {status} + captures. Reusing AlertChannel gets the 4s SMS stagger + the
+  // {status} + captures. Reusing AlertChannel gets the SMS stagger + the
   // "fail one number, still send the rest" semantics for free.
   const smsMessage = message ?? relay.template;
   const alertDto: AlertDto = {
-    monitorId,
+    monitorId: input.monitorId,
     recipients: relay.numbers.map((address) => ({ channel: "sms", address })),
     smsMessage,
   };

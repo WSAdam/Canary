@@ -27,8 +27,8 @@ export class Monitor {
 
   async insert(dto: CreateMonitorDto): Promise<MonitorDto> {
     const monitorId = crypto.randomUUID();
-    const monitor: MonitorDto = { monitorId, name: dto.name, description: dto.description };
-    log.debug(`🚀 monitor.insert: name="${dto.name}" id=${monitorId}`);
+    const monitor: MonitorDto = { monitorId, name: dto.name, description: dto.description, type: dto.type ?? "check" };
+    log.debug(`🚀 monitor.insert: name="${dto.name}" id=${monitorId} type=${monitor.type}`);
     const res = await kv.atomic()
       .check({ key: ["monitor_name", dto.name], versionstamp: null })
       .set(["monitor", monitorId], monitor)
@@ -61,7 +61,9 @@ export class Monitor {
     // clobber a field with undefined, and any future MonitorDto fields survive.
     const name = dto.name ?? existing.name;
     const description = dto.description ?? existing.description;
-    const updated: MonitorDto = { ...existing, monitorId: dto.monitorId, name, description };
+    // Normalize a legacy record's missing type → "check" so the rewritten record
+    // is always well-formed; never let a rename change a monitor's type.
+    const updated: MonitorDto = { ...existing, monitorId: dto.monitorId, name, description, type: existing.type ?? "check" };
 
     // Name unchanged → only the record needs writing (e.g. a description edit).
     // The ["monitor_name", name] index already points at this monitor.
@@ -121,7 +123,7 @@ export class Monitor {
       if (entry.key.length === 2 && entry.key[0] === "monitor") {
         const m = entry.value as MonitorDto;
         log.debug(`✅ monitor.list: matched monitor id=${m.monitorId} name="${m.name}"`);
-        monitors.push(m);
+        monitors.push({ ...m, type: m.type ?? "check" }); // normalize legacy records
       } else {
         log.debug(`⚠️ monitor.list: skipping key — did not match filter`);
       }
@@ -143,6 +145,6 @@ export class Monitor {
       throw new CanaryError("not-found", `Monitor "${monitorId}" not found`, 404);
     }
     log.debug(`✅ monitor.get: found "${result.value.name}" versionstamp=${result.versionstamp}`);
-    return result.value;
+    return { ...result.value, type: result.value.type ?? "check" }; // normalize legacy records
   }
 }

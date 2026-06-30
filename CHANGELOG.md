@@ -7,17 +7,22 @@ versioned yet, so entries are grouped by date. Format loosely follows
 ## 2026-06-30
 
 ### Added
-- **SMS Relays.** A new lightweight inbound path: named relays that forward a raw
-  `error` straight to a fixed set of SMS numbers — no monitor, no check, no
-  `cnry_v1_` secret. `POST /relay/:name/fire` authenticates with a shared token
-  sent in the body as `test` (stored only as a SHA-256 hash, constant-time
-  compared); a missing/wrong token is `401`. Admin CRUD via `POST`/`GET /relays`
-  and `DELETE /relays/:name`, plus a **SMS Relays** section on the dashboard.
-  Each fire is persisted as a run and appears in the **Reports** tab as an
-  *Inbound SMS relay* with the usual drill-in. Relays reuse the existing
+- **SMS Relays — a push-driven monitor type.** Monitors now carry a `type`
+  (`check` | `relay`, defaulting to `check` so legacy records are unaffected). A
+  **relay** monitor receives an inbound push instead of polling: another project
+  POSTs `{ "test": "<token>", "error": "…" }` to `POST /relay/:monitorId/fire`
+  and Canary forwards it straight to the relay's SMS numbers — no check, no cron,
+  no `cnry_v1_` header secret. The shared token travels in the body as `test`,
+  stored only as a SHA-256 hash and constant-time compared (≥ 16 chars; a
+  missing/wrong token is `401`). Provision in one call with `POST /relays`
+  (monitor + config) or the dashboard's **+ Add relay** button; reconfigure via
+  `POST /monitors/:id/relay` (omit `token` to keep it), read config with
+  `GET /monitors/:id/relay`, delete the whole relay monitor with
+  `DELETE /relays/:id`. Relay monitors appear in the monitor list (with a
+  **RELAY** badge) and in **Reports** natively — fires persist under the relay's
+  own `monitorId`, with the usual drill-in. Relays reuse the existing
   `ZAPIER_SMS_URL` webhook, the SMS stagger, and the `{var}` template engine
-  (`{monitor}` `{error}` `{observed}` `{timestamp}` `{status}` + captures). Relay
-  tokens require ≥ 16 chars (a machine-to-machine secret).
+  (`{monitor}` `{error}` `{observed}` `{timestamp}` `{status}` + captures).
 - **`SMS_STAGGER_MS` env var.** The previously-hardcoded 4s SMS fan-out throttle
   is now configurable (default `4000`; `0` sends all at once).
 

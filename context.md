@@ -66,12 +66,16 @@ load check config → resolve `{{SECRET}}` refs → HTTP fetch → `Extractor.ap
   boot); admin seeded from `ADMIN_USERNAME`/`ADMIN_PASSWORD`.
 - **Inbound webhooks:** `POST /webhook/:monitorId/fire` with a per-monitor
   `cnry_v1_…` bearer secret (hashed at rest).
-- **Inbound SMS relays:** `POST /relay/:name/fire` with a shared token in the body
-  (field `test`, SHA-256 hashed at rest, constant-time compared) forwards a raw
-  `error` straight to a relay's 1–5 SMS numbers — no monitor or check. Configured
-  via `POST`/`GET /relays`, `DELETE /relays/:name` (impure `Relay`, integration
-  `relay-configure`/`-list`/`-delete`/`-fire`); each fire persists a run under a
-  synthetic `relay:<name>` id so it appears in the Reports tab.
+- **Relay monitors (`type: "relay"`):** a monitor can be a cron-polled `check` or
+  a push-driven `relay` (`MonitorDto.type`, defaulting to `check`; legacy records
+  normalized on read). A relay receives `POST /relay/:monitorId/fire` with a shared
+  token in the body (field `test`, SHA-256 hashed at rest, constant-time compared)
+  and forwards the `error` straight to its 1–5 SMS numbers — no check. Relay config
+  lives at `["relay", monitorId]` (impure `Relay`); integrations `relay-create`
+  (monitor + config, like `integration-create`), `relay-configure`, `relay-fire`,
+  `relay-delete`. Routes: `POST /relays`, `GET`/`POST /monitors/:id/relay`,
+  `DELETE /relays/:id`. Fires persist under the monitor's own id, so relays appear
+  in the monitor list (RELAY badge) and Reports like any monitor.
 
 ## Conventions (important)
 
@@ -123,13 +127,16 @@ deno task check    # type-check main.ts + e2e.ts
 
 ## Current state (2026-06-30)
 
-Most recently landed: **SMS Relays** — named inbound endpoints (`POST /relay/:name/fire`,
-token in the body as `test`) that forward a raw `error` straight to 1–5 SMS numbers
-with no monitor/check, managed in a dashboard panel + `POST`/`GET /relays` /
-`DELETE /relays/:name`, persisted to Reports as an *Inbound SMS relay*; reuses the
-4s SMS stagger and `{var}` template engine. The shared `sanitizeCaptures` helper
-moved to `_shared/persistRunAndAlert.ts`, and the SMS/email/ntfy channels now drain
-the upstream response body on the success path (was a stream leak). See
+Most recently landed: **SMS Relays as a monitor type.** A monitor is now either a
+cron-polled `check` or a push-driven `relay` (`MonitorDto.type`). A relay takes an
+inbound `POST /relay/:monitorId/fire` (shared token in the body as `test`) and
+forwards the `error` to its 1–5 SMS numbers — created via **+ Add relay** /
+`POST /relays`, shown in the monitor list (RELAY badge) and Reports natively (fires
+persist under the relay's own monitorId; the earlier synthetic `relay:<name>` id is
+gone). `SMS_STAGGER_MS` makes the fan-out throttle configurable (default 4s). The
+shared `sanitizeCaptures` helper moved to `_shared/persistRunAndAlert.ts`, and the
+SMS/email/ntfy channels now drain the upstream response body on the success path
+(was a stream leak). See
 [sms-bot-canary-handoff.md](sms-bot-canary-handoff.md) for wiring a Deno project's
 nightly health report into Canary (the producer/`reporter/` side).
 

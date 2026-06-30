@@ -4,31 +4,23 @@ import { Relay } from "../../impure/relay/relay.ts";
 import { CanaryError } from "../../dto/_shared.ts";
 import { log } from "../../impure/_log.ts";
 
-const MAX_NAME_LENGTH = 64;
-const MAX_NUMBERS = 5; // matches the per-alert SMS fan-out cap (staggered 4s apart at send time)
-// A relay token is a machine-to-machine secret guarding a public, SMS-triggering
-// endpoint — require more entropy than a human password (the unsalted SHA-256 of
-// a short shared secret would be the weak link if KV were ever dumped). 16+ chars
-// of caller-chosen entropy keeps offline brute force infeasible without forcing a
-// slow KDF onto the verify hot path.
-const MIN_TOKEN_LENGTH = 16;
+export const MAX_RELAY_NUMBERS = 5; // matches the per-alert SMS fan-out cap
+export const MIN_RELAY_TOKEN_LENGTH = 16; // machine-to-machine secret (see note below)
 const MAX_TOKEN_LENGTH = 256;
 const MAX_TEMPLATE_LENGTH = 1000;
 
+/**
+ * Validate and store a monitor's relay config. The token is optional on
+ * reconfigure: omit it to keep the current one (so an operator can edit the
+ * numbers/template without re-entering the secret); it's required the first time.
+ *
+ * A relay token is a machine-to-machine secret guarding a public, SMS-triggering
+ * endpoint — require ≥ 16 chars of entropy so the unsalted SHA-256 stored at rest
+ * isn't brute-forceable if KV is ever dumped.
+ */
 export async function configureRelay(input: ConfigureRelayDto): Promise<RelayPublicDto> {
-  // typeof guard FIRST: the charset RegExp coerces its arg to a string, so a
-  // numeric/missing name would pass the pattern check and reach kv.set as a
-  // non-string key part → corrupt namespace / opaque 500.
-  if (typeof input.name !== "string" || input.name.trim() === "") {
-    throw new CanaryError("validation-error", "Relay name is required and must be a non-empty string", 400);
-  }
-  // URL-safe charset (no ":" / "/") so the name is unambiguous in the fire path
-  // and in the synthetic "relay:<name>" run-history key.
-  if (!/^[A-Za-z0-9_-]+$/.test(input.name)) {
-    throw new CanaryError("validation-error", "Relay name may only contain letters, numbers, hyphens, and underscores", 400);
-  }
-  if (input.name.length > MAX_NAME_LENGTH) {
-    throw new CanaryError("validation-error", `Relay name must be at most ${MAX_NAME_LENGTH} characters`, 400);
+  if (typeof input.monitorId !== "string" || input.monitorId === "") {
+    throw new CanaryError("validation-error", "monitorId is required", 400);
   }
 
   // Numbers: 1–5 SMS destinations, each 10 or 11 digits — same rule the alert
@@ -36,8 +28,8 @@ export async function configureRelay(input: ConfigureRelayDto): Promise<RelayPub
   if (!Array.isArray(input.numbers) || input.numbers.length === 0) {
     throw new CanaryError("validation-error", "numbers is required and must be a non-empty array", 400);
   }
-  if (input.numbers.length > MAX_NUMBERS) {
-    throw new CanaryError("validation-error", `A relay may have at most ${MAX_NUMBERS} SMS numbers`, 400);
+  if (input.numbers.length > MAX_RELAY_NUMBERS) {
+    throw new CanaryError("validation-error", `A relay may have at most ${MAX_RELAY_NUMBERS} SMS numbers`, 400);
   }
   for (const n of input.numbers) {
     if (typeof n !== "string") {
@@ -47,16 +39,6 @@ export async function configureRelay(input: ConfigureRelayDto): Promise<RelayPub
     if (digits.length < 10 || digits.length > 11) {
       throw new CanaryError("validation-error", `SMS number "${n}" must be 10 or 11 digits (e.g. 18432222986)`, 400);
     }
-  }
-
-  if (typeof input.token !== "string") {
-    throw new CanaryError("validation-error", "token is required and must be a string", 400);
-  }
-  if (input.token.length < MIN_TOKEN_LENGTH) {
-    throw new CanaryError("validation-error", `token must be at least ${MIN_TOKEN_LENGTH} characters`, 400);
-  }
-  if (input.token.length > MAX_TOKEN_LENGTH) {
-    throw new CanaryError("validation-error", `token must be at most ${MAX_TOKEN_LENGTH} characters`, 400);
   }
 
   // template is applyVars'd at send time (template.replace(...)); a non-string
@@ -71,13 +53,32 @@ export async function configureRelay(input: ConfigureRelayDto): Promise<RelayPub
     }
   }
 
-  log.debug(`🚀 relay.configure ${input.name} numbers=${input.numbers.length}`);
-  const result = await new Relay().upsert({
-    name: input.name,
-    numbers: input.numbers,
-    token: input.token,
-    template: input.template,
-  });
-  log.debug(`✅ relay.configure ${result.name}`);
+  const relay = new Relay();
+
+  // Resolve the token hash: hash a supplied token, or reuse the existing one when
+  // omitted (reconfigure). A first-time configure with no token is rejected.
+  let tokenHash: string;
+  if (input.token !== undefined && input.token !== "") {
+    if (typeof input.token !== "string") {
+      throw new CanaryError("validation-error", "token must be a string", 400);
+    }
+    if (input.token.length < MIN_RELAY_TOKEN_LENGTH) {
+      throw new CanaryError("validation-error", `token must be at least ${MIN_RELAY_TOKEN_LENGTH} characters`, 400);
+    }
+    if (input.token.length > MAX_TOKEN_LENGTH) {
+      throw new CanaryError("validation-error", `token must be at most ${MAX_TOKEN_LENGTH} characters`, 400);
+    }
+    tokenHash = await Relay.hash(input.token);
+  } else {
+    const existing = await relay.peek(input.monitorId);
+    if (!existing) {
+      throw new CanaryError("validation-error", "token is required when first configuring a relay", 400);
+    }
+    tokenHash = existing.tokenHash;
+  }
+
+  log.debug(`🚀 relay.configure ${input.monitorId} numbers=${input.numbers.length}`);
+  const result = await relay.upsert(input.monitorId, input.numbers, tokenHash, input.template);
+  log.debug(`✅ relay.configure ${input.monitorId}`);
   return result;
 }

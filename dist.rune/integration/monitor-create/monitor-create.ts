@@ -13,9 +13,12 @@ export async function createMonitor(input: CreateMonitorDto): Promise<MonitorDto
   const description = typeof input?.description === "string"
     ? requireMaxLength(input.description, "description", MAX_MONITOR_DESCRIPTION_LENGTH)
     : "";
+  // Coerce to a known type: only "relay" opts out of the default, so an unknown
+  // value from a direct caller can't persist a malformed monitor type.
+  const type = input?.type === "relay" ? "relay" : "check";
   await Monitor.checkUnique(name);
   const monitor = new Monitor();
-  const result = await monitor.insert({ name, description });
+  const result = await monitor.insert({ name, description, type });
   log.debug("✅ monitor.create", result.monitorId);
   return result;
 }

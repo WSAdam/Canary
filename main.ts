@@ -29,10 +29,12 @@ import { deleteSecret } from "./dist.rune/integration/secret-delete/secret-delet
 import { executeRunner } from "./dist.rune/integration/runner-execute/runner-execute.ts";
 import { createIntegration } from "./dist.rune/integration/integration-create/integration-create.ts";
 import { webhookFire } from "./dist.rune/integration/webhook-fire/webhook-fire.ts";
+import { createRelayMonitor } from "./dist.rune/integration/relay-create/relay-create.ts";
 import { configureRelay } from "./dist.rune/integration/relay-configure/relay-configure.ts";
-import { listRelays } from "./dist.rune/integration/relay-list/relay-list.ts";
 import { deleteRelay } from "./dist.rune/integration/relay-delete/relay-delete.ts";
 import { fireRelay } from "./dist.rune/integration/relay-fire/relay-fire.ts";
+import { Relay } from "./dist.rune/impure/relay/relay.ts";
+import type { CreateRelayDto } from "./dist.rune/dto/create-relay-dto.ts";
 import type { ConfigureRelayDto } from "./dist.rune/dto/configure-relay-dto.ts";
 import type { RelayFireDto } from "./dist.rune/dto/relay-fire-dto.ts";
 import { WebhookSecret } from "./dist.rune/impure/webhookSecret/webhookSecret.ts";
@@ -456,6 +458,7 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
   <div class="section-header">
     <span class="section-title">Monitors</span>
     <div style="display:flex;gap:8px">
+      <button class="btn btn-ghost btn-sm" onclick="openRelayModal()">+ Add relay</button>
       <button class="btn btn-ghost btn-sm" onclick="openIntegrationModal()">+ Add integration</button>
       <button class="btn btn-primary btn-sm" onclick="startWizard()">+ Add monitor</button>
     </div>
@@ -478,22 +481,6 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
   </div>
   <div class="error-msg" id="sec-err"></div>
   <div id="d-secret-list"></div>
-
-  <div class="section-header" style="margin-top:36px">
-    <span class="section-title">SMS Relays</span>
-  </div>
-  <p style="font-size:12px;color:#666;margin:-4px 0 12px">An inbound relay forwards a raw error straight to SMS — no monitor needed. Another project POSTs <span style="font-family:ui-monospace,Menlo,monospace;color:#FFD700">{ "test": "&lt;token&gt;", "error": "…" }</span> to <span style="font-family:ui-monospace,Menlo,monospace;color:#FFD700">/relay/&lt;name&gt;/fire</span>. The token is stored hashed — to change it, save the relay again.</p>
-  <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
-    <input id="rel-name" placeholder="name (letters, numbers, -, _)" style="flex:1;min-width:150px">
-    <input id="rel-numbers" placeholder="SMS numbers, comma-separated" style="flex:2;min-width:220px">
-  </div>
-  <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
-    <input id="rel-token" type="password" placeholder="token (min 16 chars)" style="flex:1;min-width:160px">
-    <input id="rel-template" placeholder="optional SMS template — {error} {monitor} {observed}" style="flex:2;min-width:220px">
-    <button class="btn btn-primary btn-sm" onclick="addRelay()">Save relay</button>
-  </div>
-  <div class="error-msg" id="rel-err"></div>
-  <div id="d-relay-list"></div>
 </div>
 </div>
 
@@ -942,6 +929,41 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
 </div>
 </div>
 
+<!-- ============================================================ RELAY MODAL ============================================================ -->
+<div class="modal-overlay" id="relay-modal">
+<div class="modal" style="max-width:520px">
+  <div class="modal-header">
+    <h2 id="relay-modal-title">Add relay</h2>
+    <button class="modal-close" onclick="closeRelayModal()">&#x2715;</button>
+  </div>
+  <p style="font-size:13px;color:var(--m);margin-bottom:20px">A <strong>relay</strong> is a monitor that forwards a raw error straight to SMS. Another project POSTs <code>{ "test": "&lt;token&gt;", "error": "…" }</code> to its fire URL — no cron, no check. It shows in the monitor list and Reports like any monitor.</p>
+  <div class="form-group">
+    <label for="relay-name">Relay name *</label>
+    <input type="text" id="relay-name" placeholder="payments-sms">
+  </div>
+  <div class="form-group">
+    <label for="relay-numbers">SMS numbers * (comma-separated, up to 5)</label>
+    <input type="text" id="relay-numbers" placeholder="18432222986, 18435551234">
+  </div>
+  <div class="form-group">
+    <label for="relay-token" id="relay-token-label">Token * (min 16 chars)</label>
+    <input type="password" id="relay-token" placeholder="a long, high-entropy shared secret" autocomplete="off">
+  </div>
+  <div class="form-group">
+    <label for="relay-template">Message template (optional)</label>
+    <input type="text" id="relay-template" placeholder="🚨 {monitor}: {error}">
+  </div>
+  <hr class="divider">
+  <div style="display:flex;gap:10px;justify-content:flex-end">
+    <button class="btn btn-ghost" onclick="closeRelayModal()">Cancel</button>
+    <button class="btn btn-primary" id="relay-submit-btn" onclick="submitRelay()">Create relay</button>
+  </div>
+  <div class="error-msg" id="relay-err"></div>
+  <div class="success-msg" id="relay-ok"></div>
+  <div id="relay-result" style="margin-top:12px"></div>
+</div>
+</div>
+
 <!-- ============================================================ RUN DETAIL MODAL ============================================================ -->
 <div class="modal-overlay" id="run-detail-modal">
 <div class="modal" style="max-width:760px">
@@ -1114,7 +1136,6 @@ async function loadDashboard() {
   }
 
   loadSecrets();
-  loadRelays();
 }
 
 async function loadSecrets() {
@@ -1167,66 +1188,108 @@ async function deleteSecret(key) {
   }
 }
 
-// ─── Relays ─────────────────────────────────────────────────────────────────────
-async function loadRelays() {
-  const listEl = document.getElementById('d-relay-list');
-  if (!listEl) return;
+// ─── Relays (monitors of type "relay") ─────────────────────────────────────────
+// _relayEditId is null for a create, or the monitorId being reconfigured.
+let _relayEditId = null;
+
+function openRelayModal() {
+  _relayEditId = null;
+  document.getElementById('relay-modal-title').textContent = 'Add relay';
+  document.getElementById('relay-submit-btn').textContent = 'Create relay';
+  ['relay-name','relay-numbers','relay-token','relay-template'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('relay-name').disabled = false;
+  document.getElementById('relay-token-label').textContent = 'Token * (min 16 chars)';
+  document.getElementById('relay-err').textContent = '';
+  document.getElementById('relay-ok').textContent = '';
+  document.getElementById('relay-result').innerHTML = '';
+  document.getElementById('relay-modal').classList.add('open');
+  document.getElementById('relay-name').focus();
+}
+
+async function editRelay(monitorId) {
+  _relayEditId = monitorId;
+  document.getElementById('relay-modal-title').textContent = 'Edit relay';
+  document.getElementById('relay-submit-btn').textContent = 'Save relay';
+  // Name is the monitor's — rename via "Edit details", not here — so lock it.
+  const nameEl = document.getElementById('relay-name');
+  nameEl.value = _relayNames[monitorId] || ''; nameEl.disabled = true;
+  document.getElementById('relay-token').value = '';
+  // On edit the token is optional (blank = keep current); say so.
+  document.getElementById('relay-token-label').textContent = 'Token (blank = keep current)';
+  document.getElementById('relay-numbers').value = '';
+  document.getElementById('relay-template').value = '';
+  document.getElementById('relay-err').textContent = '';
+  document.getElementById('relay-ok').textContent = '';
+  document.getElementById('relay-result').innerHTML = '';
+  document.getElementById('relay-modal').classList.add('open');
   try {
-    const data = await api('GET', '/relays');
-    const relays = data.relays || [];
-    if (!relays.length) {
-      listEl.innerHTML = '<div class="stat-sub" style="padding:6px 0">No relays yet.</div>';
-      return;
-    }
-    // Delete buttons use data-* + delegation (names are user-controlled).
-    listEl.innerHTML = relays.map(r =>
-      '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border:1px solid #222;border-radius:6px;margin-bottom:6px">'
-      + '<div><span style="font-family:ui-monospace,Menlo,monospace;color:#FFD700">/relay/' + esc(r.name) + '/fire</span>'
-      + '<div style="font-size:12px;color:#666;margin-top:2px">' + (r.numbers || []).length + ' number(s)' + (r.hasTemplate ? ' · custom template' : '') + '</div></div>'
-      + '<button class="btn btn-ghost btn-sm" data-del-relay="' + esc(r.name) + '">Delete</button>'
-      + '</div>'
-    ).join('');
+    const cfg = await api('GET', '/monitors/' + encodeURIComponent(monitorId) + '/relay');
+    document.getElementById('relay-numbers').value = (cfg.numbers || []).join(', ');
   } catch (e) {
-    listEl.innerHTML = '<div class="error-msg" style="display:block">' + esc(e.message) + '</div>';
+    document.getElementById('relay-err').textContent = 'Could not load relay config: ' + e.message;
   }
 }
 
-async function addRelay() {
-  const name = document.getElementById('rel-name').value.trim();
-  const numbersRaw = document.getElementById('rel-numbers').value;
-  const token = document.getElementById('rel-token').value;
-  const template = document.getElementById('rel-template').value.trim();
-  const err = document.getElementById('rel-err');
-  err.textContent = ''; err.style.display = 'none';
-  const fail = (m) => { err.textContent = m; err.style.display = 'block'; };
-  // Presence checks only (avoid a pointless round-trip on an empty form); the
-  // server in relay-configure.ts is the single source of truth for the format
-  // rules (charset, token length, digit/number caps) and its 400 messages are
-  // surfaced verbatim by fail(e.message) below.
-  if (!name) return fail('Relay name is required.');
-  const numbers = numbersRaw.split(',').map(s => s.trim()).filter(Boolean);
-  if (!numbers.length) return fail('At least one SMS number is required.');
-  if (!token) return fail('A token is required.');
-  try {
-    const body = { name: name, numbers: numbers, token: token };
-    if (template) body.template = template;
-    await api('POST', '/relays', body);
-    document.getElementById('rel-name').value = '';
-    document.getElementById('rel-numbers').value = '';
-    document.getElementById('rel-token').value = '';
-    document.getElementById('rel-template').value = '';
-    loadRelays();
-  } catch (e) { fail(e.message); }
+function closeRelayModal() {
+  document.getElementById('relay-modal').classList.remove('open');
 }
 
-async function deleteRelay(name) {
-  if (!confirm('Delete relay "' + name + '"? Projects firing /relay/' + name + '/fire will get 401 until it is recreated.')) return;
+async function submitRelay() {
+  const name = document.getElementById('relay-name').value.trim();
+  const numbersRaw = document.getElementById('relay-numbers').value;
+  const token = document.getElementById('relay-token').value;
+  const template = document.getElementById('relay-template').value.trim();
+  const err = document.getElementById('relay-err');
+  const ok = document.getElementById('relay-ok');
+  const result = document.getElementById('relay-result');
+  err.textContent = ''; ok.textContent = ''; result.innerHTML = '';
+  const fail = (m) => { err.textContent = m; };
+  // Presence checks only — the server (relay-configure.ts) is the source of truth
+  // for format rules (token length, digit/number caps) and its 400s surface here.
+  const numbers = numbersRaw.split(',').map(s => s.trim()).filter(Boolean);
+  if (!_relayEditId && !name) return fail('Relay name is required.');
+  if (!numbers.length) return fail('At least one SMS number is required.');
+  if (!_relayEditId && !token) return fail('A token is required.');
+
+  const btn = document.getElementById('relay-submit-btn');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Saving...';
   try {
-    await api('DELETE', '/relays/' + encodeURIComponent(name));
-    loadRelays();
+    if (_relayEditId) {
+      const body = { numbers: numbers };
+      if (token) body.token = token;
+      if (template) body.template = template;
+      await api('POST', '/monitors/' + encodeURIComponent(_relayEditId) + '/relay', body);
+      ok.textContent = 'Relay updated!';
+      loadDashboard();
+      setTimeout(closeRelayModal, 1200);
+    } else {
+      const body = { name: name, numbers: numbers, token: token };
+      if (template) body.template = template;
+      const res = await api('POST', '/relays', body);
+      ok.textContent = 'Relay created!';
+      result.innerHTML = '<div style="font-size:13px;border:1px solid var(--b);border-radius:8px;padding:12px">'
+        + '<div style="margin-bottom:6px;color:var(--m)">Fire URL (POST, body { "test": "&lt;token&gt;", "error": "..." }):</div>'
+        + '<pre style="white-space:pre-wrap;word-break:break-all;font-size:12px;margin:0">' + esc(relayFireUrl(res.monitorId)) + '</pre>'
+        + '</div>';
+      loadDashboard();
+    }
+  } catch (e) { fail(e.message); }
+  finally { btn.disabled = false; btn.textContent = _relayEditId ? 'Save relay' : 'Create relay'; }
+}
+
+// The fire URL is keyed by monitorId (rename-safe), mirroring /webhook/:id/fire.
+function relayFireUrl(monitorId) {
+  return location.origin + '/relay/' + monitorId + '/fire';
+}
+
+async function deleteRelay(monitorId) {
+  const name = _relayNames[monitorId] || monitorId;
+  if (!confirm('Delete relay "' + name + '"? This removes the monitor, its fire token, and its run history. This cannot be undone.')) return;
+  try {
+    await api('DELETE', '/relays/' + encodeURIComponent(monitorId));
+    loadDashboard();
   } catch (e) {
-    const err = document.getElementById('rel-err');
-    err.textContent = e.message; err.style.display = 'block';
+    alert('Could not delete relay: ' + e.message);
   }
 }
 
@@ -1240,28 +1303,37 @@ async function deleteAlert(monitorId) {
   }
 }
 
+// Names for relay cards' edit/delete handlers — kept in a render-time map so the
+// (user-controlled) name is never interpolated into an inline onclick attribute.
+let _relayNames = {};
 function renderMonitorList(monitors) {
   const el = document.getElementById('d-monitor-list');
   if (!monitors.length) {
     el.innerHTML = '<div class="empty-state"><div style="font-size:32px">🐦</div><p>No monitors yet. Add one to get started.</p></div>';
     return;
   }
-  el.innerHTML = monitors.map(m => \`
-    <div class="monitor-card">
-      <div class="monitor-info">
-        <h3>\${esc(m.name)}</h3>
-        <p>\${esc(m.description || 'No description')}</p>
-      </div>
-      <div class="monitor-actions">
-        <button class="btn btn-ghost btn-sm" onclick="editDetails('\${esc(m.monitorId)}')">Edit details</button>
-        <button class="btn btn-ghost btn-sm" onclick="editCheck('\${esc(m.monitorId)}')">Edit check</button>
-        <button class="btn btn-ghost btn-sm" onclick="editAlert('\${esc(m.monitorId)}')">Edit alert</button>
-        <button class="btn btn-ghost btn-sm" onclick="deleteAlert('\${esc(m.monitorId)}')">Delete alert</button>
-        <button class="btn btn-ghost btn-sm" onclick="duplicateMonitor('\${esc(m.monitorId)}')">Duplicate</button>
-        <button class="btn btn-ghost btn-sm" onclick="runNow('\${esc(m.monitorId)}', this)">Run now</button>
-      </div>
-    </div>
-  \`).join('');
+  _relayNames = {};
+  el.innerHTML = monitors.map(m => {
+    const isRelay = m.type === 'relay';
+    if (isRelay) _relayNames[m.monitorId] = m.name;
+    const badge = isRelay
+      ? '<span style="margin-left:8px;font-size:10px;font-weight:700;letter-spacing:.04em;color:#FFD700;border:1px solid #FFD70055;border-radius:4px;padding:1px 6px;vertical-align:middle">RELAY</span>'
+      : '';
+    const actions = isRelay
+      ? \`<button class="btn btn-ghost btn-sm" onclick="editDetails('\${esc(m.monitorId)}')">Edit details</button>
+         <button class="btn btn-ghost btn-sm" onclick="editRelay('\${esc(m.monitorId)}')">Edit relay</button>
+         <button class="btn btn-ghost btn-sm" onclick="deleteRelay('\${esc(m.monitorId)}')">Delete relay</button>\`
+      : \`<button class="btn btn-ghost btn-sm" onclick="editDetails('\${esc(m.monitorId)}')">Edit details</button>
+         <button class="btn btn-ghost btn-sm" onclick="editCheck('\${esc(m.monitorId)}')">Edit check</button>
+         <button class="btn btn-ghost btn-sm" onclick="editAlert('\${esc(m.monitorId)}')">Edit alert</button>
+         <button class="btn btn-ghost btn-sm" onclick="deleteAlert('\${esc(m.monitorId)}')">Delete alert</button>
+         <button class="btn btn-ghost btn-sm" onclick="duplicateMonitor('\${esc(m.monitorId)}')">Duplicate</button>
+         <button class="btn btn-ghost btn-sm" onclick="runNow('\${esc(m.monitorId)}', this)">Run now</button>\`;
+    return \`<div class="monitor-card">
+      <div class="monitor-info"><h3>\${esc(m.name)}\${badge}</h3><p>\${esc(m.description || 'No description')}</p></div>
+      <div class="monitor-actions">\${actions}</div>
+    </div>\`;
+  }).join('');
 }
 
 // ─── Reports ───────────────────────────────────────────────────────────────────
@@ -1301,8 +1373,8 @@ function renderReports(reports) {
         + (rep.failed ? ' · <span style="color:var(--red)">' + rep.failed + ' failed</span>' : '')
         + ' · ' + rate + '%'
       : '<span style="color:var(--m)">No runs in this window</span>';
-    const ctx = rep.kind === 'relay'
-      ? '<div style="font-size:12px;color:var(--m);margin-top:4px">📮 ' + esc(rep.description || 'Inbound SMS relay') + '</div>'
+    const ctx = rep.type === 'relay'
+      ? '<div style="font-size:12px;color:var(--m);margin-top:4px">📮 Inbound SMS relay' + (rep.description ? ' — ' + esc(rep.description) : '') + '</div>'
       : rep.expression
       ? '<div style="font-size:12px;color:var(--m);font-family:ui-monospace,Menlo,monospace;margin-top:4px">' + esc(rep.expression) + ' ' + esc(rep.comparatorOp) + ' ' + esc(rep.threshold) + '</div>'
       : '<div style="font-size:12px;color:var(--m);margin-top:4px">No check configured</div>';
@@ -2511,6 +2583,9 @@ document.getElementById('invite-modal').addEventListener('click', function(e) {
 document.getElementById('integration-modal').addEventListener('click', function(e) {
   if (e.target === this) closeIntegrationModal();
 });
+document.getElementById('relay-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeRelayModal();
+});
 
 // Close run-detail modal on overlay click
 document.getElementById('run-detail-modal').addEventListener('click', function(e) {
@@ -2572,12 +2647,6 @@ document.getElementById('li-user').addEventListener('keydown', e => { if (e.key 
   if (sl) sl.addEventListener('click', (e) => {
     const b = e.target.closest('[data-del-secret]');
     if (b) deleteSecret(b.getAttribute('data-del-secret'));
-  });
-  // Delegated delete for relay rows (names are user-controlled — no inline JS).
-  const rl2 = document.getElementById('d-relay-list');
-  if (rl2) rl2.addEventListener('click', (e) => {
-    const b = e.target.closest('[data-del-relay]');
-    if (b) deleteRelay(b.getAttribute('data-del-relay'));
   });
   buildTimeOptions();
 })();
@@ -2776,12 +2845,12 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
       });
     }
 
-    // Public: relay fire (external projects push a raw error to a named relay's
-    // SMS numbers; the shared token travels in the body as `test` — no monitor,
-    // no per-monitor secret, no admin session).
+    // Public: relay fire (external projects push a raw error to a relay monitor's
+    // SMS numbers; the shared token travels in the body as `test` — parallels
+    // /webhook/:monitorId/fire, but body-token auth instead of a header secret).
     const relayFireMatch = pathname.match(/^\/relay\/([^/]+)\/fire$/);
     if (relayFireMatch && method === "POST") {
-      const name = safeDecode(relayFireMatch[1]);
+      const monitorId = safeDecode(relayFireMatch[1]);
       const payload = await parseBody<RelayFireDto>(req);
       // The shared token travels in the body as `test`. A missing/non-string
       // token is unauthorized, same as a wrong one.
@@ -2789,8 +2858,8 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
       if (!token) {
         throw new CanaryError("unauthorized", "Missing relay token (send it as \"test\" in the JSON body)", 401);
       }
-      log.info(`📮 POST /relay/${name}/fire hasError=${!!payload.error} hasOverride=${!!payload.message}`);
-      const result = await fireRelay({ name, token, payload });
+      log.info(`📮 POST /relay/${monitorId}/fire hasError=${!!payload.error} hasOverride=${!!payload.message}`);
+      const result = await fireRelay({ monitorId, token, payload });
       return json(result);
     }
 
@@ -2937,37 +3006,10 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
           monitorId: m.monitorId,
           name: m.name,
           description: m.description,
+          type: m.type, // "check" | "relay" — the UI labels relay monitors differently
           expression: check?.expression ?? null,
           comparatorOp: check?.comparatorOp ?? null,
           threshold: check?.threshold ?? null,
-          total: runs.length,
-          passed,
-          failed: runs.length - passed,
-          capped,
-          runs,
-          corrupt,
-        });
-      }
-
-      // Relays persist their fires under a synthetic "relay:<name>" monitorId, so
-      // they don't appear in listMonitors() above — scan them separately and tag
-      // each entry kind:"relay" (no check context) so the UI can label them.
-      const relaysResult = await listRelays();
-      for (const r of relaysResult.relays) {
-        const relayMonitorId = `relay:${r.name}`;
-        const { runs, passed, corrupt, capped } = await RunResult.scanWindow(
-          relayMonitorId,
-          cutoff,
-          PER_CHECK_CAP,
-        );
-        reports.push({
-          monitorId: relayMonitorId,
-          name: r.name,
-          kind: "relay",
-          description: `Inbound SMS relay → ${r.numbers.length} number(s)`,
-          expression: null,
-          comparatorOp: null,
-          threshold: null,
           total: runs.length,
           passed,
           failed: runs.length - passed,
@@ -3247,24 +3289,36 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
       return json(result);
     }
 
-    // Relays (configurable inbound SMS relays — admin manages, fired publicly above)
+    // Relays — a monitor of type "relay" (admin manages; fired publicly above).
+    // POST /relays provisions the monitor + config in one call (like /integrations).
     if (method === "POST" && pathname === "/relays") {
-      const body = await parseBody<ConfigureRelayDto>(req);
-      const result = await configureRelay(body);
-      log.debug(`✅ POST /relays → 200 name=${result.name}`);
+      const body = await parseBody<CreateRelayDto>(req);
+      const result = await createRelayMonitor(body);
+      log.debug(`✅ POST /relays → 200 monitorId=${result.monitorId}`);
       return json(result);
     }
-    if (method === "GET" && pathname === "/relays") {
-      const result = await listRelays();
-      log.debug(`✅ GET /relays → 200 count=${result.relays.length}`);
-      return json(result);
+    // Per-monitor relay config: GET prefill (no token hash), POST reconfigure,
+    // DELETE removes the whole relay monitor.
+    const relayConfigMatch = pathname.match(/^\/monitors\/([^/]+)\/relay$/);
+    if (relayConfigMatch) {
+      const monitorId = safeDecode(relayConfigMatch[1]);
+      if (method === "GET") {
+        const result = await new Relay().get(monitorId); // throws not-found
+        return json(result);
+      }
+      if (method === "POST") {
+        const body = await parseBody<Omit<ConfigureRelayDto, "monitorId">>(req);
+        const result = await configureRelay({ ...body, monitorId });
+        log.debug(`✅ POST /monitors/${monitorId}/relay → 200`);
+        return json(result);
+      }
     }
-    const relayMatch = pathname.match(/^\/relays\/([^/]+)$/);
-    if (relayMatch && method === "DELETE") {
-      const name = safeDecode(relayMatch[1]);
-      log.debug(`🔍 DELETE /relays/${name}`);
-      const result = await deleteRelay({ name });
-      log.debug(`✅ DELETE /relays/${name} → 200`);
+    const relayDeleteMatch = pathname.match(/^\/relays\/([^/]+)$/);
+    if (relayDeleteMatch && method === "DELETE") {
+      const monitorId = safeDecode(relayDeleteMatch[1]);
+      log.debug(`🔍 DELETE /relays/${monitorId}`);
+      const result = await deleteRelay({ monitorId });
+      log.debug(`✅ DELETE /relays/${monitorId} → 200`);
       return json(result);
     }
 

@@ -9,6 +9,18 @@ You do **not** need to read Canary's source. The SMS bot only has to expose one
 HTTP endpoint that speaks the **Canary health contract**. Canary polls it on a
 schedule and decides healthy/unhealthy.
 
+> **There are two independent integrations between the SMS bot and Canary — this
+> doc is about the second one:**
+>
+> 1. **Bot → Canary (push, immediate):** when something fails *right now*, the bot
+>    POSTs the error to a Canary **relay** and Canary texts it out. That's set up
+>    on the **Canary** side (a relay monitor) — the bot just needs the relay's
+>    fire URL + token and POSTs `{ "test": "<token>", "error": "…" }` to it. No
+>    work in this doc.
+> 2. **Canary → Bot (pull, nightly):** Canary polls the bot once a day for its
+>    error count and alerts if yesterday had errors or the bot is down. **That's
+>    what the rest of this doc sets up.**
+
 ---
 
 ## How it works (pull, not push)
