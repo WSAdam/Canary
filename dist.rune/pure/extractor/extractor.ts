@@ -23,34 +23,42 @@ const ERROR_COUNT_NAMES = [
 // Array fields whose LENGTH is the count when no numeric field is present
 // (e.g. a producer that only returns `errors: [...]`).
 const ERROR_ARRAY_NAMES = ["errors", "errorlist", "errorentries", "failures"];
-// Guarded fuzzy: a numeric key containing "error" that clearly ISN'T a count
+// Guarded fuzzy: a numeric key that contains "error" but clearly ISN'T a count
 // (a rate/time/threshold/code) must not be mistaken for one — that would let a
-// real error count slip by unnoticed.
-const NON_COUNT = /rate|ratio|percent|pct|avg|average|mean|median|ms$|sec|time|duration|latency|threshold|limit|code|status|id$/i;
+// real error count slip by unnoticed. Only consulted as a last resort, after the
+// known names and the errors[] array both miss.
+const NON_COUNT = /rate|ratio|percent|threshold|limit|code|status|id$|time|duration|latency|ms$|sec/i;
+
+// Bound the traversal on a hostile/huge payload — real health responses are a
+// handful of nodes, so this never bites legitimate data.
+const MAX_NODES = 10000;
 
 /**
- * Collect, in one shallow-first pass, the first finite-number value and the
- * first array length seen for each (lowercased) key. Shallow keys win over
- * deeper ones so a top-level `totalErrors` beats a nested collision.
+ * Collect the first finite-number value and the first array length seen for each
+ * (lowercased) key, breadth-first so a genuinely shallower key wins over a deeper
+ * one — a depth-1 `totalErrors` beats a `totalErrors` nested under a sibling. A
+ * plain DFS would record a deep key under an earlier sibling before a shallow key
+ * under a later one. Iterative (a queue, not recursion) so a pathologically deep
+ * payload can't overflow the stack; node-capped so a huge one can't run away.
  */
 function collectKeys(root: unknown): { nums: Map<string, number>; arrs: Map<string, number> } {
   const nums = new Map<string, number>();
   const arrs = new Map<string, number>();
-  const visit = (node: unknown) => {
-    if (!node || typeof node !== "object" || Array.isArray(node)) return;
-    const entries = Object.entries(node as Record<string, unknown>);
-    for (const [k, v] of entries) {
+  const queue: unknown[] = [root];
+  for (let i = 0; i < queue.length && i < MAX_NODES; i++) {
+    const node = queue[i];
+    if (!node || typeof node !== "object" || Array.isArray(node)) continue;
+    for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
       const lk = k.toLowerCase();
       if (typeof v === "number" && Number.isFinite(v)) {
         if (!nums.has(lk)) nums.set(lk, v);
       } else if (Array.isArray(v)) {
         if (!arrs.has(lk)) arrs.set(lk, v.length);
+      } else if (v && typeof v === "object") {
+        queue.push(v); // FIFO → every depth-N key is recorded before any depth-(N+1) key
       }
     }
-    // Descend only after recording this level, so shallower keys take priority.
-    for (const [, v] of entries) if (v && typeof v === "object" && !Array.isArray(v)) visit(v);
-  };
-  visit(root);
+  }
   return { nums, arrs };
 }
 

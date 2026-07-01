@@ -20,6 +20,16 @@ versioned yet, so entries are grouped by date. Format loosely follows
   (`totalErrors|unrecoveredErrors`); the first that resolves to a number wins. A
   plain path with no `|` is unchanged.
 
+### Fixed
+- **`$errors` key search is now breadth-first and bounded** (review follow-up).
+  The `$errors` resolver walked the response depth-first, so a deeper count under
+  an earlier sibling could win over a genuinely shallower one; it's now a true
+  breadth-first, iterative (non-recursive) walk that prefers the shallowest key
+  and is node-capped, so a pathologically deep/large payload can't overflow the
+  stack or run away. Trimmed the fuzzy-match exclusion list to the classes that
+  actually collide with an error *count* (rate/ratio/percent/threshold/time/…),
+  dropping speculative statistical terms.
+
 ## 2026-06-30 (alert honesty)
 
 ### Fixed

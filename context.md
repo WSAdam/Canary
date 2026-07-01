@@ -56,8 +56,9 @@ load check config → resolve `{{SECRET}}` refs → HTTP fetch → `Extractor.ap
   the observed number from `check.expression`: a dot-path, OR `|`-separated fallback
   paths (first numeric wins), OR the `$errors` sentinel — a robust error-count
   resolver (known names → `errors[]` length → guarded fuzzy, excluding rate/threshold
-  fields) so health checks don't break on a producer's field-name choice. Health
-  integrations default to `$errors`.
+  fields) so health checks don't break on a producer's field-name choice. The key
+  search is breadth-first (shallowest key wins), iterative, and node-bounded (no
+  stack overflow / runaway on a hostile payload). Health integrations default to `$errors`.
 
 - **Run history** is keyed `["run", monitorId, timestamp, runId]`, with a tiny
   `["run_idx", monitorId, timestamp, runId] = { passed }` sidecar written

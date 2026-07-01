@@ -34,19 +34,21 @@ Deno.test("Extractor.apply - throws on invalid JSON", () => {
   );
 });
 
-Deno.test("Extractor.apply - throws when path does not resolve to number", () => {
+Deno.test("Extractor.apply - throws the type-aware single-path message (wrong type)", () => {
+  // Pins the original single-path message (the candidates.length===1 && !sentinel
+  // branch), our backward-compat guarantee for plain dot-path checks.
   assertThrows(
     () => Extractor.apply(base, { payload: '{"value": "hello"}' }),
     Error,
-    "expected number",
+    'Expression "value" resolved to string, expected number',
   );
 });
 
-Deno.test("Extractor.apply - throws when path is missing", () => {
+Deno.test("Extractor.apply - throws the type-aware single-path message (missing path)", () => {
   assertThrows(
     () => Extractor.apply(base, { payload: '{"other": 1}' }),
     Error,
-    "expected number",
+    'Expression "value" resolved to undefined, expected number',
   );
 });
 
@@ -124,4 +126,31 @@ Deno.test("expression - pipe-separated fallbacks return the first that resolves 
   const dto: CheckDto = { ...base, expression: "totalErrors|unrecoveredErrors" };
   assertEquals(Extractor.apply(dto, { payload: '{"unrecoveredErrors": 2}' }), 2); // first path missing → second wins
   assertEquals(Extractor.apply(dto, { payload: '{"totalErrors": 8, "unrecoveredErrors": 2}' }), 8); // first wins
+});
+
+Deno.test("expression - multi-candidate all-miss throws the plain (non-sentinel) message", () => {
+  // The only path to the generic message with NO "looked for an error count"
+  // suffix: >1 candidate, none resolves, usedSentinel=false.
+  const dto: CheckDto = { ...base, expression: "missingA|missingB" };
+  const err = assertThrows(
+    () => Extractor.apply(dto, { payload: '{"other": 1}' }),
+    Error,
+    "did not resolve to a number",
+  ) as Error;
+  assertEquals(err.message.includes("looked for an error count"), false);
+});
+
+Deno.test("$errors - a shallower count wins over one nested under an earlier sibling (BFS)", () => {
+  // Regression for the DFS bug: pre-order recursion recorded a.deep.totalErrors (depth 2)
+  // before b.totalErrors (depth 1); breadth-first must prefer the shallower depth-1 value.
+  const payload = '{"a": {"deep": {"totalErrors": 1}}, "b": {"totalErrors": 2}}';
+  assertEquals(Extractor.apply(errExpr, { payload }), 2);
+});
+
+Deno.test("$errors - a pathologically deep payload doesn't overflow the stack", () => {
+  // ~6000 deep — beyond the native recursion limit the old DFS would hit. The
+  // iterative queue resolves the top-level count without a RangeError.
+  const depth = 6000;
+  const payload = '{"totalErrors":0,"n":' + '{"n":'.repeat(depth) + "null" + "}".repeat(depth) + "}";
+  assertEquals(Extractor.apply(errExpr, { payload }), 0);
 });
