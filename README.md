@@ -116,7 +116,7 @@ The fastest way to monitor another project. If the project exposes the **Canary 
   "totalErrors": 0, "findingIds": [], "errors": [] }
 ```
 
-Canary reads `totalErrors`; **healthy = 0**. Because the shape is identical for every project, the check config is boilerplate — you supply only what varies.
+Canary reads the error count; **healthy = 0**. It resolves the count with the `$errors` sentinel, so a project that names the field `unrecoveredErrors` (or only returns an `errors[]` array) still monitors correctly — you don't have to match the exact field name. Because the shape is otherwise identical for every project, the check config is boilerplate — you supply only what varies.
 
 **Producer side.** A Deno project can expose this endpoint in a few lines with the [`reporter/`](reporter/) drop-in — `await canary.trackError(step, msg)` to record, `canary.handleErrors(req)` to serve. See [reporter/README.md](reporter/README.md).
 
@@ -135,7 +135,7 @@ POST /integrations
 }
 ```
 
-`cron` is optional (defaults to a daily run ~09:00 ET, which reports the full previous ET day). Returns `{ monitorId, secretKey, firstRun }`. Behind the scenes the check is created as `POST <baseUrl>/canary/errors` with header `Authorization: Bearer {{<NAME>_CANARY_SECRET}}`, `expression: "totalErrors"`, pass-when-`≤ 0`, `notifyOnRecover: true`; the secret is stored under `<NAME>_CANARY_SECRET` (referenced via `{{…}}` substitution, never returned).
+`cron` is optional (defaults to a daily run ~09:00 ET, which reports the full previous ET day). Returns `{ monitorId, secretKey, firstRun }`. Behind the scenes the check is created as `POST <baseUrl>/canary/errors` with header `Authorization: Bearer {{<NAME>_CANARY_SECRET}}`, `expression: "$errors"` (resolves the error count whatever the field is named), pass-when-`≤ 0`, `notifyOnRecover: true`; the secret is stored under `<NAME>_CANARY_SECRET` (referenced via `{{…}}` substitution, never returned).
 
 `firstRun` is the immediate verification run: if `firstRun.error` is set you have a **wiring problem** (unreachable / bad secret / wrong shape) to fix; otherwise `firstRun.passed` reflects the project's prior-day health.
 
@@ -224,7 +224,7 @@ POST /monitors/:id/check
 
 | Field | Description |
 |-------|-------------|
-| `expression` | Dot-notation path into the JSON response body |
+| `expression` | Dot-notation path into the JSON response body. Two robustness extras: list `\|`-separated fallbacks (`totalErrors\|unrecoveredErrors`) and the first that resolves to a number wins; or use the sentinel **`$errors`** to read the error count regardless of the producer's field name (known names like `totalErrors`/`unrecoveredErrors` → an `errors[]` array's length → a guarded fuzzy match, never a rate/threshold field). |
 | `comparatorOp` | `gt`, `lt`, `gte`, `lte`, or `eq` |
 | `threshold` | Numeric value to compare against |
 | `cron` | Standard 5-field cron expression |

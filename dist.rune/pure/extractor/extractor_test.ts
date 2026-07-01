@@ -76,3 +76,52 @@ Deno.test("Extractor.applyCaptures - primitives and missing paths", () => {
 Deno.test("Extractor.applyCaptures - returns empty object on invalid JSON", () => {
   assertEquals(Extractor.applyCaptures({ a: "a" }, "not json"), {});
 });
+
+// ── $errors: robust error-count resolution regardless of the producer's field name ──
+
+const errExpr: CheckDto = { ...base, expression: "$errors", comparatorOp: "lte", threshold: 0 };
+
+Deno.test("$errors - the incident: reads totalErrors from the canary contract response", () => {
+  // Exactly the sms-bot response that broke the "unrecoveredErrors" check.
+  const payload = '{"ok":true,"timezone":"America/New_York","date":"2026-06-30","totalErrors":0,"errors":[]}';
+  assertEquals(Extractor.apply(errExpr, { payload }), 0);
+});
+
+Deno.test("$errors - reads unrecoveredErrors when totalErrors is absent", () => {
+  assertEquals(Extractor.apply(errExpr, { payload: '{"unrecoveredErrors": 3, "errors": []}' }), 3);
+});
+
+Deno.test("$errors - prefers totalErrors when several error counts are present", () => {
+  assertEquals(Extractor.apply(errExpr, { payload: '{"unrecoveredErrors": 3, "totalErrors": 7}' }), 7);
+});
+
+Deno.test("$errors - falls back to the errors[] array length when there's no numeric count", () => {
+  assertEquals(Extractor.apply(errExpr, { payload: '{"errors": [{"m":"a"},{"m":"b"}]}' }), 2);
+});
+
+Deno.test("$errors - guarded fuzzy match on a novel error-count field name", () => {
+  assertEquals(Extractor.apply(errExpr, { payload: '{"outstandingErrors": 4}' }), 4);
+});
+
+Deno.test("$errors - does NOT mistake a rate/threshold field for a count", () => {
+  // errorRate must not be read as the count — that would let real errors slip by.
+  assertThrows(
+    () => Extractor.apply(errExpr, { payload: '{"errorRate": 0.5, "errorThreshold": 10}' }),
+    Error,
+    "did not resolve to a number",
+  );
+});
+
+Deno.test("$errors - finds the count nested under a wrapper object", () => {
+  assertEquals(Extractor.apply(errExpr, { payload: '{"data": {"totalErrors": 5}}' }), 5);
+});
+
+Deno.test("$errors - is case-insensitive on the sentinel", () => {
+  assertEquals(Extractor.apply({ ...errExpr, expression: "$errorCount" }, { payload: '{"totalErrors": 9}' }), 9);
+});
+
+Deno.test("expression - pipe-separated fallbacks return the first that resolves to a number", () => {
+  const dto: CheckDto = { ...base, expression: "totalErrors|unrecoveredErrors" };
+  assertEquals(Extractor.apply(dto, { payload: '{"unrecoveredErrors": 2}' }), 2); // first path missing → second wins
+  assertEquals(Extractor.apply(dto, { payload: '{"totalErrors": 8, "unrecoveredErrors": 2}' }), 8); // first wins
+});

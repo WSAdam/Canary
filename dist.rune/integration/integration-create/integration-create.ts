@@ -103,13 +103,16 @@ export async function createIntegration(input: CreateIntegrationDto): Promise<In
     }
     secretCreated = true;
 
-    // 3. Check — the standard health-contract boilerplate. healthy = totalErrors <= 0.
+    // 3. Check — the standard health-contract boilerplate. healthy = 0 errors.
     await configureCheck({
       monitorId: monitor.monitorId,
       url,
       method: "POST",
       headers: { Authorization: `Bearer {{${secretKey}}}` },
-      expression: "totalErrors",
+      // "$errors" resolves the error count regardless of the producer's field
+      // name (totalErrors / unrecoveredErrors / an errors[] array), so a project
+      // that names it differently still monitors correctly.
+      expression: "$errors",
       comparatorOp: "lte",
       threshold: 0,
       cron,

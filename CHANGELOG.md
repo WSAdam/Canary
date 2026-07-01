@@ -4,6 +4,22 @@ All notable changes to Canary are documented here. The project is not formally
 versioned yet, so entries are grouped by date. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-07-01
+
+### Added
+- **Robust error-count extraction (`$errors`).** A check `expression` can now be
+  the sentinel `$errors` to read the error count regardless of the producer's
+  field name — it resolves known names in priority order (`totalErrors`,
+  `unrecoveredErrors`, `errorCount`, …), then an `errors[]` array's length, then a
+  guarded fuzzy match on any error-ish numeric key (never a rate/threshold/code
+  field). New health-contract integrations (`POST /integrations`) use `$errors` by
+  default, so a project that names the field differently still monitors correctly.
+  Fixes the false-alarm where a check pinned to `unrecoveredErrors` failed with
+  "resolved to undefined" because the endpoint returned `totalErrors`.
+- **`|`-fallback expressions.** An `expression` may list `|`-separated paths
+  (`totalErrors|unrecoveredErrors`); the first that resolves to a number wins. A
+  plain path with no `|` is unchanged.
+
 ## 2026-06-30 (alert honesty)
 
 ### Fixed

@@ -52,6 +52,13 @@ load check config → resolve `{{SECRET}}` refs → HTTP fetch → `Extractor.ap
 (numeric observed value) → `Comparator.evaluate` (pass/fail) → `Extractor.applyCaptures`
 → `persistRunAndAlert` (save `RunResultDto` to KV, then alert on failure/recovery).
 
+- **`Extractor.apply`** ([pure/extractor](dist.rune/pure/extractor/extractor.ts)) resolves
+  the observed number from `check.expression`: a dot-path, OR `|`-separated fallback
+  paths (first numeric wins), OR the `$errors` sentinel — a robust error-count
+  resolver (known names → `errors[]` length → guarded fuzzy, excluding rate/threshold
+  fields) so health checks don't break on a producer's field-name choice. Health
+  integrations default to `$errors`.
+
 - **Run history** is keyed `["run", monitorId, timestamp, runId]`, with a tiny
   `["run_idx", monitorId, timestamp, runId] = { passed }` sidecar written
   atomically alongside it. The sidecar can't exceed KV's deserialize-size limit,

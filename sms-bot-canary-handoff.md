@@ -35,10 +35,13 @@ Canary  ────────────────────────
   fetch fails / non-2xx / bad shape → alert ("the bot is down/miswired")
 ```
 
-Canary reads one number — **`totalErrors`** for a calendar day (default: the
-**previous full day** in `America/New_York`). `0` is healthy. Because Canary
-*polls*, a deploy that's completely down also alerts (a push model couldn't catch
-that). This is the same contract `autobottom` exposes.
+Canary reads one number — the **error count** — for a calendar day (default: the
+**previous full day** in `America/New_York`). `0` is healthy. It resolves that
+count with the `$errors` sentinel, so `totalErrors` is the conventional field but
+`unrecoveredErrors` (or just an `errors[]` array) works too — you don't have to
+match an exact name. Because Canary *polls*, a deploy that's completely down also
+alerts (a push model couldn't catch that). This is the same contract `autobottom`
+exposes.
 
 The SMS bot is a Deno / Deno Deploy app, so you get the producer side from the
 drop-in `reporter/` module that ships with Canary — about five lines.
@@ -162,7 +165,8 @@ curl -X POST $CANARY_URL/integrations \
   reflects the bot's prior-day health right now.
 
 Behind the scenes Canary stores the secret as `SMS_BOT_CANARY_SECRET`, configures
-a `POST <baseUrl>/canary/errors` check with `expression: "totalErrors"`,
+a `POST <baseUrl>/canary/errors` check with `expression: "$errors"` (resolves the
+error count whatever the field is named),
 pass-when-`≤ 0`, and `notifyOnRecover: true`.
 
 ---
@@ -185,7 +189,9 @@ pass-when-`≤ 0`, and `notifyOnRecover: true`.
 ```
 
 `errors[]` entries are `{ ref, step, error, ts, timestamp, logsUrl? }`. Canary only
-*requires* `totalErrors`; the rest is surfaced in the alert/run detail when present.
+needs an **error count** — `totalErrors` is conventional, but `$errors` also accepts
+`unrecoveredErrors` or just the `errors[]` length; the rest is surfaced in the
+alert/run detail when present.
 
 ---
 
