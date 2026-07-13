@@ -1,4 +1,4 @@
-import { applyVars, BaseAlertChannel, buildVars, renderAlertMessage } from "../../shared/mod.ts";
+import { applyVars, type AlertContext, BaseAlertChannel, buildVars, renderAlertMessage, statusLabel } from "../../shared/mod.ts";
 import type { RunResultDto } from "../../../../dto/run-result-dto.ts";
 import type { AlertDto } from "../../../../dto/alert-dto.ts";
 import { CanaryError, upstreamStatus } from "../../../../dto/_shared.ts";
@@ -58,11 +58,11 @@ export class Ntfy extends BaseAlertChannel {
     super();
   }
 
-  async send(run: RunResultDto, alert: AlertDto): Promise<void> {
+  async send(run: RunResultDto, alert: AlertDto, ctx?: AlertContext): Promise<void> {
     const url = normalizeNtfyUrl(this.address);
-    const status = run.passed ? "RECOVERED" : "FAILED";
+    const status = statusLabel(run, ctx);
     const monitorLabel = run.monitorName || run.monitorId;
-    const vars = buildVars(run);
+    const vars = buildVars(run, ctx);
 
     const defaultTitle = `Canary: ${monitorLabel} ${status}`;
     const title = sanitizeHeaderValue(alert.ntfyTitle ? applyVars(alert.ntfyTitle, vars) : defaultTitle);
@@ -73,6 +73,7 @@ export class Ntfy extends BaseAlertChannel {
       `Observed: ${run.observed}`,
       `Timestamp: ${run.timestamp}`,
       run.error ? `Error: ${run.error}` : null,
+      ctx?.logsUrl ? `Logs: ${ctx.logsUrl}` : null,
     ].filter(Boolean).join("\n");
     const message = renderAlertMessage(alert.ntfyMessage, run, vars, defaultBody);
 

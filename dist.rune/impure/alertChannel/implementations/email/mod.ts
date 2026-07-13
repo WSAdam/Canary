@@ -1,4 +1,4 @@
-import { applyVars, BaseAlertChannel, buildVars, renderAlertMessage } from "../../shared/mod.ts";
+import { applyVars, type AlertContext, BaseAlertChannel, buildVars, renderAlertMessage, statusLabel } from "../../shared/mod.ts";
 import type { RunResultDto } from "../../../../dto/run-result-dto.ts";
 import type { AlertDto } from "../../../../dto/alert-dto.ts";
 import { CanaryError, upstreamStatus } from "../../../../dto/_shared.ts";
@@ -9,19 +9,22 @@ export class Email extends BaseAlertChannel {
     super();
   }
 
-  async send(run: RunResultDto, alert: AlertDto): Promise<void> {
+  async send(run: RunResultDto, alert: AlertDto, ctx?: AlertContext): Promise<void> {
     const token = Deno.env.get("POSTMARK_SERVER_TOKEN");
     const from = Deno.env.get("POSTMARK_FROM_EMAIL");
     if (!token) throw new CanaryError("send-failed", "POSTMARK_SERVER_TOKEN is not configured", 500);
     if (!from) throw new CanaryError("send-failed", "POSTMARK_FROM_EMAIL is not configured", 500);
 
-    const status = run.passed ? "RECOVERED" : "FAILED";
+    const status = statusLabel(run, ctx);
     const monitorLabel = run.monitorName || run.monitorId;
-    const vars = buildVars(run);
-    const defaultSubject = `Canary Alert: ${monitorLabel} ${status}`;
+    const vars = buildVars(run, ctx);
+    // "Alert" only reads right on a failure; a heartbeat/recovery is good news.
+    const defaultSubject = status === "FAILED"
+      ? `Canary Alert: ${monitorLabel} FAILED`
+      : `Canary: ${monitorLabel} ${status}`;
     const subject = alert.emailSubject ? applyVars(alert.emailSubject, vars) : defaultSubject;
 
-    const defaultBody = buildEmailBody(run);
+    const defaultBody = buildEmailBody(run, ctx);
     const body = renderAlertMessage(alert.emailMessage, run, vars, defaultBody);
 
     log.info(`📧 email.send: to=${this.emailAddress} subject="${subject}"`);
@@ -53,8 +56,9 @@ export class Email extends BaseAlertChannel {
   }
 }
 
-export function buildEmailBody(run: RunResultDto): string {
-  const status = run.passed ? "✅ RECOVERED" : "❌ FAILED";
+export function buildEmailBody(run: RunResultDto, ctx?: AlertContext): string {
+  const word = statusLabel(run, ctx); // OK / RECOVERED / FAILED
+  const status = word === "FAILED" ? "❌ FAILED" : `✅ ${word}`;
   const monitorLabel = run.monitorName || run.monitorId;
   const lines = [
     `Status:    ${status}`,
@@ -64,6 +68,9 @@ export function buildEmailBody(run: RunResultDto): string {
     `Timestamp: ${run.timestamp}`,
   ];
   if (run.error) lines.push(`Error:     ${run.error}`);
+  // A per-monitor logs link (when configured) so an all-clear email is
+  // verifiable — click through to the app's own logs rather than trusting the 0.
+  if (ctx?.logsUrl) lines.push(`Logs:      ${ctx.logsUrl}`);
   // Include the captured HTTP response body so the failure email is
   // self-contained (no need to open the dashboard to see what failed). Only
   // failed runs carry run.response, so recovered emails stay clean. Pretty-

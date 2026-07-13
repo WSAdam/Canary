@@ -16,6 +16,12 @@ export interface PersistAndAlertInput {
   request?: RunRequestDetailDto;
   response?: RunResponseDetailDto;
   notifyOnRecover: boolean;
+  // Alert on a passing run too (an "all clear" heartbeat), not just on
+  // failure/recovery. Off by default so existing monitors keep their
+  // failure-only behavior.
+  notifyOnSuccess?: boolean;
+  // Optional per-monitor link surfaced in the alert message (e.g. the app logs).
+  logsUrl?: string;
   source: "cron" | "webhook";
   alertOverrides?: { message?: string; title?: string };
   // Persist the run but skip alert dispatch entirely (e.g. a setup verification
@@ -125,18 +131,24 @@ export async function persistRunAndAlert(input: PersistAndAlertInput): Promise<P
 
   const isRecovery = previousRun !== null && !previousRun.passed && input.passed;
   // Alert on ANY failure (down endpoint, non-2xx, timeout, extraction failure,
-  // or threshold breach), and on recovery when the monitor opts in. A
+  // or threshold breach); on recovery when the monitor opts in; and on EVERY
+  // passing run when the monitor opts into an "all clear" heartbeat. A
   // suppressed run (e.g. integration setup verification) persists but never
   // dispatches, so a not-yet-wired endpoint can't page everyone at create time.
-  const shouldAlert = !input.suppressAlert && (!input.passed || (isRecovery && input.notifyOnRecover));
-  log.debug(`🔍 ${tag}: passed=${input.passed} error=${input.error ?? "none"} isRecovery=${isRecovery} notifyOnRecover=${input.notifyOnRecover} shouldAlert=${shouldAlert}`);
+  const shouldAlert = !input.suppressAlert &&
+    (!input.passed || (isRecovery && input.notifyOnRecover) || (input.passed && !!input.notifyOnSuccess));
+  // Why this alert dispatches — drives the status word (heartbeat=OK). A
+  // recovery outranks a plain heartbeat so a return-to-healthy still reads
+  // "RECOVERED" rather than a generic "OK".
+  const reason: "failure" | "recovery" | "heartbeat" = !input.passed ? "failure" : isRecovery ? "recovery" : "heartbeat";
+  log.debug(`🔍 ${tag}: passed=${input.passed} error=${input.error ?? "none"} isRecovery=${isRecovery} notifyOnRecover=${input.notifyOnRecover} notifyOnSuccess=${!!input.notifyOnSuccess} shouldAlert=${shouldAlert}`);
 
   if (!shouldAlert) {
     log.debug(`🔍 ${tag}: no alert needed`);
     return { runResult: runResultDto, fired: false, channels: [] };
   }
 
-  log.warn(`⚠️ ${tag}: alerting — reason=${input.passed ? "recovery" : "failure"}`);
+  log.warn(`⚠️ ${tag}: alerting — reason=${reason}`);
   let alertDto: AlertDto | null = null;
   try {
     const alert = new Alert();
@@ -158,19 +170,30 @@ export async function persistRunAndAlert(input: PersistAndAlertInput): Promise<P
   }
 
   const effectiveAlert = input.alertOverrides ? applyOverrides(alertDto, input.alertOverrides) : alertDto;
-  const channel = AlertChannel.fromAlert(effectiveAlert);
+  // A heartbeat (an "all clear" on a healthy run) must NOT page the paid,
+  // high-noise SMS channel — an operator who turns on "notify on every run"
+  // shouldn't rack up an SMS per run (and per its cron cadence). Failures and
+  // recoveries still fan out to every channel. Email + ntfy (free / low-noise)
+  // still deliver the all-clear; an SMS-only monitor simply gets no heartbeat.
+  const dispatchAlert = reason === "heartbeat"
+    ? { ...effectiveAlert, recipients: effectiveAlert.recipients.filter((r) => r.channel !== "sms") }
+    : effectiveAlert;
+  if (reason === "heartbeat" && dispatchAlert.recipients.length < effectiveAlert.recipients.length) {
+    log.debug(`🔍 ${tag}: heartbeat — suppressing SMS recipient(s) (all-clears don't page SMS)`);
+  }
+  const channel = AlertChannel.fromAlert(dispatchAlert);
   // Report the channels actually built (known channels only) — NOT the raw
   // recipient list — so an alert composed entirely of unknown channels can't
   // claim fired:true with a phantom channel list while delivering nothing.
   const channels = channel.dispatchedLabels();
   if (channels.length === 0) {
-    log.warn(`⚠️ ${tag}: alert configured for ${input.monitorId} but no deliverable channels (all recipients had unknown channel) — skipping`);
+    log.warn(`⚠️ ${tag}: no deliverable channels for ${input.monitorId}${reason === "heartbeat" ? " (heartbeat, SMS-only monitor — all-clears skip SMS)" : " (all recipients had unknown channel)"} — skipping`);
     return { runResult: runResultDto, fired: false, channels: [] };
   }
 
   try {
-    log.debug(`🔍 ${tag}: dispatching to ${effectiveAlert.recipients.length} recipient(s) — channels=[${channels.join(", ")}]`);
-    await channel.send(runResultDto);
+    log.debug(`🔍 ${tag}: dispatching to ${dispatchAlert.recipients.length} recipient(s) — channels=[${channels.join(", ")}]`);
+    await channel.send(runResultDto, { reason, logsUrl: input.logsUrl });
     log.info(`✅ ${tag}: alert sent`);
     return { runResult: runResultDto, fired: true, channels };
   } catch (e) {

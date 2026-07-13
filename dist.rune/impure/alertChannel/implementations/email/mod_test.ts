@@ -37,3 +37,25 @@ Deno.test("buildEmailBody - notes truncation", () => {
   const body = buildEmailBody({ ...base, response: { body: '{"a":1}', truncated: true } });
   assert(body.includes("(truncated)"));
 });
+
+Deno.test("buildEmailBody - heartbeat reads '✅ OK' with the observed count and a logs link", () => {
+  const body = buildEmailBody(
+    { ...base, observed: 0, passed: true },
+    { reason: "heartbeat", logsUrl: "https://dash.deno.com/projects/app/logs" },
+  );
+  assert(body.includes("Status:    ✅ OK"), `status not OK: ${body}`);
+  assert(body.includes("Observed:  0"));
+  assert(body.includes("Logs:      https://dash.deno.com/projects/app/logs"), `logs link missing: ${body}`);
+  // A passing run carries no response, so the all-clear stays clean.
+  assert(!body.includes("Response:"));
+});
+
+Deno.test("buildEmailBody - a recovery still reads '✅ RECOVERED' (not OK)", () => {
+  const body = buildEmailBody({ ...base, passed: true }, { reason: "recovery" });
+  assert(body.includes("Status:    ✅ RECOVERED"), body);
+});
+
+Deno.test("buildEmailBody - no logs line when none is configured", () => {
+  const body = buildEmailBody({ ...base, observed: 0, passed: true }, { reason: "heartbeat" });
+  assert(!body.includes("Logs:"));
+});

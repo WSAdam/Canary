@@ -29,12 +29,17 @@ async function webhookFireRun(runId: string, input: WebhookFireInput): Promise<P
   const monitorDto = await monitor.get(input.monitorId);
   log.debug(`✅ webhook.fire: monitor name="${monitorDto.name}"`);
 
-  // notifyOnRecover comes from the check if there is one, otherwise default true
+  // notifyOnRecover comes from the check if there is one, otherwise default true.
+  // notifyOnSuccess / logsUrl likewise ride along from the check when present.
   let notifyOnRecover = true;
+  let notifyOnSuccess = false;
+  let logsUrl: string | undefined;
   try {
     const check = new Check();
     const checkDto = await check.get(input.monitorId);
     notifyOnRecover = checkDto.notifyOnRecover;
+    notifyOnSuccess = checkDto.notifyOnSuccess === true;
+    logsUrl = checkDto.logsUrl;
   } catch {
     log.debug(`🔍 webhook.fire: no check configured — defaulting notifyOnRecover=true`);
   }
@@ -60,6 +65,8 @@ async function webhookFireRun(runId: string, input: WebhookFireInput): Promise<P
     error,
     captures,
     notifyOnRecover,
+    notifyOnSuccess,
+    logsUrl,
     source: "webhook",
     alertOverrides: (message || title) ? { message, title } : undefined,
   });

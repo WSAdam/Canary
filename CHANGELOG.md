@@ -4,6 +4,31 @@ All notable changes to Canary are documented here. The project is not formally
 versioned yet, so entries are grouped by date. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-07-13
+
+### Added
+- **All-clear heartbeat (`notifyOnSuccess`).** A check can now alert on **every**
+  run, not just failures/recovery. A healthy run sends an "all clear" — status
+  `✅ OK`, the observed count (e.g. "0 errors found"), subject `Canary: <monitor>
+  OK` — instead of silence, so "no email" can't be confused with "the check
+  stopped running." Off by default; existing monitors are unchanged. Exposed as
+  the **"Notify on every run (all-clear)"** toggle on the check form.
+  - **SMS is deliberately skipped for all-clears.** Failures and recoveries still
+    fan out to every channel, but a heartbeat delivers only to email & ntfy — an
+    operator who turns this on can't rack up a billed SMS on every run (and per
+    its cron cadence). An SMS-only monitor simply gets no heartbeat.
+- **Per-check `logsUrl`.** An optional http(s) link surfaced in every alert (e.g.
+  the monitored app's logs page) so a recipient can click through and verify.
+  Shown in the default alert body across email/SMS/ntfy, and available as a
+  `{logsUrl}` message-template variable. Validated as http(s) only, length-capped
+  (≤ 2048), and stored in normalized form (stray CR/LF can't survive validation).
+
+### Changed
+- Alert status wording is now dispatch-aware: a failure reads `FAILED`, a genuine
+  return-to-healthy reads `RECOVERED`, and an all-clear heartbeat reads `OK` (a
+  healthy-run notification isn't mislabeled a recovery). A passing-run email
+  subject drops the word "Alert" (`Canary: <monitor> OK`).
+
 ## 2026-07-01
 
 ### Added

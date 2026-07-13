@@ -662,6 +662,18 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
         </div>
         <input type="checkbox" id="w-recover">
       </div>
+      <div class="toggle-row">
+        <div>
+          <div class="toggle-label">Notify on every run (all-clear)</div>
+          <div class="toggle-desc">Also alert on healthy runs, not just failures — a passing run sends an "all clear" with the observed count (e.g. "0 errors found"). Fires on this check's schedule, to email &amp; ntfy recipients. SMS is skipped for all-clears so a heartbeat never texts you.</div>
+        </div>
+        <input type="checkbox" id="w-notify-success">
+      </div>
+      <div style="margin-top:12px">
+        <label for="w-logs-url">Logs URL <span style="color:var(--m);text-transform:none;font-weight:400">(optional)</span></label>
+        <input type="text" id="w-logs-url" placeholder="https://dash.deno.com/projects/…/logs">
+        <div class="hint">A link to click through and verify the app. Shown in the default alert message; reference <code style="background:#1a1a1a;padding:1px 5px;border-radius:3px">{logsUrl}</code> to place it in a custom template.</div>
+      </div>
     </div>
     <div class="wizard-footer">
       <button class="btn btn-ghost" onclick="wizardBack()">Back</button>
@@ -704,6 +716,7 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
             <button type="button" class="var-chip" onclick="insertVar('w-email-message','{status}')">{status}<span class="var-chip-example">FAILED</span></button>
             <button type="button" class="var-chip" onclick="insertVar('w-email-message','{observed}')">{observed}<span class="var-chip-example">141</span></button>
             <button type="button" class="var-chip" onclick="insertVar('w-email-message','{timestamp}')">{timestamp}<span class="var-chip-example">2026-06-01T18:44Z</span></button>
+            <button type="button" class="var-chip" onclick="insertVar('w-email-message','{logsUrl}')">{logsUrl}<span class="var-chip-example">logs link</span></button>
             <span class="var-chips-label">+ any capture names you defined</span>
           </div>
         </div>
@@ -1724,6 +1737,8 @@ function resetWizard() {
   document.getElementById('w-op').value = 'gt';
   document.getElementById('w-threshold').value = '';
   document.getElementById('w-recover').checked = false;
+  document.getElementById('w-notify-success').checked = false;
+  document.getElementById('w-logs-url').value = '';
   document.getElementById('w-cron').value = '';
   document.getElementById('w-time').value = '09:00'; // default selection
   document.getElementById('w-freq').value = 'daily';
@@ -1860,6 +1875,8 @@ async function wizardStep2() {
       threshold,
       cron,
       notifyOnRecover: document.getElementById('w-recover').checked,
+      notifyOnSuccess: document.getElementById('w-notify-success').checked,
+      logsUrl: document.getElementById('w-logs-url').value.trim() || undefined,
       captures: Object.keys(captures).length ? captures : undefined,
     };
     console.log('🔍 wizardStep2: POST payload', JSON.stringify(payload));
@@ -2003,6 +2020,8 @@ async function prefillCheck(monitorId) {
     document.getElementById('w-op').value = d.comparatorOp || 'gt';
     document.getElementById('w-threshold').value = d.threshold ?? '';
     document.getElementById('w-recover').checked = !!d.notifyOnRecover;
+    document.getElementById('w-notify-success').checked = !!d.notifyOnSuccess;
+    document.getElementById('w-logs-url').value = d.logsUrl || '';
     updateBodyVisibility();
     updateComparatorHint();
     if (d.headers) {
@@ -2895,6 +2914,8 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
             threshold: c.threshold,
             cron: c.cron,
             notifyOnRecover: c.notifyOnRecover,
+            notifyOnSuccess: c.notifyOnSuccess === true,
+            logsUrl: c.logsUrl,
             matchesNow: cronMatchesNow(c.cron, now),
           });
         }

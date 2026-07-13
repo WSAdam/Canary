@@ -1,7 +1,7 @@
 import type { AlertDto } from "../../dto/alert-dto.ts";
 import type { RunResultDto } from "../../dto/run-result-dto.ts";
 import { CanaryError } from "../../dto/_shared.ts";
-import { BaseAlertChannel } from "./shared/mod.ts";
+import { type AlertContext, BaseAlertChannel } from "./shared/mod.ts";
 import { Sms } from "./implementations/sms/mod.ts";
 import { Email } from "./implementations/email/mod.ts";
 import { Ntfy } from "./implementations/ntfy/mod.ts";
@@ -46,7 +46,7 @@ export class AlertChannel {
     return [...this.labels];
   }
 
-  async send(run: RunResultDto): Promise<void> {
+  async send(run: RunResultDto, ctx?: AlertContext): Promise<void> {
     // allSettled, not all: one channel's failure (e.g. a bad ntfy address) must
     // never suppress the others. We attempt every channel, then report.
     // SMS channels are staggered smsStaggerMs() apart (first immediate, 2nd +Δ,
@@ -58,7 +58,7 @@ export class AlertChannel {
       const delayMs = this.labels[i] === "sms" ? smsIndex++ * staggerMs : 0;
       return (async () => {
         if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
-        return c.send(run, this.alert);
+        return c.send(run, this.alert, ctx);
       })();
     });
     if (smsIndex > 1) log.debug(`📱 AlertChannel.send: staggering ${smsIndex} sms send(s) ${staggerMs}ms apart`);

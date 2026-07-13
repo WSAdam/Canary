@@ -16,8 +16,9 @@ Canary polls your HTTP endpoints on a cron schedule, extracts numeric values fro
 - **JSON metric extraction**: dot-notation path extraction from any JSON response
 - **Threshold comparisons**: `gt`, `lt`, `gte`, `lte`, `eq`
 - **Multi-channel alerts**: SMS via Zapier webhook, email via Postmark, or push via [ntfy.sh](https://ntfy.sh); mix recipients per monitor — up to **5 SMS numbers** per alert, sent 4 seconds apart
-- **Message templating**: `{monitor}` `{status}` `{observed}` `{timestamp}` `{error}` plus user-defined captures from the response — and a check's `error` is always appended to a custom message that doesn't already include it, so a transport/auth failure can't masquerade as a metric breach
+- **Message templating**: `{monitor}` `{status}` `{observed}` `{timestamp}` `{error}` `{logsUrl}` plus user-defined captures from the response — and a check's `error` is always appended to a custom message that doesn't already include it, so a transport/auth failure can't masquerade as a metric breach
 - **Recovery notifications**: optional alert when a failing monitor returns to healthy
+- **All-clear heartbeat**: optional per-check "notify on every run" — a healthy run sends an "all clear" (with the observed count and an optional `logsUrl` to click through) instead of silence. Email & ntfy only; SMS is skipped for all-clears so a heartbeat never texts you
 - **Stateless HMAC auth**: admin + invited users, 24-hour sessions, no per-request DB lookup
 - **Push webhooks**: per-monitor `cnry_v1_…` bearer secrets, hashed at rest, rotate/revoke from the UI
 - **Secret management**: store API keys / bearer tokens in Deno KV and reference them in monitor headers as `{{KEY}}`
@@ -218,7 +219,9 @@ POST /monitors/:id/check
   "comparatorOp": "lt",
   "threshold": 500,
   "cron": "*/5 * * * *",
-  "notifyOnRecover": true
+  "notifyOnRecover": true,
+  "notifyOnSuccess": false,
+  "logsUrl": "https://dash.deno.com/projects/app/logs"
 }
 ```
 
@@ -229,6 +232,8 @@ POST /monitors/:id/check
 | `threshold` | Numeric value to compare against |
 | `cron` | Standard 5-field cron expression |
 | `notifyOnRecover` | Send an alert when the monitor returns to healthy |
+| `notifyOnSuccess` | Optional (default `false`). Alert on **every** run, not just failures — a healthy run sends an "all clear" with the observed count (e.g. "0 errors found"). Fires on the check's schedule, to email & ntfy recipients; **SMS is skipped for all-clears** so a heartbeat never texts you. Failures/recoveries are unaffected. |
+| `logsUrl` | Optional http(s) link surfaced in every alert (e.g. the app's logs page) so a recipient can click through to verify. Shown in the default alert body; reference `{logsUrl}` to place it in a custom message template. |
 
 ---
 

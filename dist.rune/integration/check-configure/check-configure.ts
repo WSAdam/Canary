@@ -11,6 +11,43 @@ import { log } from "../../impure/_log.ts";
 // instead of silently 200'ing and then failing+alerting on every cron run.
 const COMPARATOR_OPS = new Set(["lt", "gt", "lte", "gte", "eq"]);
 
+// A logs link is displayed in alerts and appended to SMS bodies; bound its
+// length so a pathological value can't (a) split one SMS into dozens of billed
+// segments per run, nor (b) push the stored CheckDto past Deno KV's ~64KiB
+// per-value limit (which would throw an opaque 500 instead of a clean 400).
+// 2048 comfortably fits any real dashboard/log URL.
+const MAX_LOGS_URL_LEN = 2048;
+
+/** Validate an optional logsUrl: must be a string and, when non-empty, a real
+ *  http(s) URL (it becomes a clickable link in alerts). Returns the URL in its
+ *  NORMALIZED form (`parsed.href` — percent-encodes any stray CR/LF/TAB the URL
+ *  parser tolerates, so the stored value is guaranteed a clean single-line
+ *  URL), or undefined when omitted/blank. Rejects other schemes so a
+ *  `javascript:`/`data:` link can't ride into an alert, and over-long input. */
+export function normalizeLogsUrl(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    throw new CanaryError("validation-error", "logsUrl must be a string", 400);
+  }
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.length > MAX_LOGS_URL_LEN) {
+    throw new CanaryError("validation-error", `logsUrl must be at most ${MAX_LOGS_URL_LEN} characters`, 400);
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new CanaryError("validation-error", `logsUrl "${value}" is not a valid URL`, 400);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new CanaryError("validation-error", "logsUrl must be an http(s) URL", 400);
+  }
+  // Store the parser's canonical form, not the raw input, so control characters
+  // the URL constructor silently strips can't survive into the persisted value.
+  return parsed.href;
+}
+
 /** Assert a value is a plain object whose every value is a string (the shape of
  *  both `headers` and `captures`), throwing a uniform 400 otherwise. */
 function assertStringRecord(value: unknown, field: string): void {
@@ -57,8 +94,16 @@ export async function configureCheck(input: ConfigureCheckDto): Promise<CheckDto
   if (input.body !== undefined && typeof input.body !== "string") {
     throw new CanaryError("validation-error", "body must be a string", 400);
   }
+  if (input.notifyOnSuccess !== undefined && typeof input.notifyOnSuccess !== "boolean") {
+    throw new CanaryError("validation-error", "notifyOnSuccess must be a boolean", 400);
+  }
+  // logsUrl is optional; when present it must be a real http(s) URL (it's shown
+  // as a clickable link in alert emails). An empty string normalizes to "unset".
+  const logsUrl = normalizeLogsUrl(input.logsUrl);
   Schedule.validate(input);           // throws invalid-cron if cron is malformed
-  const check = Check.build(input);
+  // Normalize the two new fields into the stored dto so a check row always
+  // carries a boolean notifyOnSuccess and a trimmed/absent logsUrl.
+  const check = Check.build({ ...input, notifyOnSuccess: input.notifyOnSuccess === true, logsUrl });
   const checkDto = check.toDto();
   const result = await check.upsert(checkDto);
   log.debug("✅ check.configure", result.monitorId, result.cron);

@@ -1,4 +1,4 @@
-import { BaseAlertChannel, buildVars, renderAlertMessage } from "../../shared/mod.ts";
+import { type AlertContext, BaseAlertChannel, buildVars, renderAlertMessage, statusLabel } from "../../shared/mod.ts";
 import type { RunResultDto } from "../../../../dto/run-result-dto.ts";
 import type { AlertDto } from "../../../../dto/alert-dto.ts";
 import { CanaryError, upstreamStatus } from "../../../../dto/_shared.ts";
@@ -9,15 +9,16 @@ export class Sms extends BaseAlertChannel {
     super();
   }
 
-  async send(run: RunResultDto, alert: AlertDto): Promise<void> {
+  async send(run: RunResultDto, alert: AlertDto, ctx?: AlertContext): Promise<void> {
     const url = Deno.env.get("ZAPIER_SMS_URL");
     if (!url) throw new CanaryError("send-failed", "ZAPIER_SMS_URL is not configured", 500);
 
-    const status = run.passed ? "RECOVERED" : "FAILED";
+    const status = statusLabel(run, ctx);
     const monitorLabel = run.monitorName || run.monitorId;
-    const vars = buildVars(run);
+    const vars = buildVars(run, ctx);
     const detail = run.error ? `error: ${run.error}` : `observed: ${run.observed}`;
-    const defaultMessage = `Canary ${status}: ${monitorLabel} — ${detail} at ${run.timestamp}`;
+    const logsSuffix = ctx?.logsUrl ? ` — logs: ${ctx.logsUrl}` : "";
+    const defaultMessage = `Canary ${status}: ${monitorLabel} — ${detail} at ${run.timestamp}${logsSuffix}`;
     // Always surface a failure's error, even under a custom template — see
     // renderAlertMessage (a metric-breach template must not mask a 401/timeout).
     const message = renderAlertMessage(alert.smsMessage, run, vars, defaultMessage);

@@ -271,6 +271,9 @@ async function executeRun(runId: string, input: MonitorIdDto, options?: ExecuteR
     request,
     response,
     notifyOnRecover: checkDto.notifyOnRecover,
+    // Coerce: a legacy check row predates notifyOnSuccess, so undefined → false.
+    notifyOnSuccess: checkDto.notifyOnSuccess === true,
+    logsUrl: checkDto.logsUrl,
     source: "cron",
     suppressAlert: options?.suppressAlert,
   });

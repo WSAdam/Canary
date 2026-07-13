@@ -1,5 +1,5 @@
 import { assert, assertEquals } from "jsr:@std/assert";
-import { applyVars, BaseAlertChannel, buildVars, renderAlertMessage } from "./mod.ts";
+import { applyVars, BaseAlertChannel, buildVars, renderAlertMessage, statusLabel } from "./mod.ts";
 import type { RunResultDto } from "../../../dto/run-result-dto.ts";
 
 Deno.test("BaseAlertChannel exists", () => {
@@ -83,6 +83,39 @@ Deno.test("renderAlertMessage - no template uses the channel default (which alre
   };
   // Default body already mentions the error → returned as-is, not double-tagged.
   assertEquals(renderAlertMessage(undefined, run, buildVars(run), "Canary FAILED — error: HTTP 401"), "Canary FAILED — error: HTTP 401");
+});
+
+Deno.test("statusLabel - reason drives the word; a heartbeat is OK, not RECOVERED", () => {
+  const passed: RunResultDto = {
+    runId: "r", monitorId: "m", observed: 0, passed: true,
+    timestamp: "2026-07-13T09:00:00.000Z",
+  };
+  const failed: RunResultDto = { ...passed, observed: 5, passed: false };
+  assertEquals(statusLabel(passed, { reason: "heartbeat" }), "OK");
+  assertEquals(statusLabel(passed, { reason: "recovery" }), "RECOVERED");
+  assertEquals(statusLabel(failed, { reason: "failure" }), "FAILED");
+  // No context → legacy passed/failed wording is preserved.
+  assertEquals(statusLabel(passed), "RECOVERED");
+  assertEquals(statusLabel(failed), "FAILED");
+});
+
+Deno.test("buildVars - heartbeat context yields status OK and exposes logsUrl", () => {
+  const run: RunResultDto = {
+    runId: "r", monitorId: "m", monitorName: "SMS bot",
+    observed: 0, passed: true, timestamp: "2026-07-13T09:00:00.000Z",
+  };
+  const vars = buildVars(run, { reason: "heartbeat", logsUrl: "https://logs.example/app" });
+  assertEquals(vars.status, "OK");
+  assertEquals(vars.observed, "0");
+  assertEquals(vars.logsUrl, "https://logs.example/app");
+});
+
+Deno.test("buildVars - logsUrl is empty string when no context supplied", () => {
+  const run: RunResultDto = {
+    runId: "r", monitorId: "m", observed: 0, passed: true,
+    timestamp: "2026-07-13T09:00:00.000Z",
+  };
+  assertEquals(buildVars(run).logsUrl, "");
 });
 
 Deno.test("buildVars - error empty when absent; captures merged; falls back to id", () => {

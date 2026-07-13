@@ -10,5 +10,9 @@ export interface ConfigureCheckDto {
   threshold: number;
   cron: string;
   notifyOnRecover: boolean;
+  // Alert on every run (a healthy run sends an "all clear"), not just failures.
+  notifyOnSuccess?: boolean;
+  // Optional http(s) link included in every alert (e.g. the app's logs page).
+  logsUrl?: string;
   captures?: Record<string, string>;
 }
