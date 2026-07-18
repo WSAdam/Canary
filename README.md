@@ -77,7 +77,32 @@ ADMIN_PASSWORD=changeme
 ZAPIER_SMS_URL=https://hooks.zapier.com/hooks/catch/...
 POSTMARK_SERVER_TOKEN=your-postmark-server-token
 POSTMARK_FROM_EMAIL=alerts@yourdomain.com
+
+# Deno Deploy usage digest + spend guardrail (only for the /api/deno-* routes)
+DENO_TOKEN=ddo_...            # Deno Deploy ORG access token (dashboard → Settings → Access Tokens) — usage digest
+DENO_USAGE_SECRET=...         # bearer the monitors send to /api/deno-usage + /api/deno-spend (any long random string)
+DENO_SESSION_TOKEN=ddw_...    # console session cookie value (the `token=ddw_…` cookie) — spend guardrail; EXPIRES
+DENO_ORG_ID=00000000-...      # your org's UUID (seen in the console billing request / lastOrgId cookie)
 ```
+
+**Deno Deploy usage digest.** `GET /api/deno-usage` returns org-wide usage
+(requests, KV read/write units, egress, CPU, memory) summed across every app for
+the last `?hours=` (default 24), for a daily "here's what happened" report. It
+calls the Deno Deploy **v2** analytics API with `DENO_TOKEN` (a `ddo_` org token)
+and is bearer-authed with `DENO_USAGE_SECRET`. Point a check at it with header
+`Authorization: Bearer {{DENO_USAGE_SECRET}}`, `notifyOnSuccess: true`, and
+captures like `{ requests: "requests", kvReads: "kvReadUnits", kvWrites: "kvWriteUnits" }`.
+
+**Deno Deploy spend guardrail.** `GET /api/deno-spend` returns the org's real
+usage-based spend (`spendUSD`), the live hard limit (`limitUSD`, so raising it in
+Deno updates the check automatically), `pctOfLimit`, and a per-dimension
+breakdown. The public token API exposes usage, **not dollars**, so this reads the
+console's internal billing API (tRPC) with a browser **session cookie**
+(`DENO_SESSION_TOKEN` = the `token=ddw_…` value) — undocumented and the cookie
+**expires**, so on a rejected session the route returns 401 and the monitor
+alerts "refresh DENO_SESSION_TOKEN" rather than failing silent. Point a check at
+it (`Authorization: Bearer {{DENO_USAGE_SECRET}}`), `expression: pctOfLimit`,
+`comparatorOp: gte`, `threshold: 80`.
 
 ### 2. Run locally
 
@@ -555,6 +580,8 @@ In Deno Deploy logs, you should see exactly one `🔍 cron tick:` per minute fol
    - `ADMIN_USERNAME` + `ADMIN_PASSWORD` (required — seeds the admin user on first boot)
    - `POSTMARK_SERVER_TOKEN` + `POSTMARK_FROM_EMAIL` (for email alerts and invite emails)
    - `ZAPIER_SMS_URL` (for SMS alerts)
+   - `DENO_TOKEN` + `DENO_USAGE_SECRET` (only if using the `/api/deno-usage` digest)
+   - `DENO_SESSION_TOKEN` + `DENO_ORG_ID` (only if using the `/api/deno-spend` guardrail)
 
 Deno Deploy provides Deno KV out of the box. No additional database setup required.
 

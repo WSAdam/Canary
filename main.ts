@@ -48,6 +48,8 @@ import type { RunResultDto } from "./dist.rune/dto/run-result-dto.ts";
 import type { AlertDto } from "./dist.rune/dto/alert-dto.ts";
 import { log } from "./dist.rune/impure/_log.ts";
 import { redactHeaders } from "./dist.rune/integration/runner-execute/runner-execute.ts";
+import { getDenoUsage } from "./dist.rune/integration/deno-usage/deno-usage.ts";
+import { getDenoSpend } from "./dist.rune/integration/deno-spend/deno-spend.ts";
 
 // ---------------------------------------------------------------------------
 // Seed admin on startup
@@ -2681,6 +2683,15 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
+/** Constant-time string compare (length may leak) so a bearer check can't reveal
+ *  the secret via response timing. */
+function timingSafeEqualStr(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 function html(content: string): Response {
   return new Response(content, {
     headers: {
@@ -2786,6 +2797,35 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
       const statusData = { status: "ok", startedAt, lastCronTick, monitors: monitors.monitors.length };
       log.debug(`✅ GET /api/status → 200 monitors=${statusData.monitors}`);
       return json(statusData);
+    }
+
+    // Deno Deploy usage digest — the daily-digest monitor polls this. Bearer-
+    // authed with DENO_USAGE_SECRET (the monitor injects it via a stored secret),
+    // NOT admin-session gated (the cron runner carries no session). Returns
+    // org-wide usage summed across every app for the last `hours` (default 24).
+    if (method === "GET" && pathname === "/api/deno-usage") {
+      const secret = Deno.env.get("DENO_USAGE_SECRET");
+      if (!secret) return json({ error: "DENO_USAGE_SECRET is not configured" }, 503);
+      const auth = req.headers.get("Authorization") ?? "";
+      if (!timingSafeEqualStr(auth, `Bearer ${secret}`)) return json({ error: "unauthorized" }, 401);
+      const raw = Number(url.searchParams.get("hours"));
+      const hours = Number.isFinite(raw) && raw > 0 && raw <= 744 ? raw : 24; // cap at ~31d
+      const usage = await getDenoUsage(hours);
+      log.info(`✅ GET /api/deno-usage → 200 hours=${hours} apps=${usage.apps} errored=${usage.appsErrored}`);
+      return json(usage);
+    }
+
+    // Deno Deploy real usage-based spend ($) + live spend limit, read from the
+    // console's billing API with a session cookie. Same bearer as /api/deno-usage.
+    // The spend-guardrail monitor polls this; extract `pctOfLimit`.
+    if (method === "GET" && pathname === "/api/deno-spend") {
+      const secret = Deno.env.get("DENO_USAGE_SECRET");
+      if (!secret) return json({ error: "DENO_USAGE_SECRET is not configured" }, 503);
+      const auth = req.headers.get("Authorization") ?? "";
+      if (!timingSafeEqualStr(auth, `Bearer ${secret}`)) return json({ error: "unauthorized" }, 401);
+      const spend = await getDenoSpend();
+      log.info(`✅ GET /api/deno-spend → 200 pct=${spend.pctOfLimit}`);
+      return json(spend);
     }
 
     // Public: login
