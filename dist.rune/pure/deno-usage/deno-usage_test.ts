@@ -329,15 +329,14 @@ Deno.test("formatTrend - a row per day, then totals, average and the comparison"
   assertEquals(out.includes("17,759"), true);
   assertEquals(out.includes("Total"), true);
   assertEquals(out.includes("Average"), true);
-  // 17,759 vs 15,102 is +17.6% → ▲18%.
-  assertEquals(out.includes("▲18% vs prior day"), true, out);
+  // The "vs the rest of the period" comparison block was removed as noise.
+  assertEquals(out.includes("vs prior day"), false);
   // Oldest first, so the latest day sits next to the totals.
   assertEquals(out.indexOf("15,102") < out.indexOf("17,759"), true);
 });
 
-Deno.test("formatTrend - a single day renders without a comparison block", () => {
+Deno.test("formatTrend - a single day still renders its row and totals", () => {
   const out = formatTrend([day("2026-07-19", "Sun 19/July", 100)]);
-  assertEquals(out.includes("vs prior day"), false);
   assertEquals(out.includes("100"), true);
 });
 

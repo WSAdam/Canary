@@ -51,11 +51,6 @@ function fixture(): HtmlReportInput {
     cost: listCost(org),
     projectedMonthlyUSD: 13.36,
     series,
-    comparison: [
-      { label: "Requests", vsPrevDay: -21, vsAverage: -74 },
-      { label: "KV reads", vsPrevDay: -16, vsAverage: -95 },
-      { label: "KV writes", vsPrevDay: null, vsAverage: null },
-    ],
     perApp: buildPerAppSeries(appDay, days),
   };
 }
@@ -92,10 +87,9 @@ Deno.test("buildHtmlReport - escapes an app name that carries markup", () => {
   assertEquals(html.includes("&lt;img"), true);
 });
 
-Deno.test("buildHtmlReport - deltas are colored by direction (up=red, down=green)", () => {
+Deno.test("buildHtmlReport - carries no comparison line (removed as noise)", () => {
   const html = buildHtmlReport(fixture());
-  assertEquals(html.includes('#15803d">&#9660;74%'), true, "down-delta not green");
-  // A null baseline renders a muted dash, never Infinity/NaN.
+  assertEquals(html.includes("vs the rest"), false);
   assertEquals(html.includes("Infinity") || html.includes("NaN"), false);
 });
 
@@ -114,7 +108,6 @@ Deno.test("buildHtmlReport - no trend sections without a series", () => {
   const input = fixture();
   delete input.series;
   delete input.perApp;
-  delete input.comparison;
   const html = buildHtmlReport(input);
   assertEquals(html.includes("TRAILING"), false);
   assertEquals(html.includes("REQUESTS BY APP"), false);

@@ -384,14 +384,6 @@ export function formatTrend(series: DayUsage[]): string {
     ...rows.slice(1 + body.length),
   ];
 
-  if (series.length >= 2) {
-    const latest = series[series.length - 1];
-    const cmp = TREND_COLUMNS.map((c) => {
-      const { vsPrevDay, vsAverage } = compareLatest(series, c.key);
-      return `${c.label} ${formatDelta(vsPrevDay)} vs prior day, ${formatDelta(vsAverage)} vs avg`;
-    });
-    out.push("", `${latest.label} vs the rest of the period:`, ...cmp.map((l) => `  ${l}`));
-  }
   return out.join("\n");
 }
 

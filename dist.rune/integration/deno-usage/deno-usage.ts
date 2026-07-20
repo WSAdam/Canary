@@ -228,9 +228,6 @@ export async function getDenoUsage(params: URLSearchParams = new URLSearchParams
       cost,
       projectedMonthlyUSD: round(projectedMonthlyUSD, 2),
       series: trailing?.series,
-      comparison: trailing
-        ? TREND_COLUMNS.map((c) => ({ label: c.label, ...trailing.comparison[c.key] }))
-        : undefined,
       perApp: perAppSeries,
     }),
   };

@@ -25,9 +25,8 @@ const FONT = "-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 const MUTE = "#667";
 const RULE = "#ddd";
 const ZEBRA = "#f6f6f8";
-// Usage/cost going UP is the bad direction — red; DOWN is green.
+// Flags the bad state (a partial app's warning marker).
 const UP = "#dc2626";
-const DOWN = "#15803d";
 
 /** Most rows either matrix lists; the rest roll into a "+N more" line. */
 const MAX_MATRIX_ROWS = 8;
@@ -42,15 +41,6 @@ function group(n: number): string {
 
 function section(title: string): string {
   return `<div style="font-size:11px;font-weight:700;color:${MUTE};letter-spacing:.06em;margin:22px 0 8px">${title}</div>`;
-}
-
-function deltaSpan(pct: number | null): string {
-  if (pct === null) return `<span style="color:${MUTE}">&mdash;</span>`;
-  const r = Math.round(pct);
-  if (r === 0) return `<span style="color:${MUTE}">0%</span>`;
-  return r > 0
-    ? `<span style="color:${UP}">&#9650;${r}%</span>`
-    : `<span style="color:${DOWN}">&#9660;${Math.abs(r)}%</span>`;
 }
 
 function table(inner: string): string {
@@ -85,7 +75,6 @@ export interface HtmlReportInput {
   projectedMonthlyUSD: number;
   /** Trailing trend, when requested. */
   series?: DayUsage[];
-  comparison?: Array<{ label: string; vsPrevDay: number | null; vsAverage: number | null }>;
   perApp?: PerAppSeries[];
 }
 
@@ -180,13 +169,6 @@ export function buildHtmlReport(input: HtmlReportInput): string {
           bodyRow(["Average", ...totals.map((t) => group(t / s.length))], 1, { bold: true }),
       ),
     );
-    if (input.comparison && input.comparison.length > 0) {
-      out.push(
-        `<div style="font-size:13px;margin-top:8px"><b>${esc(s[s.length - 1].label)}</b> vs the rest: ` +
-          input.comparison.map((c) => `${c.label} ${deltaSpan(c.vsPrevDay)} d/d, ${deltaSpan(c.vsAverage)} vs avg`).join(" &nbsp;&middot;&nbsp; ") +
-          `</div>`,
-      );
-    }
     // Per-app matrices — requests, then cost (cost folds KV/egress/CPU into one
     // comparable number per app-day, so a KV regression shows even when
     // request counts look normal).
