@@ -28,6 +28,9 @@ Canary polls your HTTP endpoints on a cron schedule, extracts numeric values fro
 - **Diagnostic snapshot**: `GET /api/debug` returns the full KV state — what monitors/checks/alerts/webhooks exist, last cron tick, env presence
 - **Test-fire endpoint**: `POST /test-alert` sends one real SMS/email/ntfy push to verify creds without setting up a monitor
 - **SMS Relays**: a push-driven monitor type — another project POSTs a raw `error` to `POST /relay/<monitorId>/fire` with a shared token in the body, and Canary forwards it straight to SMS (no check, no cron, no `cnry_v1_` header secret)
+- **Deno Deploy usage digest**: a daily "here's what happened" report of org-wide requests, KV read/write units, egress, CPU and memory — **broken down per app**, busiest first, with dormant apps filtered out. Selectable window (`?day=yesterday`, an explicit `from`/`to`, or a rolling `?hours=`), timestamps rendered in Eastern time
+- **Deno Deploy spend guardrail**: alerts at a percentage of your **real** usage-based spend against the **live** spend limit (raise the limit in Deno and the check follows), read from the console billing API
+- **`internal:` check sources**: a check can name a producer Canary runs in-process instead of fetching a URL — which is what makes Canary able to monitor *itself* (a deployment can't HTTP-fetch its own hostname), with no bearer secret and no network hop
 - **Zero dependencies**: plain Deno with no third-party frameworks
 
 ---
@@ -38,14 +41,20 @@ Canary polls your HTTP endpoints on a cron schedule, extracts numeric values fro
 canary/
 ├── dist.rune/
 │   ├── dto/            # Plain TypeScript interfaces
-│   ├── pure/           # Side-effect-free logic (Schedule, Extractor, Comparator)
-│   ├── impure/         # Deno KV domain classes + HTTP source + alert channels
+│   ├── pure/           # Side-effect-free logic (Schedule, Extractor, Comparator,
+│   │                   #   time-window, deno-usage/deno-spend aggregation)
+│   ├── impure/         # Deno KV domain classes + check sources + alert channels
+│   │   ├── source/     #   http (fetch a URL) | internal (run a producer in-process)
 │   │   └── _log.ts     # Central leveled logger (LOG_LEVEL + per-run [run=] tag)
 │   └── integration/    # Orchestration functions (one per API operation)
 ├── main.ts             # Deno.serve routes + Deno.cron tick
 ├── canary.rune         # Rune spec (source of truth for requirements)
 └── deno.json
 ```
+
+**Sources:** a check's `url` selects how it is executed — an ordinary `http(s)://`
+URL is fetched over the network, while an `internal:<producer>` URL runs a
+producer inside the process (see [Deno Deploy usage & spend](#deno-deploy-usage--spend)).
 
 **Persistence:** Deno KV
 **SMS:** POST to a Zapier webhook → `{ "Number": "", "Message": "" }`
@@ -88,64 +97,9 @@ DD_SESSION_TOKEN=ddw_...  # console session cookie value (the `token=ddw_…` co
 DD_ORG_ID=00000000-...    # your org's UUID (seen in the console billing request / lastOrgId cookie)
 ```
 
-**Deno Deploy usage digest.** `GET /api/deno-usage` returns org-wide usage
-(requests, KV read/write units, egress, CPU, memory) summed across every app for
-the last `?hours=` (default 24), for a daily "here's what happened" report. It
-calls the Deno Deploy **v2** analytics API with `DD_ORG_TOKEN` (a `ddo_` org token)
-and is bearer-authed with `DD_USAGE_SECRET`. Set a check's URL to
-`internal:deno-usage?hours=24` (see below), `notifyOnSuccess: true`, and captures
-like `{ requests: "requests", kvReads: "kvReadUnits", kvWrites: "kvWriteUnits" }`.
-
-**Deno Deploy spend guardrail.** `GET /api/deno-spend` returns the org's real
-usage-based spend (`spendUSD`), the live hard limit (`limitUSD`, so raising it in
-Deno updates the check automatically), `pctOfLimit`, and a per-dimension
-breakdown. The public token API exposes usage, **not dollars**, so this reads the
-console's internal billing API (tRPC) with a browser **session cookie**
-(`DD_SESSION_TOKEN` = the `token=ddw_…` value) — undocumented and the cookie
-**expires**, so on a rejected session the route returns 401 and the monitor
-alerts "refresh DD_SESSION_TOKEN" rather than failing silent. Set a check's URL
-to `internal:deno-spend`, `expression: pctOfLimit`, `comparatorOp: gte`,
-`threshold: 80`.
-
-**`internal:` checks — how Canary monitors itself.** A deployment cannot
-HTTP-fetch its own hostname (Deno Deploy answers **508 Loop Detected**), so a
-check pointed at Canary's own `/api/deno-*` route can never run. Instead give the
-check an `internal:` URL and Canary calls the producer **in-process**:
-
-| Check URL | Produces |
-| --- | --- |
-| `internal:deno-usage?day=yesterday` | the same JSON as `GET /api/deno-usage` |
-| `internal:deno-spend` | the same JSON as `GET /api/deno-spend` |
-
-**Digest window.** `deno-usage` takes one of three window params (both on the
-`internal:` URL and the HTTP route), in precedence order:
-
-| Param | Window |
-| --- | --- |
-| `?day=yesterday` / `?day=today` | that whole calendar day, `00:00`–`23:59:59.999` Eastern |
-| `?from=…&to=…` | an explicit range (both required) |
-| `?hours=N` | a rolling N-hour window ending now — the default, `N=24` |
-
-**Prefer `?day=` for a recurring check**: an absolute `from`/`to` is frozen, so a
-daily digest would re-report the same date forever. `from`/`to` accept
-`YYYY-MM-DD`, `"YYYY-MM-DD HH:MM"`, or a full ISO timestamp — a value with **no
-zone is read as Eastern**, an explicit `Z`/offset is honoured as written.
-
-Apps with **no activity at all** in the window (no requests, no KV reads, no KV
-writes) are omitted from `byApp` — a row of zeroes is noise. Their count is kept
-as `appsIdle` (`appsActive` = `byApp.length`), and the `breakdown` table ends
-with a `+N idle` line.
-
-Times are stored as UTC ISO instants (`window.since`/`until`) and additionally
-rendered for a human in Eastern as `HH:MM DD/Month/YYYY TZ`
-(`window.sinceLocal`/`untilLocal`, plus a combined `window.label` — capture that
-one for an alert body).
-
-No network hop, so no `Authorization` header and **no `DD_USAGE_SECRET`
-needed** — the data never leaves the isolate. The wizard's **Test request**
-button resolves `internal:` URLs too. The HTTP routes remain for external
-callers; a check should use `internal:`. An unknown producer name fails loudly at
-run time listing the valid ones.
+The four `DD_*` variables are only needed for the Deno Deploy usage digest and
+spend guardrail — see [Deno Deploy usage & spend](#deno-deploy-usage--spend).
+Everything else works without them.
 
 ### 2. Run locally
 
@@ -295,6 +249,7 @@ POST /monitors/:id/check
 
 | Field | Description |
 |-------|-------------|
+| `url` | Usually an `http(s)://` URL to fetch. May instead be an **`internal:<producer>`** URL, which runs a producer inside Canary rather than over the network — required when monitoring Canary's own deployment, since Deno Deploy refuses a self-fetch with **508 Loop Detected**. See [Deno Deploy usage & spend](#deno-deploy-usage--spend). |
 | `expression` | Dot-notation path into the JSON response body. Two robustness extras: list `\|`-separated fallbacks (`totalErrors\|unrecoveredErrors`) and the first that resolves to a number wins; or use the sentinel **`$errors`** to read the error count regardless of the producer's field name (known names like `totalErrors`/`unrecoveredErrors` → an `errors[]` array's length → a guarded fuzzy match, never a rate/threshold field). |
 | `comparatorOp` | `gt`, `lt`, `gte`, `lte`, or `eq` |
 | `threshold` | Numeric value to compare against |
@@ -422,6 +377,111 @@ The dashboard's **Reports** tab lists recent fired checks per monitor (newest fi
 **Corrupt-row resilience.** Run history is read one row at a time, so a single stored run value that fails to deserialize (a `RangeError` — e.g. a legacy oversized row) truncates only that monitor's history at the bad row instead of `500`-ing the whole tab. The offending row is surfaced in the report's `corrupt[]` and shown as a banner on the Reports tab: rows with an `exact` key (recovered from the `run_idx` sidecar written alongside every new run) get a **one-click Purge**; legacy rows written before the index show their timestamp bracket and a form to purge by the `runId` from the logs (and a **Dismiss** button when the key is unrecoverable). Purges call the `DELETE` endpoint above. The run path is hardened to match: a corrupt *newest* row no longer wedges a monitor's run/alert loop, and a failed run-history commit throws rather than logging a false success.
 
 ---
+
+### Deno Deploy usage & spend
+
+Two producers that report on the Deno Deploy **organization** itself: a daily
+usage digest, and a guardrail on real dollar spend.
+
+**Use them from a check via an `internal:` URL, not over HTTP.** A deployment
+cannot HTTP-fetch its own hostname — Deno Deploy answers **508 Loop Detected** —
+so a check pointed at Canary's own `/api/deno-*` route can never run. An
+`internal:` URL runs the producer in-process instead: no network hop, no
+`Authorization` header, no `DD_USAGE_SECRET`, and the data never leaves the
+isolate. The wizard's **Test request** button resolves `internal:` URLs too. An
+unknown producer name fails loudly at run time, listing the valid ones.
+
+| Check URL | Equivalent HTTP route |
+|-----------|----------------------|
+| `internal:deno-usage?day=yesterday` | `GET /api/deno-usage?day=yesterday` |
+| `internal:deno-spend` | `GET /api/deno-spend` |
+
+The HTTP routes remain for **external** callers and are bearer-authed with
+`DD_USAGE_SECRET` (503 if it isn't set).
+
+#### Usage digest — `deno-usage`
+
+Org-wide usage summed across every app: requests, KV read/write units, egress,
+CPU and memory, plus a **per-app breakdown**. Reads the Deno Deploy **v2**
+analytics API with `DD_ORG_TOKEN`. Per-app analytics are chunked to respect the
+API's 7-day range cap; one app's failed call is counted in `appsErrored` rather
+than blanking the digest.
+
+Pick the window with exactly one of:
+
+| Param | Window |
+|-------|--------|
+| `?day=yesterday` / `?day=today` | that whole calendar day, `00:00`–`23:59:59.999` Eastern (a day still in progress is clamped to now) |
+| `?from=…&to=…` | an explicit range, both required |
+| `?hours=N` | rolling N-hour window ending now — the default, `N=24` |
+
+**Prefer `?day=` for a recurring check.** An absolute `from`/`to` is frozen, so a
+daily digest would re-report the same date forever. `from`/`to` accept
+`YYYY-MM-DD`, `"YYYY-MM-DD HH:MM"`, or a full ISO timestamp; a value carrying
+**no zone is read as Eastern**, an explicit `Z`/offset is honoured as written.
+
+```jsonc
+{
+  "ok": true,
+  "window": {
+    "since": "2026-07-19T04:00:00.000Z",   // UTC ISO — unambiguous, for machines
+    "until": "2026-07-20T03:59:59.999Z",
+    "hours": 24,
+    "sinceLocal": "00:00 19/July/2026 EDT", // HH:MM DD/Month/YYYY TZ, Eastern
+    "untilLocal": "23:59 19/July/2026 EDT",
+    "label": "19/July/2026 00:00 → 23:59 EDT"  // capture this for an alert body
+  },
+  "apps": 23, "appsActive": 6, "appsIdle": 17, "appsErrored": 0,
+  "requests": 21031, "kvReadUnits": 87199, "kvWriteUnits": 15105,
+  "egressGB": 0.194, "cpuHours": 1.45, "memoryGBHours": 7.4,
+  "byApp": [ { "app": "autobottom", "requests": 12345, "kvReadUnits": 54201,
+               "kvWriteUnits": 8102, "egressGB": 0.12, "cpuHours": 0.9,
+               "memoryGBHours": 4.1 } ],
+  "breakdown": "autobottom  12,345 req  54,201 KVr  8,102 KVw\n+17 idle"
+}
+```
+
+Apps with **no activity at all** (no requests, no KV reads, no KV writes) are
+omitted from `byApp` — a row of zeroes is noise. Their count is kept as
+`appsIdle`, and `breakdown` ends with a `+N idle` line. An app whose analytics
+call failed carries `"errored": true`, so incomplete numbers can't read as a
+genuine zero.
+
+`breakdown` is `byApp` pre-rendered as a fixed-width text table, because a
+capture on an array would render as raw JSON in an email.
+
+**As a daily report** — URL `internal:deno-usage?day=yesterday`, `expression:
+requests`, `comparatorOp: gte`, `threshold: 0` (a condition that always passes),
+`notifyOnSuccess: true`, and captures such as
+`{ requests: "requests", kvReads: "kvReadUnits", kvWrites: "kvWriteUnits", window: "window.label", breakdown: "breakdown" }`.
+Capture a single app by index, e.g. `byApp.0.requests`.
+
+#### Spend guardrail — `deno-spend`
+
+The org's real usage-based spend (`spendUSD`) against its **live** hard limit
+(`limitUSD` — raise it in Deno and the check follows automatically),
+`pctOfLimit`, the configured alert `thresholds`, and a per-dimension breakdown.
+
+The public token API exposes usage but **not dollars**, so this reads the
+console's internal billing API (tRPC) using a browser **session cookie**
+(`DD_SESSION_TOKEN`) plus `DD_ORG_ID`. That interface is undocumented and the
+cookie **expires**: on a rejected session it returns **401** so the monitor
+alerts "refresh `DD_SESSION_TOKEN`" rather than silently reporting a stale or
+zero number.
+
+```jsonc
+{
+  "ok": true,
+  "spendUSD": 300.0, "limitUSD": 400, "pctOfLimit": 75.0,
+  "thresholds": [140, 180],
+  "items": [ { "description": "KV Reads (units)", "costUSD": 112.5 } ],
+  "asOf": "2026-07-20T15:45:00.000Z"
+}
+```
+
+**As a guardrail** — URL `internal:deno-spend`, `expression: pctOfLimit`,
+`comparatorOp: gte`, `threshold: 80`, `notifyOnRecover: true`, captures
+`{ pct: "pctOfLimit", spend: "spendUSD", limit: "limitUSD" }`, hourly cron.
 
 ### Diagnostics
 
@@ -623,8 +683,12 @@ In Deno Deploy logs, you should see exactly one `🔍 cron tick:` per minute fol
    - `ADMIN_USERNAME` + `ADMIN_PASSWORD` (required — seeds the admin user on first boot)
    - `POSTMARK_SERVER_TOKEN` + `POSTMARK_FROM_EMAIL` (for email alerts and invite emails)
    - `ZAPIER_SMS_URL` (for SMS alerts)
-   - `DD_ORG_TOKEN` + `DD_USAGE_SECRET` (only if using the `/api/deno-usage` digest)
-   - `DD_SESSION_TOKEN` + `DD_ORG_ID` (only if using the `/api/deno-spend` guardrail)
+   - `DD_ORG_TOKEN` (only for the Deno usage digest)
+   - `DD_SESSION_TOKEN` + `DD_ORG_ID` (only for the Deno spend guardrail)
+   - `DD_USAGE_SECRET` (only to expose the `/api/deno-*` routes to external
+     callers — `internal:` checks don't need it)
+
+   Note the `DD_` prefix: Deno Deploy **rejects** unrecognised `DENO_*` names.
 
 Deno Deploy provides Deno KV out of the box. No additional database setup required.
 
@@ -643,6 +707,15 @@ Deno Deploy provides Deno KV out of the box. No additional database setup requir
 | `LOG_LEVEL` | No (default `info`) | Minimum log level to emit: `debug`, `info`, `warn`, or `error`. At `info`, bootstrap/idle-cron chatter is suppressed (a cold-start logs nothing) and only real activity — runs, alerts, warnings, errors — shows. Set `debug` for the full firehose. Each line is tagged `[level]`, and lines inside a check run also carry `[run=<id>]` (matching the stored run's `runId`) so one run's logs group together. |
 | `ALLOW_PRIVATE_FETCH` | No (default off) | SSRF guard escape hatch. By default the check runner and the `/test-request` proxy refuse to fetch loopback/link-local/private/cloud-metadata hosts. Set to `1` to allow them — only when intentionally monitoring an internal service on a trusted private network. |
 | `SMS_STAGGER_MS` | No (default `4000`) | Delay between consecutive SMS sends when an alert/relay fans out to multiple numbers (first immediate, each subsequent +Δ), throttling the Zapier webhook. Lower it for a faster provider, or `0` to send all at once. |
+| `DD_ORG_TOKEN` | For the Deno usage digest | Deno Deploy **organization** access token (`ddo_…`, from the Deploy dashboard → Settings → Access Tokens). Reads the v2 analytics API. Note this is *not* the same as a deploy key such as `DD_API_KEY`. |
+| `DD_SESSION_TOKEN` | For the Deno spend guardrail | The Deno **console session cookie** value (the `token=ddw_…` cookie). Reads real dollars from the console's internal billing API. **Expires** — a rejected session makes the check fail loudly rather than report a stale number. |
+| `DD_ORG_ID` | For the Deno spend guardrail | Your Deno organization's UUID. |
+| `DD_USAGE_SECRET` | No | Bearer required by the public `/api/deno-usage` and `/api/deno-spend` HTTP routes. Unset leaves those routes returning 503; **`internal:` checks don't need it** and are the recommended way to use these. |
+
+> **Why `DD_` and not `DENO_`:** Deno Deploy reserves the `DENO_` namespace and
+> rejects any variable in it that it doesn't itself define ("Environment variable
+> names starting with 'DENO_' are restricted except for allowed ones"), so these
+> follow the `DD_` prefix instead. Don't "tidy" them back.
 
 ntfy doesn't need any env vars — the topic is configured per-recipient on each monitor.
 
