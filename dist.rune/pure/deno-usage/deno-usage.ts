@@ -395,6 +395,63 @@ export function formatTrend(series: DayUsage[]): string {
   return out.join("\n");
 }
 
+/** One app's day-by-day series across the trailing window, arrays aligned to
+ *  the trend's `series` (oldest first). */
+export interface PerAppSeries {
+  app: string;
+  requests: number[];
+  kvReadUnits: number[];
+  kvWriteUnits: number[];
+  costUSD: number[];
+  /** Period totals, for ranking and the matrix's total column. */
+  totalRequests: number;
+  totalCostUSD: number;
+}
+
+/**
+ * Shape per-app per-day raw totals into ranked series rows. Only apps with any
+ * activity in the PERIOD appear (an app idle all week is noise here too);
+ * busiest first by period requests, ties on cost then name.
+ */
+export function buildPerAppSeries(
+  appDay: Record<string, Record<string, Record<Metric, number>>>,
+  dayKeys: string[],
+): PerAppSeries[] {
+  const rows: PerAppSeries[] = [];
+  for (const [app, byDay] of Object.entries(appDay)) {
+    const requests: number[] = [];
+    const kvReadUnits: number[] = [];
+    const kvWriteUnits: number[] = [];
+    const costUSD: number[] = [];
+    let totalRequests = 0;
+    let totalCostUSD = 0;
+    for (const key of dayKeys) {
+      const t = byDay[key] ?? zeroTotals();
+      requests.push(t.request_count);
+      kvReadUnits.push(t.kv_read_units);
+      kvWriteUnits.push(t.kv_write_units);
+      const c = round(listCost(t).totalUSD, 4);
+      costUSD.push(c);
+      totalRequests += t.request_count;
+      totalCostUSD += c;
+    }
+    if (totalRequests > 0 || kvReadUnits.some((n) => n > 0) || kvWriteUnits.some((n) => n > 0)) {
+      rows.push({
+        app,
+        requests,
+        kvReadUnits,
+        kvWriteUnits,
+        costUSD,
+        totalRequests,
+        totalCostUSD: round(totalCostUSD, 4),
+      });
+    }
+  }
+  return rows.sort((a, b) =>
+    b.totalRequests - a.totalRequests || b.totalCostUSD - a.totalCostUSD || a.app.localeCompare(b.app)
+  );
+}
+
 /** Assemble the whole digest email body: the reporting day's totals, its
  *  per-app breakdown, then the trailing trend. One `{report}` capture so the
  *  alert template doesn't have to reproduce this layout. */

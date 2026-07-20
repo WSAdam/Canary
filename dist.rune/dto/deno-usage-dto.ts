@@ -1,7 +1,7 @@
 /** The `/api/deno-usage` response: org-wide Deno Deploy usage over a window,
  *  summed across every app. Flat numeric fields so a Canary check can extract
  *  any of them by dot-path (observed) or capture (`{kvReads}` etc.). */
-import type { AppUsage, DayUsage, TrendComparison, TrendKey } from "../pure/deno-usage/deno-usage.ts";
+import type { AppUsage, DayUsage, PerAppSeries, TrendComparison, TrendKey } from "../pure/deno-usage/deno-usage.ts";
 
 export interface DenoUsageDto {
   ok: true;
@@ -57,6 +57,9 @@ export interface DenoUsageDto {
     days: number;
     /** Oldest first, so the most recent day reads last. */
     series: DayUsage[];
+    /** Each active app's day-by-day requests/KV/cost, arrays aligned to
+     *  `series`, busiest first. Feeds the by-app trend matrices. */
+    perApp: PerAppSeries[];
     /** Per-metric change of the latest day vs the prior day and vs the average
      *  of the preceding days (null where there's no meaningful baseline). */
     comparison: Record<TrendKey, TrendComparison>;
@@ -64,6 +67,12 @@ export interface DenoUsageDto {
     table: string;
   };
   /** The whole email body — reporting day, per-app breakdown, and the trailing
-   *  trend — assembled ready for a single `{report}` capture. */
+   *  trend — assembled ready for a single `{report}` capture (plain text). */
   report: string;
+  /** The same report as an HTML fragment — real tables that survive Gmail's
+   *  proportional font, delta arrows colored, plus per-app requests/cost
+   *  matrices across the trailing days. Capture as `{reportHtml}` and make it
+   *  the entire email message; the email channel detects HTML and sends it as
+   *  HtmlBody. */
+  reportHtml: string;
 }

@@ -27,7 +27,12 @@ export class Email extends BaseAlertChannel {
     const defaultBody = buildEmailBody(run, ctx);
     const body = renderAlertMessage(alert.emailMessage, run, vars, defaultBody);
 
-    log.info(`📧 email.send: to=${this.emailAddress} subject="${subject}"`);
+    // An HTML-shaped body (e.g. a template of just {reportHtml}) goes out as
+    // Postmark's HtmlBody so its tables/styling actually render; plain text
+    // keeps using TextBody. Detection is on the RENDERED body, so a template
+    // whose captures produce HTML works without any extra config.
+    const html = isHtmlBody(body);
+    log.info(`📧 email.send: to=${this.emailAddress} subject="${subject}" html=${html}`);
     const response = await fetch("https://api.postmarkapp.com/email", {
       method: "POST",
       headers: {
@@ -39,7 +44,7 @@ export class Email extends BaseAlertChannel {
         From: from,
         To: this.emailAddress,
         Subject: subject,
-        TextBody: body,
+        ...(html ? { HtmlBody: body } : { TextBody: body }),
       }),
     });
 
@@ -54,6 +59,13 @@ export class Email extends BaseAlertChannel {
     // Success path: drain the unused body so the stream/connection is released.
     await response.body?.cancel();
   }
+}
+
+/** Does a rendered alert body look like an HTML fragment rather than prose?
+ *  Anchored to a leading known tag so a text message that merely CONTAINS a
+ *  `<` (e.g. "observed < 5") is never misclassified. */
+export function isHtmlBody(body: string): boolean {
+  return /^\s*<(!doctype|html|div|table|section|p|h[1-6]|span|b|strong)[\s>]/i.test(body);
 }
 
 export function buildEmailBody(run: RunResultDto, ctx?: AlertContext): string {

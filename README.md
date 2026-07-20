@@ -508,16 +508,20 @@ day, or a previous value of 0 — "up from nothing" isn't a percentage), and
 renders as `—`. A day with no traffic still gets a row, so a quiet day reads as a
 zero rather than vanishing from the trend.
 
-##### `report` — the whole email in one capture
+##### `report` / `reportHtml` — the whole email in one capture
 
-Every digest carries a `report` string: the day's totals, the per-app breakdown,
-and (when requested) the trailing trend, already laid out. Capture it once as
-`{report}` instead of reproducing that layout in the alert template.
+Every digest carries the assembled report twice: `report` (plain text, for ntfy
+or a text-only channel) and **`reportHtml`** — the same content as real HTML
+tables, plus **per-app requests and cost matrices across the trailing days**.
+Use `reportHtml` for email: Gmail renders plain text in a proportional font, so
+the text tables lose their alignment there. The email channel detects an
+HTML-shaped message body and sends it as Postmark `HtmlBody` automatically — a
+template of just `{reportHtml}` is all it takes.
 
 **As a daily report** — URL `internal:deno-usage?day=yesterday&trailing=7`,
 **`reportOnly: true`** (the wizard's "Report mode" toggle — no expression, no
-comparator, no threshold), and a single capture `{ report: "report" }` with an
-email body of just `{report}`.
+comparator, no threshold), and a single capture `{ reportHtml: "reportHtml" }`
+with an email body of just `{reportHtml}`.
 
 For a hand-built layout instead, capture the pieces —
 `{ requests: "requests", kvReads: "kvReadUnits", kvWrites: "kvWriteUnits", window: "window.label", breakdown: "breakdown", trend: "trailing.table" }`

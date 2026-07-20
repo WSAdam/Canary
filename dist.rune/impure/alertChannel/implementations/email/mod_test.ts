@@ -59,3 +59,14 @@ Deno.test("buildEmailBody - no logs line when none is configured", () => {
   const body = buildEmailBody({ ...base, observed: 0, passed: true }, { reason: "heartbeat" });
   assert(!body.includes("Logs:"));
 });
+
+import { isHtmlBody } from "./mod.ts";
+
+Deno.test("isHtmlBody - an HTML fragment is detected; prose with '<' is not", () => {
+  assert(isHtmlBody('<div style="font-family:sans-serif">report</div>'));
+  assert(isHtmlBody("  <table><tr><td>x</td></tr></table>"));
+  assert(!isHtmlBody("Status: OK"));
+  // A comparison in prose must never flip an email to HTML mode.
+  assert(!isHtmlBody("observed <5 which is fine"));
+  assert(!isHtmlBody("errors < threshold"));
+});

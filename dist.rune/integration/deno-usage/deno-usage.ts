@@ -1,4 +1,5 @@
 import {
+  buildPerAppSeries,
   buildReport,
   compareLatest,
   formatBreakdown,
@@ -16,6 +17,7 @@ import {
   type TrendComparison,
   type TrendKey,
 } from "../../pure/deno-usage/deno-usage.ts";
+import { buildHtmlReport } from "../../pure/deno-usage/report-html.ts";
 import type { AnalyticsResponse, AppUsage } from "../../pure/deno-usage/deno-usage.ts";
 import type { DenoUsageDto } from "../../dto/deno-usage-dto.ts";
 import { CanaryError } from "../../dto/_shared.ts";
@@ -104,6 +106,8 @@ export async function getDenoUsage(params: URLSearchParams = new URLSearchParams
   const byApp: AppUsage[] = [];
   // Org-wide per-day totals, accumulated across every app.
   const dayTotals: Record<string, Record<Metric, number>> = {};
+  // Per-app per-day totals — feeds the "requests/cost by app" trend matrices.
+  const appDay: Record<string, Record<string, Record<Metric, number>>> = {};
   let appsErrored = 0;
   for (const app of apps) {
     const parts: Array<Record<Metric, number>> = [];
@@ -116,8 +120,10 @@ export async function getDenoUsage(params: URLSearchParams = new URLSearchParams
         // the app's own totals count only the buckets inside it.
         parts.push(sumAnalyticsWhere(res, inPrimary));
         if (days.length > 0) {
+          const slot = appDay[app.slug] ??= {};
           for (const [key, totals] of Object.entries(sumAnalyticsByDay(res, (t) => dayKey(new Date(t))))) {
             dayTotals[key] = mergeTotals([dayTotals[key] ?? mergeTotals([]), totals]);
+            slot[key] = mergeTotals([slot[key] ?? mergeTotals([]), totals]);
           }
         }
       } else {
@@ -151,10 +157,12 @@ export async function getDenoUsage(params: URLSearchParams = new URLSearchParams
   // A day with no traffic still gets a row (zeroes), so a gap in the series
   // reads as "quiet day" rather than silently vanishing from the trend.
   const series = days.map((d) => toDayUsage(d.key, d.label, dayTotals[d.key] ?? mergeTotals([])));
+  const perAppSeries = series.length > 0 ? buildPerAppSeries(appDay, days.map((d) => d.key)) : undefined;
   const trailing = series.length > 0
     ? {
       days: series.length,
       series,
+      perApp: perAppSeries!,
       comparison: Object.fromEntries(
         TREND_COLUMNS.map((c) => [c.key, compareLatest(series, c.key)]),
       ) as Record<TrendKey, TrendComparison>,
@@ -206,6 +214,24 @@ export async function getDenoUsage(params: URLSearchParams = new URLSearchParams
       hours,
       trend: trailing?.table,
       trendDays: trailing?.days,
+    }),
+    reportHtml: buildHtmlReport({
+      windowLabel: formatRange(since, until),
+      requests: t.request_count,
+      kvReadUnits: t.kv_read_units,
+      kvWriteUnits: t.kv_write_units,
+      egressGB: round(t.network_egress_bytes / 1e9, 3),
+      cpuHours: round(t.cpu_seconds / 3600, 2),
+      apps: apps.length,
+      appsActive: active.length,
+      byApp: active,
+      cost,
+      projectedMonthlyUSD: round(projectedMonthlyUSD, 2),
+      series: trailing?.series,
+      comparison: trailing
+        ? TREND_COLUMNS.map((c) => ({ label: c.label, ...trailing.comparison[c.key] }))
+        : undefined,
+      perApp: perAppSeries,
     }),
   };
   log.info(`✅ deno-usage: ${dto.apps} apps (${appsErrored} errored) — ${dto.requests} req, ${dto.kvReadUnits} KV-read, ${dto.kvWriteUnits} KV-write`);
