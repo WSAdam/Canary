@@ -542,9 +542,10 @@ console's internal billing API (tRPC) using a browser **session cookie**
 (`DD_SESSION_TOKEN`) plus `DD_ORG_ID`. Both resolve from the **Canary secret
 store first**, then the deploy env — so refreshing the cookie is paste-and-save
 on the dashboard, **no redeploy**. The Secrets section has a **Get Deno session
-token** button that copies a DevTools grab-snippet, opens the Deno console, and
-prefills the secret key (a page can't read another origin's cookies, so it's
-two clicks rather than one). The interface is undocumented and the cookie
+token** button that opens the Deno console, prefills the secret key, and walks
+the grab (DevTools → Application → Cookies → `token`): the cookie is HttpOnly
+on another origin, so no button — and no console snippet — can read it
+automatically. The interface is undocumented and the cookie
 **expires**: on a rejected session it returns **401** so the monitor alerts
 "refresh `DD_SESSION_TOKEN`" rather than silently reporting a stale or zero
 number.

@@ -488,7 +488,7 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
 
   <div style="margin-top:14px;padding:12px 14px;border:1px solid var(--b);border-radius:8px">
     <div style="font-size:12px;font-weight:600;margin-bottom:4px">Deno console session (for the spend guardrail)</div>
-    <p style="font-size:12px;color:#666;margin:0 0 10px">The spend check signs in with your <span style="font-family:ui-monospace,Menlo,monospace">console.deno.com</span> session cookie, saved here as the secret <span style="font-family:ui-monospace,Menlo,monospace;color:#FFD700">DD_SESSION_TOKEN</span>. It expires every few weeks — when the monitor alerts "session expired", refresh it here. A browser can't read another site's cookies, so this is two clicks instead of one:</p>
+    <p style="font-size:12px;color:#666;margin:0 0 10px">The spend check signs in with your <span style="font-family:ui-monospace,Menlo,monospace">console.deno.com</span> session cookie, saved here as the secret <span style="font-family:ui-monospace,Menlo,monospace;color:#FFD700">DD_SESSION_TOKEN</span>. It expires every few weeks — when the monitor alerts "session expired", refresh it here. The cookie is HttpOnly on another site, so no button can read it for you — this walks the 20-second manual grab:</p>
     <button class="btn btn-ghost btn-sm" onclick="grabDenoToken()">Get Deno session token</button>
     <div id="deno-token-hint" style="display:none;font-size:12px;color:#666;margin-top:10px;line-height:1.7"></div>
   </div>
@@ -1211,24 +1211,20 @@ async function addSecret() {
   } catch (e) { fail(e.message); }
 }
 
-async function grabDenoToken() {
+function grabDenoToken() {
   // A page can only read ITS OWN origin's cookies, so Canary can't lift the
-  // console.deno.com session directly. Closest legit flow: copy a one-liner
-  // for the Deno console's DevTools that puts the token on the clipboard,
-  // open the console, and prefill the secret key for the paste-back.
-  const snippet = "copy(document.cookie.split('; ').find(function(c){return c.indexOf('token=')===0})" +
-    "?.slice(6) ?? 'token cookie is HttpOnly here - DevTools > Application > Cookies > console.deno.com > token > copy its Value')";
-  try { await navigator.clipboard.writeText(snippet); } catch (_e) { /* hint shows the snippet as fallback */ }
+  // console.deno.com session for you — and the cookie is HttpOnly, so even a
+  // DevTools console snippet over there can't read it. The Application tab is
+  // the reliable route; this button opens the console and walks it.
   document.getElementById('sec-key').value = 'DD_SESSION_TOKEN';
   const hint = document.getElementById('deno-token-hint');
   hint.style.display = 'block';
   hint.innerHTML =
-    '<b>A grab-snippet is on your clipboard.</b> In the Deno console tab that just opened:' +
-    '<br>1. Open DevTools (F12 / Cmd-Opt-I) &rarr; <b>Console</b> tab' +
-    '<br>2. Paste and hit Enter &mdash; the token is now on your clipboard' +
-    '<br>&nbsp;&nbsp;&nbsp;<span style="font-family:ui-monospace,Menlo,monospace;font-size:11px;word-break:break-all;color:#888">' + esc(snippet) + '</span>' +
-    '<br>3. Come back here: the key is prefilled &mdash; paste into <b>value</b> and hit <b>Save secret</b>' +
-    '<br><span style="color:#888">If the paste says the cookie is HttpOnly: DevTools &rarr; Application &rarr; Cookies &rarr; console.deno.com &rarr; copy the <b>token</b> row&rsquo;s Value instead.</span>';
+    'In the Deno console tab that just opened:' +
+    '<br>1. Open DevTools (F12 / Cmd-Opt-I) &rarr; <b>Application</b> tab (behind the &raquo; chevron if hidden)' +
+    '<br>2. Left sidebar: <b>Storage &rarr; Cookies &rarr; https://console.deno.com</b>' +
+    '<br>3. Click the row named <b>token</b> &mdash; copy its <b>Value</b> (the <span style="font-family:ui-monospace,Menlo,monospace">ddw_&hellip;</span> string)' +
+    '<br>4. Back here: the key is prefilled &mdash; paste into <b>value</b> and hit <b>Save secret</b>';
   window.open('https://console.deno.com', '_blank');
 }
 
