@@ -586,6 +586,15 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
       </div>
       <div id="test-error" style="display:none;color:var(--red);font-size:13px;margin-bottom:12px"></div>
 
+      <div class="toggle-row">
+        <div>
+          <div class="toggle-label">Report mode — no threshold, always send</div>
+          <div class="toggle-desc">For digests/reports: skip the pass/fail comparison entirely. Every successful fetch counts as healthy and sends the alert (email &amp; ntfy) on this check's schedule. A fetch error still alerts as a failure. Use captures below to put the response's values in the message.</div>
+        </div>
+        <input type="checkbox" id="w-report-only" onchange="toggleReportMode()">
+      </div>
+
+      <div id="comparator-block">
       <div class="form-row col3">
         <div>
           <label for="w-expr">Response path *</label>
@@ -608,6 +617,7 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
         </div>
       </div>
       <div id="comparator-hint" style="margin-top:10px;padding:10px 14px;background:#0f1a0f;border:1px solid #1a3a1a;border-radius:8px;font-size:13px;line-height:1.7;display:none"></div>
+      </div>
 
       <div class="form-group" style="margin-top:12px">
         <label>Response captures <span style="color:var(--m);text-transform:none;font-weight:400">(optional — use values in alert messages)</span></label>
@@ -1747,6 +1757,8 @@ function resetWizard() {
   document.getElementById('w-freq').value = 'daily';
   document.getElementById('w-days').value = 'daily';
   document.getElementById('w-body').value = '';
+  document.getElementById('w-report-only').checked = false;
+  toggleReportMode();
   document.getElementById('headers-list').innerHTML = '';
   document.getElementById('captures-list').innerHTML = '';
   document.getElementById('w-email-addr').value = '';
@@ -1834,11 +1846,15 @@ async function wizardStep1() {
 
 async function wizardStep2() {
   const url = document.getElementById('w-url').value.trim();
+  const reportOnly = document.getElementById('w-report-only').checked;
   const expression = document.getElementById('w-expr').value.trim();
   const threshold = parseFloat(document.getElementById('w-threshold').value);
   if (!url) { document.getElementById('ws2-err').textContent = 'URL is required.'; return; }
-  if (!expression) { document.getElementById('ws2-err').textContent = 'JSON expression is required.'; return; }
-  if (isNaN(threshold)) { document.getElementById('ws2-err').textContent = 'Threshold must be a number.'; return; }
+  // Report mode has no comparator — skip the expression/threshold requirements.
+  if (!reportOnly) {
+    if (!expression) { document.getElementById('ws2-err').textContent = 'JSON expression is required.'; return; }
+    if (isNaN(threshold)) { document.getElementById('ws2-err').textContent = 'Threshold must be a number.'; return; }
+  }
 
   let cron = '';
   if (S.schedMode === 'cron') {
@@ -1875,8 +1891,9 @@ async function wizardStep2() {
       body: bodyVal || undefined,
       expression,
       comparatorOp: document.getElementById('w-op').value,
-      threshold,
+      threshold: reportOnly && isNaN(threshold) ? 0 : threshold,
       cron,
+      reportOnly: reportOnly || undefined,
       notifyOnRecover: document.getElementById('w-recover').checked,
       notifyOnSuccess: document.getElementById('w-notify-success').checked,
       logsUrl: document.getElementById('w-logs-url').value.trim() || undefined,
@@ -2024,6 +2041,8 @@ async function prefillCheck(monitorId) {
     document.getElementById('w-threshold').value = d.threshold ?? '';
     document.getElementById('w-recover').checked = !!d.notifyOnRecover;
     document.getElementById('w-notify-success').checked = !!d.notifyOnSuccess;
+    document.getElementById('w-report-only').checked = !!d.reportOnly;
+    toggleReportMode();
     document.getElementById('w-logs-url').value = d.logsUrl || '';
     updateBodyVisibility();
     updateComparatorHint();
@@ -2204,6 +2223,14 @@ function updateComparatorHint() {
   el.innerHTML =
     \`<div style="color:#ff6b6b">📱 <strong>Text sent</strong> when <code style="background:#1a0f0f;padding:1px 5px;border-radius:3px">\${expr}</code> is \${inverseLabel} \${t} &nbsp;—&nbsp; e.g. value is <strong>\${exampleFail}</strong></div>\` +
     \`<div style="color:#6bcb77;margin-top:4px">✅ <strong>No text</strong> when <code style="background:#0f1a0f;padding:1px 5px;border-radius:3px">\${expr}</code> is \${sym} \${t} &nbsp;—&nbsp; e.g. value is <strong>\${examplePass}</strong></div>\`;
+}
+
+function toggleReportMode() {
+  const on = document.getElementById('w-report-only').checked;
+  // Hide (not disable) the comparator block — in report mode those fields are
+  // ignored server-side, so showing them would only invite confusion.
+  document.getElementById('comparator-block').style.display = on ? 'none' : '';
+  if (on) document.getElementById('ws2-err').textContent = '';
 }
 
 function updateSimpleSched() {
@@ -2547,7 +2574,14 @@ function renderClickableJson(val, path) {
     return \`<span class="json-leaf" data-path="\${esc(path)}" data-num="\${val}" style="color:var(--y);cursor:pointer" title="Click to use this value">\${val}</span>\`;
   }
   if (typeof val === 'string') {
-    const display = val.length > 80 ? val.slice(0,80) + '…' : val;
+    // A multi-line string is a pre-rendered block (the usage digest's report /
+    // breakdown / trend tables) — show it WHOLE and keep its newlines and column
+    // alignment, since previewing exactly what the alert will send is the point
+    // of this panel. Clipping those at 80 chars hid the entire body.
+    if (val.includes('\\n')) {
+      return \`<pre style="margin:4px 0;padding:8px;background:var(--bg2,rgba(255,255,255,.04));border-radius:6px;white-space:pre;overflow-x:auto;color:#86efac">\${esc(val)}</pre>\`;
+    }
+    const display = val.length > 200 ? val.slice(0,200) + '…' : val;
     const isNum = !isNaN(Number(val)) && val !== '';
     const style = isNum ? 'color:var(--y);cursor:pointer' : 'color:#86efac';
     const attrs = isNum ? \` data-path="\${esc(path)}" data-num="\${Number(val)}"\` : '';

@@ -72,17 +72,23 @@ export async function configureCheck(input: ConfigureCheckDto): Promise<CheckDto
   requireString(input.cron, "cron");
   requireString(input.url, "url");
   requireString(input.method, "method");
-  requireString(input.expression, "expression");
-  requireString(input.comparatorOp, "comparatorOp");
-  if (!COMPARATOR_OPS.has(input.comparatorOp)) {
-    throw new CanaryError(
-      "validation-error",
-      `Unknown comparatorOp "${input.comparatorOp}" — expected lt, gt, lte, gte, or eq`,
-      400,
-    );
+  if (input.reportOnly !== undefined && typeof input.reportOnly !== "boolean") {
+    throw new CanaryError("validation-error", "reportOnly must be a boolean", 400);
   }
-  if (typeof input.threshold !== "number" || Number.isNaN(input.threshold)) {
-    throw new CanaryError("validation-error", "threshold is required and must be a number", 400);
+  const reportOnly = input.reportOnly === true;
+  if (!reportOnly) {
+    requireString(input.expression, "expression");
+    requireString(input.comparatorOp, "comparatorOp");
+    if (!COMPARATOR_OPS.has(input.comparatorOp)) {
+      throw new CanaryError(
+        "validation-error",
+        `Unknown comparatorOp "${input.comparatorOp}" — expected lt, gt, lte, gte, or eq`,
+        400,
+      );
+    }
+    if (typeof input.threshold !== "number" || Number.isNaN(input.threshold)) {
+      throw new CanaryError("validation-error", "threshold is required and must be a number", 400);
+    }
   }
   // Validate the structured fields too. Without this a direct caller can store
   // headers as a string/array, body as a number, or captures as a non-object;
@@ -101,9 +107,17 @@ export async function configureCheck(input: ConfigureCheckDto): Promise<CheckDto
   // as a clickable link in alert emails). An empty string normalizes to "unset".
   const logsUrl = normalizeLogsUrl(input.logsUrl);
   Schedule.validate(input);           // throws invalid-cron if cron is malformed
-  // Normalize the two new fields into the stored dto so a check row always
-  // carries a boolean notifyOnSuccess and a trimmed/absent logsUrl.
-  const check = Check.build({ ...input, notifyOnSuccess: input.notifyOnSuccess === true, logsUrl });
+  // Normalize into the stored dto: booleans are always booleans, logsUrl is
+  // trimmed/absent. Report mode has no comparator, so the comparator fields are
+  // stored as inert placeholders (never evaluated) and — the mode's whole point
+  // — the run always sends, so notifyOnSuccess is forced on.
+  const check = Check.build({
+    ...input,
+    ...(reportOnly ? { expression: input.expression ?? "", comparatorOp: "gte", threshold: 0 } : {}),
+    reportOnly,
+    notifyOnSuccess: reportOnly || input.notifyOnSuccess === true,
+    logsUrl,
+  });
   const checkDto = check.toDto();
   const result = await check.upsert(checkDto);
   log.debug("✅ check.configure", result.monitorId, result.cron);

@@ -189,10 +189,18 @@ async function executeRun(runId: string, input: MonitorIdDto, options?: ExecuteR
     responseStatus = responseDto.status;
     responseBody = responseDto.payload;
     log.debug(`🔍 runner.execute: response received — status=${responseDto.status ?? "?"} payloadLength=${responseDto.payload?.length ?? 0}`);
-    observed = Extractor.apply(checkDto, responseDto);
-    log.info(`🔍 runner.execute: extractor applied — observed=${observed}`);
-    passed = Comparator.evaluate(checkDto, observed);
-    log.debug(`🔍 runner.execute: comparator evaluated — observed=${observed} passed=${passed} op=${checkDto.comparatorOp} threshold=${checkDto.threshold}`);
+    if (checkDto.reportOnly === true) {
+      // Report mode: there is no metric to judge — reaching this line means the
+      // fetch succeeded, and that IS the pass. A fetch/parse error above still
+      // fails loud. The payload's values travel via captures.
+      passed = true;
+      log.info(`🔍 runner.execute: report mode — fetch succeeded, run passes (no comparator)`);
+    } else {
+      observed = Extractor.apply(checkDto, responseDto);
+      log.info(`🔍 runner.execute: extractor applied — observed=${observed}`);
+      passed = Comparator.evaluate(checkDto, observed);
+      log.debug(`🔍 runner.execute: comparator evaluated — observed=${observed} passed=${passed} op=${checkDto.comparatorOp} threshold=${checkDto.threshold}`);
+    }
     if (checkDto.captures && Object.keys(checkDto.captures).length > 0) {
       const rawCaptures = Extractor.applyCaptures(checkDto.captures, responseDto.payload);
       // Capture values are persisted to KV, rendered in the Reports drill-in, and

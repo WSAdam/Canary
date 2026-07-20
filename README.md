@@ -18,6 +18,7 @@ Canary polls your HTTP endpoints on a cron schedule, extracts numeric values fro
 - **Multi-channel alerts**: SMS via Zapier webhook, email via Postmark, or push via [ntfy.sh](https://ntfy.sh); mix recipients per monitor — up to **5 SMS numbers** per alert, sent 4 seconds apart
 - **Message templating**: `{monitor}` `{status}` `{observed}` `{timestamp}` `{error}` `{logsUrl}` plus user-defined captures from the response — and a check's `error` is always appended to a custom message that doesn't already include it, so a transport/auth failure can't masquerade as a metric breach
 - **Recovery notifications**: optional alert when a failing monitor returns to healthy
+- **Report mode**: a per-check "no threshold, always send" toggle — every successful fetch counts as healthy and sends, for digests/reports where a pass/fail comparison is meaningless (a fetch error still alerts as a failure)
 - **All-clear heartbeat**: optional per-check "notify on every run" — a healthy run sends an "all clear" (with the observed count and an optional `logsUrl` to click through) instead of silence. Email & ntfy only; SMS is skipped for all-clears so a heartbeat never texts you
 - **Stateless HMAC auth**: admin + invited users, 24-hour sessions, no per-request DB lookup
 - **Push webhooks**: per-monitor `cnry_v1_…` bearer secrets, hashed at rest, rotate/revoke from the UI
@@ -256,6 +257,7 @@ POST /monitors/:id/check
 | `cron` | Standard 5-field cron expression |
 | `notifyOnRecover` | Send an alert when the monitor returns to healthy |
 | `notifyOnSuccess` | Optional (default `false`). Alert on **every** run, not just failures — a healthy run sends an "all clear" with the observed count (e.g. "0 errors found"). Fires on the check's schedule, to email & ntfy recipients; **SMS is skipped for all-clears** so a heartbeat never texts you. Failures/recoveries are unaffected. |
+| `reportOnly` | Optional (default `false`). **Report mode: no comparator at all.** Every successful fetch passes and sends the alert (implies `notifyOnSuccess`) — for digests where a threshold is meaningless. `expression`/`comparatorOp`/`threshold` become optional and are ignored; a fetch or parse error still fails loud. In the wizard: the "Report mode — no threshold, always send" toggle. |
 | `logsUrl` | Optional http(s) link surfaced in every alert (e.g. the app's logs page) so a recipient can click through to verify. Shown in the default alert body; reference `{logsUrl}` to place it in a custom message template. |
 
 ---
@@ -513,9 +515,9 @@ and (when requested) the trailing trend, already laid out. Capture it once as
 `{report}` instead of reproducing that layout in the alert template.
 
 **As a daily report** — URL `internal:deno-usage?day=yesterday&trailing=7`,
-`expression: requests`, `comparatorOp: gte`, `threshold: 0` (a condition that
-always passes), `notifyOnSuccess: true`, and a single capture
-`{ report: "report" }` with an email body of just `{report}`.
+**`reportOnly: true`** (the wizard's "Report mode" toggle — no expression, no
+comparator, no threshold), and a single capture `{ report: "report" }` with an
+email body of just `{report}`.
 
 For a hand-built layout instead, capture the pieces —
 `{ requests: "requests", kvReads: "kvReadUnits", kvWrites: "kvWriteUnits", window: "window.label", breakdown: "breakdown", trend: "trailing.table" }`
