@@ -539,10 +539,15 @@ The org's real usage-based spend (`spendUSD`) against its **live** hard limit
 
 The public token API exposes usage but **not dollars**, so this reads the
 console's internal billing API (tRPC) using a browser **session cookie**
-(`DD_SESSION_TOKEN`) plus `DD_ORG_ID`. That interface is undocumented and the
-cookie **expires**: on a rejected session it returns **401** so the monitor
-alerts "refresh `DD_SESSION_TOKEN`" rather than silently reporting a stale or
-zero number.
+(`DD_SESSION_TOKEN`) plus `DD_ORG_ID`. Both resolve from the **Canary secret
+store first**, then the deploy env — so refreshing the cookie is paste-and-save
+on the dashboard, **no redeploy**. The Secrets section has a **Get Deno session
+token** button that copies a DevTools grab-snippet, opens the Deno console, and
+prefills the secret key (a page can't read another origin's cookies, so it's
+two clicks rather than one). The interface is undocumented and the cookie
+**expires**: on a rejected session it returns **401** so the monitor alerts
+"refresh `DD_SESSION_TOKEN`" rather than silently reporting a stale or zero
+number.
 
 ```jsonc
 {
@@ -783,8 +788,8 @@ Deno Deploy provides Deno KV out of the box. No additional database setup requir
 | `ALLOW_PRIVATE_FETCH` | No (default off) | SSRF guard escape hatch. By default the check runner and the `/test-request` proxy refuse to fetch loopback/link-local/private/cloud-metadata hosts. Set to `1` to allow them — only when intentionally monitoring an internal service on a trusted private network. |
 | `SMS_STAGGER_MS` | No (default `4000`) | Delay between consecutive SMS sends when an alert/relay fans out to multiple numbers (first immediate, each subsequent +Δ), throttling the Zapier webhook. Lower it for a faster provider, or `0` to send all at once. |
 | `DD_ORG_TOKEN` | For the Deno usage digest | Deno Deploy **organization** access token (`ddo_…`, from the Deploy dashboard → Settings → Access Tokens). Reads the v2 analytics API. Note this is *not* the same as a deploy key such as `DD_API_KEY`. |
-| `DD_SESSION_TOKEN` | For the Deno spend guardrail | The Deno **console session cookie** value (the `token=ddw_…` cookie). Reads real dollars from the console's internal billing API. **Expires** — a rejected session makes the check fail loudly rather than report a stale number. |
-| `DD_ORG_ID` | For the Deno spend guardrail | Your Deno organization's UUID. |
+| `DD_SESSION_TOKEN` | For the Deno spend guardrail | The Deno **console session cookie** value (the `token=ddw_…` cookie). Reads real dollars from the console's internal billing API. **Expires** — a rejected session makes the check fail loudly rather than report a stale number. Prefer saving it as a **Canary secret** (dashboard → Secrets → *Get Deno session token*), which wins over the env and refreshes without a redeploy. |
+| `DD_ORG_ID` | For the Deno spend guardrail | Your Deno organization's UUID. Canary secret or env var. |
 | `DD_USAGE_SECRET` | No | Bearer required by the public `/api/deno-usage` and `/api/deno-spend` HTTP routes. Unset leaves those routes returning 503; **`internal:` checks don't need it** and are the recommended way to use these. |
 
 > **Why `DD_` and not `DENO_`:** Deno Deploy reserves the `DENO_` namespace and

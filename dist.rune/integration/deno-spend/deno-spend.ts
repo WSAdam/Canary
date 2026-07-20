@@ -1,6 +1,7 @@
 import { parseCurrentUsageCost, parseSpendLimits, pctOfLimit } from "../../pure/deno-spend/deno-spend.ts";
 import type { DenoSpendDto } from "../../dto/deno-spend-dto.ts";
 import { CanaryError } from "../../dto/_shared.ts";
+import { Secret } from "../../impure/secret/secret.ts";
 import { log } from "../../impure/_log.ts";
 
 // The Deno console's dashboard billing API (tRPC). Unlike the public
@@ -14,6 +15,24 @@ function round(n: number, dp: number): number {
 }
 
 /**
+ * Resolve DD_SESSION_TOKEN / DD_ORG_ID from the Canary SECRET STORE first, then
+ * the deploy env. The session cookie EXPIRES and needs periodic refreshing —
+ * a secret is paste-and-done from the dashboard, while an env var change means
+ * touching the deployment. The env fallback keeps an existing env-only setup
+ * working unchanged.
+ */
+export async function resolveConfig(name: string): Promise<string | undefined> {
+  try {
+    const v = await new Secret().resolve(name);
+    if (v && v.trim()) return v.trim();
+  } catch {
+    // not stored as a secret — fall through to env
+  }
+  const env = Deno.env.get(name);
+  return env && env.trim() ? env.trim() : undefined;
+}
+
+/**
  * Read the org's real usage-based spend + live spend limit from the Deno
  * console. Requires `DD_SESSION_TOKEN` (the `ddw_` cookie value) and
  * `DD_ORG_ID`. On a rejected/expired session (401/403) it throws a 401 so the
@@ -21,10 +40,16 @@ function round(n: number, dp: number): number {
  * stale or zero number.
  */
 export async function getDenoSpend(): Promise<DenoSpendDto> {
-  const token = Deno.env.get("DD_SESSION_TOKEN");
-  const org = Deno.env.get("DD_ORG_ID");
-  if (!token) throw new CanaryError("config-error", "DD_SESSION_TOKEN is not configured", 500);
-  if (!org) throw new CanaryError("config-error", "DD_ORG_ID is not configured", 500);
+  const token = await resolveConfig("DD_SESSION_TOKEN");
+  const org = await resolveConfig("DD_ORG_ID");
+  if (!token) {
+    throw new CanaryError(
+      "config-error",
+      "DD_SESSION_TOKEN is not configured — save it as a Canary secret (dashboard → Secrets) or a deploy env var",
+      500,
+    );
+  }
+  if (!org) throw new CanaryError("config-error", "DD_ORG_ID is not configured (Canary secret or deploy env var)", 500);
 
   const input = encodeURIComponent(JSON.stringify({ "0": { json: { org } }, "1": { json: { org } } }));
   const res = await fetch(`${TRPC}?batch=1&input=${input}`, {
@@ -34,7 +59,7 @@ export async function getDenoSpend(): Promise<DenoSpendDto> {
     await res.body?.cancel();
     throw new CanaryError(
       "session-expired",
-      `Deno console session rejected (HTTP ${res.status}) — refresh DD_SESSION_TOKEN (grab a fresh 'token=ddw_…' cookie from console.deno.com)`,
+      `Deno console session rejected (HTTP ${res.status}) — refresh DD_SESSION_TOKEN (dashboard → Secrets → Get Deno session token, then save the fresh value — no redeploy needed)`,
       401,
     );
   }
