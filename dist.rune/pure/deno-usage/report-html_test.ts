@@ -67,8 +67,7 @@ Deno.test("buildHtmlReport - contains every section incl. the per-app matrices",
     "BY APP",
     "COST",
     "TRAILING 7 DAYS",
-    "KV READS BY APP", // the by-app 7-day breakdown
-    "KV WRITES BY APP",
+    "KV BY APP", // the by-app 7-day breakdown, reads over writes
     "COST BY APP",
     "$13.36/month",
     "attribution, not billing",
@@ -116,13 +115,15 @@ Deno.test("buildHtmlReport - the safety valve still caps a runaway org", () => {
   assertEquals(html.includes("+5 more"), true, "25 rows − 20 shown = +5 more");
 });
 
-Deno.test("buildHtmlReport - KV matrices list only KV-active apps, ranked by their own metric", () => {
+Deno.test("buildHtmlReport - KV matrix lists only KV-active apps, reads and writes per cell", () => {
   const html = buildHtmlReport(fixture());
-  // app-0 has requests but zero KV — it must not appear between the KV READS
-  // header and the KV WRITES header.
-  const readsSection = html.slice(html.indexOf("KV READS BY APP"), html.indexOf("KV WRITES BY APP"));
-  assertEquals(readsSection.includes("app-1"), true);
-  assertEquals(readsSection.includes("app-0<"), false, "a KV-inactive app leaked into the KV matrix");
+  // app-0 has requests but zero KV — it must not appear between the KV BY APP
+  // header and the COST BY APP header.
+  const kvSection = html.slice(html.indexOf("KV BY APP"), html.indexOf("COST BY APP"));
+  assertEquals(kvSection.includes("app-1"), true);
+  assertEquals(kvSection.includes("app-0<"), false, "a KV-inactive app leaked into the KV matrix");
+  // A cell carries BOTH numbers: reads, then the muted writes underneath.
+  assertEquals(/[\d,]+<br><span style='color:#667'>[\d,]+<\/span>/.test(kvSection), true, "no stacked reads/writes cell");
 });
 
 Deno.test("buildHtmlReport - no trend sections without a series", () => {

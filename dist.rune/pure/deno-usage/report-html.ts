@@ -178,23 +178,30 @@ export function buildHtmlReport(input: HtmlReportInput): string {
           bodyRow(["Average", ...totals.map((t) => group(t / s.length))], 1, { bold: true }),
       ),
     );
-    // Per-app matrices — KV reads and writes (only the apps that touch KV, each
-    // ranked by its own metric), then cost for every active app (cost folds
-    // KV/egress/CPU into one comparable number per app-day, so a regression
-    // shows even when request counts look normal). Per-app requests stay in the
-    // JSON (trailing.perApp) for anyone who wants them.
+    // Per-app matrices — ONE KV table with reads and writes side by side per
+    // app-day (only the apps that touch KV, busiest reader first), then cost
+    // for every active app (cost folds KV/egress/CPU into one comparable
+    // number per app-day, so a regression shows even when request counts look
+    // normal). Per-app requests stay in the JSON (trailing.perApp).
     if (input.perApp && input.perApp.length > 0) {
       const sum = (a: number[]) => a.reduce((x, y) => x + y, 0);
-      const kvRows = (pick: (r: PerAppSeries) => number[]) =>
-        input.perApp!.filter((r) => pick(r).some((n) => n > 0))
-          .sort((a, b) => sum(pick(b)) - sum(pick(a)) || a.app.localeCompare(b.app));
-      const reads = kvRows((r) => r.kvReadUnits);
-      const writes = kvRows((r) => r.kvWriteUnits);
-      if (reads.length > 0) {
-        out.push(matrix("KV READS BY APP", s, reads, (r, d) => group(r.kvReadUnits[d]), (r) => group(sum(r.kvReadUnits))));
-      }
-      if (writes.length > 0) {
-        out.push(matrix("KV WRITES BY APP", s, writes, (r, d) => group(r.kvWriteUnits[d]), (r) => group(sum(r.kvWriteUnits))));
+      const kv = input.perApp.filter((r) => r.kvReadUnits.some((n) => n > 0) || r.kvWriteUnits.some((n) => n > 0))
+        .sort((a, b) =>
+          sum(b.kvReadUnits) - sum(a.kvReadUnits) || sum(b.kvWriteUnits) - sum(a.kvWriteUnits) ||
+          a.app.localeCompare(b.app)
+        );
+      // Cell: reads over muted writes — two numbers per app-day without
+      // doubling the column count or the table width.
+      const rw = (r: number, w: number) =>
+        r === 0 && w === 0 ? `<span style='color:${RULE}'>&mdash;</span>` : `${group(r)}<br><span style='color:${MUTE}'>${group(w)}</span>`;
+      if (kv.length > 0) {
+        out.push(matrix(
+          `KV BY APP &mdash; READS OVER <span style='color:${MUTE}'>WRITES</span>`,
+          s,
+          kv,
+          (r, d) => rw(r.kvReadUnits[d], r.kvWriteUnits[d]),
+          (r) => rw(sum(r.kvReadUnits), sum(r.kvWriteUnits)),
+        ));
       }
       out.push(matrix("COST BY APP", s, input.perApp, (r, d) => formatUSD(r.costUSD[d], 2), (r) => formatUSD(r.totalCostUSD, 2)));
     }
