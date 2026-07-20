@@ -15,16 +15,16 @@ function round(n: number, dp: number): number {
 
 /**
  * Read the org's real usage-based spend + live spend limit from the Deno
- * console. Requires `DENO_SESSION_TOKEN` (the `ddw_` cookie value) and
- * `DENO_ORG_ID`. On a rejected/expired session (401/403) it throws a 401 so the
+ * console. Requires `DD_SESSION_TOKEN` (the `ddw_` cookie value) and
+ * `DD_ORG_ID`. On a rejected/expired session (401/403) it throws a 401 so the
  * monitor FAILS LOUD ("refresh the cookie") rather than silently reporting a
  * stale or zero number.
  */
 export async function getDenoSpend(): Promise<DenoSpendDto> {
-  const token = Deno.env.get("DENO_SESSION_TOKEN");
-  const org = Deno.env.get("DENO_ORG_ID");
-  if (!token) throw new CanaryError("config-error", "DENO_SESSION_TOKEN is not configured", 500);
-  if (!org) throw new CanaryError("config-error", "DENO_ORG_ID is not configured", 500);
+  const token = Deno.env.get("DD_SESSION_TOKEN");
+  const org = Deno.env.get("DD_ORG_ID");
+  if (!token) throw new CanaryError("config-error", "DD_SESSION_TOKEN is not configured", 500);
+  if (!org) throw new CanaryError("config-error", "DD_ORG_ID is not configured", 500);
 
   const input = encodeURIComponent(JSON.stringify({ "0": { json: { org } }, "1": { json: { org } } }));
   const res = await fetch(`${TRPC}?batch=1&input=${input}`, {
@@ -34,7 +34,7 @@ export async function getDenoSpend(): Promise<DenoSpendDto> {
     await res.body?.cancel();
     throw new CanaryError(
       "session-expired",
-      `Deno console session rejected (HTTP ${res.status}) — refresh DENO_SESSION_TOKEN (grab a fresh 'token=ddw_…' cookie from console.deno.com)`,
+      `Deno console session rejected (HTTP ${res.status}) — refresh DD_SESSION_TOKEN (grab a fresh 'token=ddw_…' cookie from console.deno.com)`,
       401,
     );
   }

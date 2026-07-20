@@ -30,14 +30,14 @@ async function denoGet(path: string, token: string): Promise<Response> {
 
 /**
  * Sum org-wide Deno Deploy usage over the last `hours` (default 24) across every
- * app in the org the `DENO_TOKEN` is scoped to. Per-app analytics are chunked to
+ * app in the org the `DD_ORG_TOKEN` is scoped to. Per-app analytics are chunked to
  * respect the API's 7-day range cap and summed with the pure aggregator. One
  * app's failed analytics call is logged and skipped (counted in `appsErrored`)
  * so a single bad app can't blank the whole digest.
  */
 export async function getDenoUsage(hours = 24): Promise<DenoUsageDto> {
-  const token = Deno.env.get("DENO_TOKEN");
-  if (!token) throw new CanaryError("config-error", "DENO_TOKEN is not configured", 500);
+  const token = Deno.env.get("DD_ORG_TOKEN");
+  if (!token) throw new CanaryError("config-error", "DD_ORG_TOKEN is not configured", 500);
 
   const until = new Date();
   const since = new Date(until.getTime() - hours * 3600 * 1000);
