@@ -135,7 +135,10 @@ export function parseBoundary(raw: string, field: string, tz: string = DISPLAY_T
   return parsed;
 }
 
-/** The whole of a local day, `dayOffset` days back from `now` (0 = today). */
+/** The whole of a local day, `dayOffset` days back from `now` (0 = today).
+ *  A day still in progress is clamped to `now`, so a partial day reports (and
+ *  LABELS) only the hours that have actually elapsed rather than claiming a
+ *  range running to midnight. */
 export function localDay(now: Date, dayOffset: number, tz: string = DISPLAY_TZ): TimeWindow {
   const p = partsIn(now, tz);
   const start = zonedToInstant(p.year, p.month, p.day, 0, 0, 0, 0, tz);
@@ -143,10 +146,10 @@ export function localDay(now: Date, dayOffset: number, tz: string = DISPLAY_TZ):
   const since = zonedToInstant(shifted.year, shifted.month, shifted.day, 0, 0, 0, 0, tz);
   // End of day is the last millisecond, so a "yesterday" window can't bleed a
   // request from 00:00:00.000 today into yesterday's numbers.
-  const until = new Date(
+  const endOfDay = new Date(
     zonedToInstant(shifted.year, shifted.month, shifted.day, 23, 59, 59, 0, tz).getTime() + 999,
   );
-  return { since, until };
+  return { since, until: endOfDay.getTime() > now.getTime() ? now : endOfDay };
 }
 
 // A window longer than this is almost certainly a typo (a swapped year, a

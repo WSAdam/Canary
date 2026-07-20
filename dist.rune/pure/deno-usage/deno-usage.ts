@@ -102,6 +102,14 @@ export function toAppUsage(app: string, t: Record<Metric, number>, errored = fal
   };
 }
 
+/** Did this app do anything at all in the window? An app that served no
+ *  requests and touched no KV is dormant, not news — it's dropped from the
+ *  digest rather than padding it with a row of zeroes. Egress/CPU/memory are
+ *  deliberately NOT consulted: they can't be non-zero without one of these. */
+export function isActiveApp(a: AppUsage): boolean {
+  return a.requests > 0 || a.kvReadUnits > 0 || a.kvWriteUnits > 0;
+}
+
 /** Busiest first, so the interesting apps head the list and the email. Ties
  *  break on KV reads then name, so the order is stable run to run. */
 export function rankApps(apps: AppUsage[]): AppUsage[] {
@@ -124,7 +132,7 @@ function group(n: number): string {
  */
 export function formatBreakdown(apps: AppUsage[], limit = 15): string {
   const ranked = rankApps(apps);
-  const active = ranked.filter((a) => a.requests > 0 || a.kvReadUnits > 0 || a.kvWriteUnits > 0);
+  const active = ranked.filter(isActiveApp);
   const idle = ranked.length - active.length;
   const shown = active.slice(0, Math.max(0, limit));
 

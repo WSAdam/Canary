@@ -131,6 +131,11 @@ daily digest would re-report the same date forever. `from`/`to` accept
 `YYYY-MM-DD`, `"YYYY-MM-DD HH:MM"`, or a full ISO timestamp — a value with **no
 zone is read as Eastern**, an explicit `Z`/offset is honoured as written.
 
+Apps with **no activity at all** in the window (no requests, no KV reads, no KV
+writes) are omitted from `byApp` — a row of zeroes is noise. Their count is kept
+as `appsIdle` (`appsActive` = `byApp.length`), and the `breakdown` table ends
+with a `+N idle` line.
+
 Times are stored as UTC ISO instants (`window.since`/`until`) and additionally
 rendered for a human in Eastern as `HH:MM DD/Month/YYYY TZ`
 (`window.sinceLocal`/`untilLocal`, plus a combined `window.label` — capture that

@@ -64,8 +64,19 @@ Deno.test("localDay - yesterday spans exactly one local day", () => {
   assertEquals(until.getTime() - since.getTime(), 86_400_000 - 1);
 });
 
-Deno.test("localDay - today starts at local midnight", () => {
-  assertEquals(localDay(new Date("2026-07-20T15:45:00Z"), 0).since.toISOString(), "2026-07-20T04:00:00.000Z");
+Deno.test("localDay - today starts at local midnight and stops at now", () => {
+  const now = new Date("2026-07-20T15:45:00Z"); // 11:45 EDT
+  const w = localDay(now, 0);
+  assertEquals(w.since.toISOString(), "2026-07-20T04:00:00.000Z"); // 00:00 EDT
+  // A day in progress must NOT claim the hours that haven't happened yet.
+  assertEquals(w.until.getTime(), now.getTime());
+  assertEquals(formatRange(w.since, w.until), "20/July/2026 00:00 → 11:45 EDT");
+});
+
+Deno.test("localDay - a COMPLETED day is not clamped", () => {
+  // Yesterday has fully elapsed, so it keeps its true 23:59:59.999 end.
+  const w = localDay(new Date("2026-07-20T15:45:00Z"), 1);
+  assertEquals(w.until.toISOString(), "2026-07-20T03:59:59.999Z");
 });
 
 Deno.test("localDay - a UTC instant already past midnight ET picks the right day", () => {

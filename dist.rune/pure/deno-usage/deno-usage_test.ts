@@ -3,6 +3,7 @@ import {
   type AnalyticsResponse,
   estimateSpendUSD,
   formatBreakdown,
+  isActiveApp,
   mergeTotals,
   type Metric,
   type PlanCosts,
@@ -203,4 +204,14 @@ Deno.test("formatBreakdown - caps the listed rows and reports the remainder", ()
 Deno.test("formatBreakdown - marks a partial app and handles an empty org", () => {
   assertEquals(formatBreakdown([toAppUsage("broken", totals({ request_count: 3 }), true)]).includes("⚠️ partial"), true);
   assertEquals(formatBreakdown([]), "(no activity)");
+});
+
+Deno.test("isActiveApp - any one dimension of traffic counts as active", () => {
+  assertEquals(isActiveApp(toAppUsage("req-only", totals({ request_count: 1 }))), true);
+  assertEquals(isActiveApp(toAppUsage("read-only", totals({ kv_read_units: 1 }))), true);
+  assertEquals(isActiveApp(toAppUsage("write-only", totals({ kv_write_units: 1 }))), true);
+});
+
+Deno.test("isActiveApp - an all-zero app is idle and gets filtered out", () => {
+  assertEquals(isActiveApp(toAppUsage("alfred-e2e-upstream", totals({}))), false);
 });

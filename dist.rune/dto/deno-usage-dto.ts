@@ -26,8 +26,14 @@ export interface DenoUsageDto {
   egressGB: number;
   cpuHours: number;
   memoryGBHours: number;
-  /** The same metrics per app, busiest first. Capture a single app by index
-   *  (`byApp.0.requests`) or the whole array (it serializes to JSON). */
+  /** Of `apps`, how many did anything at all in the window (and how many sat
+   *  dormant). `appsActive` is `byApp.length`. */
+  appsActive: number;
+  appsIdle: number;
+  /** The same metrics per app, busiest first, **excluding apps with no activity
+   *  at all** — a row of zeroes is noise (see `appsIdle` for the count). Capture
+   *  a single app by index (`byApp.0.requests`) or the whole array (it
+   *  serializes to JSON). */
   byApp: AppUsage[];
   /** `byApp` pre-rendered as a fixed-width text table, for an alert body's
    *  `{breakdown}` capture — an array capture would render as raw JSON. */

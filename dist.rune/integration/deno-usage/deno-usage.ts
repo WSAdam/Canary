@@ -1,4 +1,4 @@
-import { formatBreakdown, type Metric, mergeTotals, rankApps, sumAnalytics, toAppUsage } from "../../pure/deno-usage/deno-usage.ts";
+import { formatBreakdown, isActiveApp, type Metric, mergeTotals, rankApps, sumAnalytics, toAppUsage } from "../../pure/deno-usage/deno-usage.ts";
 import type { AnalyticsResponse, AppUsage } from "../../pure/deno-usage/deno-usage.ts";
 import type { DenoUsageDto } from "../../dto/deno-usage-dto.ts";
 import { CanaryError } from "../../dto/_shared.ts";
@@ -30,11 +30,13 @@ async function denoGet(path: string, token: string): Promise<Response> {
 }
 
 /**
- * Sum org-wide Deno Deploy usage over the last `hours` (default 24) across every
- * app in the org the `DD_ORG_TOKEN` is scoped to. Per-app analytics are chunked to
- * respect the API's 7-day range cap and summed with the pure aggregator. One
- * app's failed analytics call is logged and skipped (counted in `appsErrored`)
- * so a single bad app can't blank the whole digest.
+ * Sum org-wide Deno Deploy usage across every app in the org the `DD_ORG_TOKEN`
+ * is scoped to, over the window named by `params` (`?day=` / `?from=&to=` /
+ * `?hours=`, default a rolling 24h — see resolveWindow). Per-app analytics are
+ * chunked to respect the API's 7-day range cap and summed with the pure
+ * aggregator. One app's failed analytics call is logged and skipped (counted in
+ * `appsErrored`) so a single bad app can't blank the whole digest. Apps with no
+ * activity in the window are omitted from `byApp` and counted in `appsIdle`.
  */
 export async function getDenoUsage(params: URLSearchParams = new URLSearchParams()): Promise<DenoUsageDto> {
   const token = Deno.env.get("DD_ORG_TOKEN");
@@ -82,6 +84,11 @@ export async function getDenoUsage(params: URLSearchParams = new URLSearchParams
   const t = mergeTotals(perApp);
   const round = (n: number, dp: number) => Number(n.toFixed(dp));
   const ranked = rankApps(byApp);
+  // Dormant apps are dropped from the payload entirely — a row of zeroes is
+  // noise. Their COUNT is kept (appsIdle) so "23 apps, 6 listed" is still
+  // explicable, and formatBreakdown gets the unfiltered list so its trailing
+  // "+N idle" tally stays accurate.
+  const active = ranked.filter(isActiveApp);
   const dto: DenoUsageDto = {
     ok: true,
     window: {
@@ -100,7 +107,9 @@ export async function getDenoUsage(params: URLSearchParams = new URLSearchParams
     egressGB: round(t.network_egress_bytes / 1e9, 3),
     cpuHours: round(t.cpu_seconds / 3600, 2),
     memoryGBHours: round(t.memory_time_byte_seconds / (1e9 * 3600), 1),
-    byApp: ranked,
+    appsActive: active.length,
+    appsIdle: ranked.length - active.length,
+    byApp: active,
     breakdown: formatBreakdown(ranked),
   };
   log.info(`✅ deno-usage: ${dto.apps} apps (${appsErrored} errored) — ${dto.requests} req, ${dto.kvReadUnits} KV-read, ${dto.kvWriteUnits} KV-write`);
