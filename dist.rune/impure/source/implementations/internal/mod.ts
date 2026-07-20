@@ -21,19 +21,13 @@ export const SCHEME = "internal:";
  *  object, which becomes the check's response payload (so the ordinary
  *  expression/comparator/captures machinery works against it unchanged). */
 const PRODUCERS: Record<string, (params: URLSearchParams) => Promise<unknown>> = {
-  "deno-usage": (params) => getDenoUsage(parseHours(params.get("hours"))),
+  // Window params (?hours= / ?day= / ?from=&to=) are resolved by the producer.
+  "deno-usage": (params) => getDenoUsage(params),
   "deno-spend": () => getDenoSpend(),
 };
 
 export function isInternalUrl(url: string): boolean {
   return typeof url === "string" && url.trimStart().toLowerCase().startsWith(SCHEME);
-}
-
-/** `?hours=` for the usage digest: a positive number capped at ~31d, defaulting
- *  to 24. Mirrors the bound the /api/deno-usage route applies. */
-function parseHours(raw: string | null): number {
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 && n <= 744 ? n : 24;
 }
 
 /** Split `internal:<producer>?a=b` into its producer name and query params.

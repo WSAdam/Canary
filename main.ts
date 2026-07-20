@@ -2809,10 +2809,10 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
       if (!secret) return json({ error: "DD_USAGE_SECRET is not configured" }, 503);
       const auth = req.headers.get("Authorization") ?? "";
       if (!timingSafeEqualStr(auth, `Bearer ${secret}`)) return json({ error: "unauthorized" }, 401);
-      const raw = Number(url.searchParams.get("hours"));
-      const hours = Number.isFinite(raw) && raw > 0 && raw <= 744 ? raw : 24; // cap at ~31d
-      const usage = await getDenoUsage(hours);
-      log.info(`✅ GET /api/deno-usage → 200 hours=${hours} apps=${usage.apps} errored=${usage.appsErrored}`);
+      // Window params (?hours= / ?day=yesterday / ?from=&to=) are resolved by
+      // the adapter, which validates them and throws a 400 on bad input.
+      const usage = await getDenoUsage(url.searchParams);
+      log.info(`✅ GET /api/deno-usage → 200 ${usage.window.label} apps=${usage.apps} errored=${usage.appsErrored}`);
       return json(usage);
     }
 

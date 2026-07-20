@@ -2,6 +2,7 @@ import { formatBreakdown, type Metric, mergeTotals, rankApps, sumAnalytics, toAp
 import type { AnalyticsResponse, AppUsage } from "../../pure/deno-usage/deno-usage.ts";
 import type { DenoUsageDto } from "../../dto/deno-usage-dto.ts";
 import { CanaryError } from "../../dto/_shared.ts";
+import { formatDisplay, formatRange, resolveWindow } from "../../pure/time-window/time-window.ts";
 import { log } from "../../impure/_log.ts";
 
 const BASE = "https://api.deno.com/v2";
@@ -35,13 +36,13 @@ async function denoGet(path: string, token: string): Promise<Response> {
  * app's failed analytics call is logged and skipped (counted in `appsErrored`)
  * so a single bad app can't blank the whole digest.
  */
-export async function getDenoUsage(hours = 24): Promise<DenoUsageDto> {
+export async function getDenoUsage(params: URLSearchParams = new URLSearchParams()): Promise<DenoUsageDto> {
   const token = Deno.env.get("DD_ORG_TOKEN");
   if (!token) throw new CanaryError("config-error", "DD_ORG_TOKEN is not configured", 500);
 
-  const until = new Date();
-  const since = new Date(until.getTime() - hours * 3600 * 1000);
-  log.info(`🔍 deno-usage: summing ${hours}h across org apps (${since.toISOString()} → ${until.toISOString()})`);
+  const { since, until } = resolveWindow(params);
+  const hours = Number(((until.getTime() - since.getTime()) / 3_600_000).toFixed(2));
+  log.info(`🔍 deno-usage: summing ${formatRange(since, until)} across org apps`);
 
   // `limit` is capped at 100 by the API. Orgs above 100 apps would need paging;
   // warn rather than silently undercount if we ever hit the ceiling.
@@ -83,7 +84,14 @@ export async function getDenoUsage(hours = 24): Promise<DenoUsageDto> {
   const ranked = rankApps(byApp);
   const dto: DenoUsageDto = {
     ok: true,
-    window: { since: since.toISOString(), until: until.toISOString(), hours },
+    window: {
+      since: since.toISOString(),
+      until: until.toISOString(),
+      hours,
+      sinceLocal: formatDisplay(since),
+      untilLocal: formatDisplay(until),
+      label: formatRange(since, until),
+    },
     apps: apps.length,
     appsErrored,
     requests: t.request_count,

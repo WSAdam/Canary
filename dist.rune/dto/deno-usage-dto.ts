@@ -5,7 +5,18 @@ import type { AppUsage } from "../pure/deno-usage/deno-usage.ts";
 
 export interface DenoUsageDto {
   ok: true;
-  window: { since: string; until: string; hours: number };
+  window: {
+    /** UTC ISO instants — unambiguous, for machines. */
+    since: string;
+    until: string;
+    /** Window length in hours (fractional for a partial-day range). */
+    hours: number;
+    /** The same bounds for a human, `HH:MM DD/Month/YYYY TZ` in Eastern time. */
+    sinceLocal: string;
+    untilLocal: string;
+    /** Both bounds as one compact label, for a `{window}` capture. */
+    label: string;
+  };
   /** How many apps were summed (and how many analytics calls failed, if any). */
   apps: number;
   appsErrored: number;

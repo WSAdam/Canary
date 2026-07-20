@@ -114,8 +114,27 @@ check an `internal:` URL and Canary calls the producer **in-process**:
 
 | Check URL | Produces |
 | --- | --- |
-| `internal:deno-usage?hours=24` | the same JSON as `GET /api/deno-usage` (`?hours=` optional, default 24) |
+| `internal:deno-usage?day=yesterday` | the same JSON as `GET /api/deno-usage` |
 | `internal:deno-spend` | the same JSON as `GET /api/deno-spend` |
+
+**Digest window.** `deno-usage` takes one of three window params (both on the
+`internal:` URL and the HTTP route), in precedence order:
+
+| Param | Window |
+| --- | --- |
+| `?day=yesterday` / `?day=today` | that whole calendar day, `00:00`–`23:59:59.999` Eastern |
+| `?from=…&to=…` | an explicit range (both required) |
+| `?hours=N` | a rolling N-hour window ending now — the default, `N=24` |
+
+**Prefer `?day=` for a recurring check**: an absolute `from`/`to` is frozen, so a
+daily digest would re-report the same date forever. `from`/`to` accept
+`YYYY-MM-DD`, `"YYYY-MM-DD HH:MM"`, or a full ISO timestamp — a value with **no
+zone is read as Eastern**, an explicit `Z`/offset is honoured as written.
+
+Times are stored as UTC ISO instants (`window.since`/`until`) and additionally
+rendered for a human in Eastern as `HH:MM DD/Month/YYYY TZ`
+(`window.sinceLocal`/`untilLocal`, plus a combined `window.label` — capture that
+one for an alert body).
 
 No network hop, so no `Authorization` header and **no `DD_USAGE_SECRET`
 needed** — the data never leaves the isolate. The wizard's **Test request**
