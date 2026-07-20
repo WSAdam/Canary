@@ -15,13 +15,13 @@ function totals(over: Partial<Record<Metric, number>>): Record<Metric, number> {
   };
 }
 
-/** A full-size fixture: 10 active apps, 7 days — the realistic worst case. */
+/** A full-size fixture: 15 active apps, 7 days — the realistic worst case. */
 function fixture(): HtmlReportInput {
-  const byApp = Array.from({ length: 10 }, (_, i) =>
+  const byApp = Array.from({ length: 15 }, (_, i) =>
     toAppUsage(`app-${i}`, totals({
-      request_count: 10_000 - i * 900,
-      kv_read_units: i === 1 ? 118_818 : 0,
-      kv_write_units: i === 1 ? 10_835 : 0,
+      request_count: 15_000 - i * 900,
+      kv_read_units: i % 3 === 1 ? 118_818 - i * 1000 : 0,
+      kv_write_units: i % 3 === 1 ? 10_835 - i * 100 : 0,
     })));
   const days = Array.from({ length: 7 }, (_, d) => `2026-07-${13 + d}`);
   const series = days.map((k, d) =>
@@ -31,10 +31,14 @@ function fixture(): HtmlReportInput {
       kv_write_units: 55_000 - d * 5_000,
     })));
   const appDay: Record<string, Record<string, Record<Metric, number>>> = {};
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 15; i++) {
     appDay[`app-${i}`] = Object.fromEntries(days.map((k, d) => [
       k,
-      totals({ request_count: 9_000 - i * 800 + d * 13, kv_read_units: i === 1 ? 400_000 - d * 40_000 : 0 }),
+      totals({
+        request_count: 9_000 - i * 500 + d * 13,
+        kv_read_units: i % 3 === 1 ? 400_000 - d * 40_000 - i * 999 : 0,
+        kv_write_units: i % 3 === 1 ? 8_000 - d * 700 - i * 55 : 0,
+      }),
     ]));
   }
   const org = totals({ request_count: 16_019, kv_read_units: 122_263, kv_write_units: 14_173 });
@@ -46,7 +50,7 @@ function fixture(): HtmlReportInput {
     egressGB: 0.129,
     cpuHours: 1.43,
     apps: 23,
-    appsActive: 10,
+    appsActive: 15,
     byApp,
     cost: listCost(org),
     projectedMonthlyUSD: 13.36,
@@ -63,7 +67,8 @@ Deno.test("buildHtmlReport - contains every section incl. the per-app matrices",
     "BY APP",
     "COST",
     "TRAILING 7 DAYS",
-    "REQUESTS BY APP", // the by-app 7-day breakdown
+    "KV READS BY APP", // the by-app 7-day breakdown
+    "KV WRITES BY APP",
     "COST BY APP",
     "$13.36/month",
     "attribution, not billing",
@@ -93,15 +98,31 @@ Deno.test("buildHtmlReport - carries no comparison line (removed as noise)", () 
   assertEquals(html.includes("Infinity") || html.includes("NaN"), false);
 });
 
-Deno.test("buildHtmlReport - matrix caps rows and reports the remainder", () => {
+Deno.test("buildHtmlReport - a realistic org shows EVERY row (no '+N more')", () => {
+  // The 8-row cap clipped 7 real apps out of the first live matrix. At any
+  // realistic size all rows must show; the cap is only a runaway safety valve.
+  const html = buildHtmlReport(fixture());
+  assertEquals(html.includes("more</td>"), false, "matrix clipped rows at realistic size");
+});
+
+Deno.test("buildHtmlReport - the safety valve still caps a runaway org", () => {
   const input = fixture();
   const extra = Object.fromEntries(
-    Array.from({ length: 14 }, (_, i) => [`x-${i}`, { "2026-07-13": totals({ request_count: 1 + i }) }]),
+    Array.from({ length: 25 }, (_, i) => [`x-${i}`, { "2026-07-13": totals({ request_count: 1 + i }) }]),
   );
   input.perApp = buildPerAppSeries({ ...extra }, ["2026-07-13"]);
   input.series = input.series!.slice(0, 1);
   const html = buildHtmlReport(input);
-  assertEquals(html.includes("+6 more"), true, "14 rows − 8 shown = +6 more");
+  assertEquals(html.includes("+5 more"), true, "25 rows − 20 shown = +5 more");
+});
+
+Deno.test("buildHtmlReport - KV matrices list only KV-active apps, ranked by their own metric", () => {
+  const html = buildHtmlReport(fixture());
+  // app-0 has requests but zero KV — it must not appear between the KV READS
+  // header and the KV WRITES header.
+  const readsSection = html.slice(html.indexOf("KV READS BY APP"), html.indexOf("KV WRITES BY APP"));
+  assertEquals(readsSection.includes("app-1"), true);
+  assertEquals(readsSection.includes("app-0<"), false, "a KV-inactive app leaked into the KV matrix");
 });
 
 Deno.test("buildHtmlReport - no trend sections without a series", () => {
