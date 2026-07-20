@@ -1,10 +1,13 @@
 import { assertEquals, assertThrows } from "jsr:@std/assert";
 import {
+  dayKey,
+  dayLabel,
   formatDisplay,
   formatRange,
   localDay,
   parseBoundary,
   resolveWindow,
+  trailingDays,
   zonedToInstant,
 } from "./time-window.ts";
 
@@ -152,4 +155,36 @@ Deno.test("resolveWindow - from/to must be given together, and in order", () => 
 Deno.test("resolveWindow - rejects an absurdly long window", () => {
   const now = new Date("2026-07-20T15:45:00Z");
   assertThrows(() => resolveWindow(new URLSearchParams("from=2020-01-01&to=2026-01-01"), now));
+});
+
+Deno.test("trailingDays - ENDS on the reporting day, oldest first", () => {
+  // The digest anchors on its window's `until`. For ?day=yesterday reporting the
+  // 19th, `until` is 23:59:59.999 EDT on the 19th (= 03:59:59.999Z on the 20th).
+  // The series must END on the 19th — the day being compared against the rest.
+  const until = new Date("2026-07-20T03:59:59.999Z");
+  const days = trailingDays(until, 7);
+  assertEquals(days.length, 7);
+  assertEquals(days[0].key, "2026-07-13", "oldest first");
+  assertEquals(days[6].key, "2026-07-19", "the reporting day is the LAST row");
+  assertEquals(days[6].label, "Sun 19/July");
+});
+
+Deno.test("trailingDays - the reporting day's window matches localDay for it", () => {
+  const until = new Date("2026-07-20T03:59:59.999Z");
+  const last = trailingDays(until, 7)[6];
+  const expected = localDay(until, 0);
+  assertEquals(last.since.toISOString(), expected.since.toISOString());
+  assertEquals(last.until.toISOString(), expected.until.toISOString());
+});
+
+Deno.test("trailingDays - endOffset 1 ends the day before", () => {
+  const days = trailingDays(new Date("2026-07-20T03:59:59.999Z"), 3, 1);
+  assertEquals(days.map((d) => d.key), ["2026-07-16", "2026-07-17", "2026-07-18"]);
+});
+
+Deno.test("dayKey / dayLabel - local date, not UTC date", () => {
+  // 02:00Z on the 20th is 22:00 EDT on the 19th.
+  const inst = new Date("2026-07-20T02:00:00Z");
+  assertEquals(dayKey(inst), "2026-07-19");
+  assertEquals(dayLabel(inst), "Sun 19/July");
 });

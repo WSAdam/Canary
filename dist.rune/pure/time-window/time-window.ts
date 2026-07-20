@@ -118,12 +118,19 @@ export function dayLabel(instant: Date, tz: string = DISPLAY_TZ): string {
   return `${weekday} ${p.day}/${MONTHS[p.month - 1]}`;
 }
 
-/** The `count` complete local days ending `endOffset` days back from `now`
- *  (endOffset 1 = ending yesterday), oldest first — the trailing series. */
+/**
+ * The `count` local days ending `endOffset` days back from `now`, oldest first
+ * — the trailing series.
+ *
+ * `endOffset` DEFAULTS TO 0: the series ends on the day containing `now`. For a
+ * digest, `now` is the reporting window's `until`, so the reporting day is the
+ * last row — which is the whole point, since it's the day being compared
+ * against the others. Pass 1 to end on the day before instead.
+ */
 export function trailingDays(
   now: Date,
   count: number,
-  endOffset = 1,
+  endOffset = 0,
   tz: string = DISPLAY_TZ,
 ): Array<TimeWindow & { key: string; label: string }> {
   const out: Array<TimeWindow & { key: string; label: string }> = [];

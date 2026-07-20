@@ -455,7 +455,7 @@ capture on an array would render as raw JSON in an email.
 
 ##### Trailing trend — `?trailing=N`
 
-Adds the `N` complete days ending with the reporting day (2–31), so the digest
+Adds the `N` days ending **with the reporting day itself** (2–31), so the digest
 carries both "yesterday" and "yesterday in context". The fetch window widens to
 cover them and **both** the day's totals and the per-day series come from that
 one pass — the trend costs no extra API calls.
@@ -473,8 +473,10 @@ one pass — the trend costs no extra API calls.
 }
 ```
 
-`series` is **oldest first**, so the most recent day reads last, next to the
-totals. `vsAverage` compares the latest day against the average of the *preceding*
+`series` is **oldest first** and its LAST row is the reporting day — the day the
+comparison is about. For `?day=yesterday` that last row's `requests` should equal
+the digest's own `requests`; both come from the same fetch, so a mismatch means
+the day bucketing is off. `vsAverage` compares the latest day against the average of the *preceding*
 days only — including it in its own baseline would damp the deviation being
 surfaced. Either figure is `null` where there's no meaningful baseline (no prior
 day, or a previous value of 0 — "up from nothing" isn't a percentage), and
