@@ -670,8 +670,9 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
 
       <div id="sched-cron" style="display:none">
         <div class="form-group">
-          <input type="text" id="w-cron" placeholder="*/5 * * * *">
-          <div class="hint">5-field cron: minute hour day month weekday</div>
+          <input type="text" id="w-cron" placeholder="*/5 * * * *" oninput="updateCronExplain()">
+          <div class="hint">5-field cron: minute hour day month weekday — evaluated in UTC</div>
+          <div id="cron-explain" style="display:none;margin-top:10px;padding:10px 14px;background:#0f1a0f;border:1px solid #1a3a1a;border-radius:8px;font-size:13px;line-height:1.7"></div>
         </div>
       </div>
 
@@ -1798,7 +1799,11 @@ function resetWizard() {
   document.getElementById('ws1-btn').textContent = 'Next: Check config';
   const ws2btn = document.getElementById('ws2-btn');
   ws2btn.disabled = false; ws2btn.textContent = 'Next: Alert config';
-  document.getElementById('ws3-btn').textContent = 'Save monitor';
+  // Re-ENABLE, not just relabel: a successful save disables the button before
+  // navigating away, so without this every later visit (e.g. Edit alert)
+  // arrives with a permanently dead Save button.
+  const ws3btn = document.getElementById('ws3-btn');
+  ws3btn.disabled = false; ws3btn.textContent = 'Save monitor';
   document.getElementById('test-result').style.display = 'none';
   document.getElementById('test-error').style.display = 'none';
   // Clear any show-once webhook secret from a previous monitor so it can't leak
@@ -2087,6 +2092,7 @@ async function prefillCheck(monitorId) {
     } else if (d.cron) {
       setSchedMode('cron');
       document.getElementById('w-cron').value = d.cron;
+      updateCronExplain();
     }
   } catch (e) {
     console.error('❌ prefillCheck: error', e.message);
@@ -2184,6 +2190,7 @@ function setSchedMode(mode) {
   document.getElementById('sched-cron').style.display = mode === 'cron' ? 'block' : 'none';
   document.getElementById('sched-simple-tab').className = 'sched-tab' + (mode === 'simple' ? ' active' : '');
   document.getElementById('sched-cron-tab').className = 'sched-tab' + (mode === 'cron' ? ' active' : '');
+  if (mode === 'cron') updateCronExplain();
 }
 
 function buildLocalCron(freq, timeValue, days) {
@@ -2247,6 +2254,103 @@ function updateComparatorHint() {
   el.innerHTML =
     \`<div style="color:#ff6b6b">📱 <strong>Text sent</strong> when <code style="background:#1a0f0f;padding:1px 5px;border-radius:3px">\${expr}</code> is \${inverseLabel} \${t} &nbsp;—&nbsp; e.g. value is <strong>\${exampleFail}</strong></div>\` +
     \`<div style="color:#6bcb77;margin-top:4px">✅ <strong>No text</strong> when <code style="background:#0f1a0f;padding:1px 5px;border-radius:3px">\${expr}</code> is \${sym} \${t} &nbsp;—&nbsp; e.g. value is <strong>\${examplePass}</strong></div>\`;
+}
+
+// ─── Cron explainer (crontab.guru-style, mirroring Canary's matcher) ─────────
+// NB: mirrors cronMatchesNow's semantics — UTC evaluation, weekday 7 = Sunday,
+// and day-of-month AND weekday must BOTH match (Canary is stricter than
+// vixie-cron's either/or rule) — so the preview never promises a firing the
+// runner won't make.
+function cronFieldSet(f, min, max) {
+  if (f === '*') return null; // any
+  const out = new Set();
+  for (const part of f.split(',')) {
+    const m = part.match(/^([0-9]+(?:-[0-9]+)?|[*])(?:[/]([0-9]+))?$/);
+    if (!m) return undefined; // invalid
+    const step = m[2] ? parseInt(m[2], 10) : 1;
+    if (step < 1) return undefined;
+    let lo = min, hi = max;
+    if (m[1] !== '*') {
+      const r = m[1].split('-').map(Number);
+      lo = r[0]; hi = r.length > 1 ? r[1] : (m[2] ? max : r[0]);
+    }
+    if (lo < min || hi > max || lo > hi) return undefined;
+    for (let v = lo; v <= hi; v += step) out.add(v);
+  }
+  return out;
+}
+
+function cronNextRuns(cron, count) {
+  const parts = cron.trim().split(' ').filter(Boolean);
+  if (parts.length !== 5) return null;
+  const sets = [
+    cronFieldSet(parts[0], 0, 59), cronFieldSet(parts[1], 0, 23), cronFieldSet(parts[2], 1, 31),
+    cronFieldSet(parts[3], 1, 12), cronFieldSet(parts[4], 0, 7),
+  ];
+  if (sets.some(s => s === undefined)) return null;
+  const [mS, hS, domS, monS, dowS] = sets;
+  const hit = (s, v) => !s || s.has(v);
+  const runs = [];
+  // Start from the next whole minute; walk minute-by-minute (2 years max — fast
+  // enough, and it naturally handles month lengths and leap years).
+  const d = new Date(Math.floor(Date.now() / 60000 + 1) * 60000);
+  for (let i = 0; i < 2 * 366 * 24 * 60 && runs.length < count; i++, d.setUTCMinutes(d.getUTCMinutes() + 1)) {
+    const dow = d.getUTCDay();
+    if (
+      hit(mS, d.getUTCMinutes()) && hit(hS, d.getUTCHours()) && hit(domS, d.getUTCDate()) &&
+      hit(monS, d.getUTCMonth() + 1) && (hit(dowS, dow) || (dow === 0 && hit(dowS, 7)))
+    ) runs.push(new Date(d));
+  }
+  return runs;
+}
+
+function describeCron(cron) {
+  const p = cron.trim().split(' ').filter(Boolean);
+  if (p.length !== 5) return null;
+  const [m, h, dom, mon, dow] = p;
+  const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  const MONTHS = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const two = (n) => String(n).padStart(2, '0');
+  const nameList = (f, names) => f.split(',').map(part => {
+    const range = part.split('/')[0], step = part.includes('/') ? ' (every ' + part.split('/')[1] + ')' : '';
+    if (range === '*') return 'every' + step;
+    return range.split('-').map(v => names[Number(v)] ?? v).join('–') + step;
+  }).join(', ');
+
+  let time;
+  if (m === '*' && h === '*') time = 'Every minute';
+  else if (m.startsWith('*/') && h === '*') time = 'Every ' + m.slice(2) + ' minutes';
+  else if (h === '*') time = 'Every hour at minute ' + m;
+  else if (h.startsWith('*/')) time = 'Every ' + h.slice(2) + ' hours at minute ' + (m === '*' ? 'every' : m);
+  else if (/^[0-9]+$/.test(m) && /^[0-9]+(,[0-9]+)*$/.test(h)) {
+    time = 'At ' + h.split(',').map(hh => two(hh) + ':' + two(m)).join(', ') + ' UTC';
+  } else time = 'At minute ' + m + ' past hour ' + h + ' UTC';
+
+  const when = [];
+  if (dom !== '*') when.push('on day ' + dom + ' of the month');
+  if (dow !== '*') when.push('on ' + nameList(dow, DAYS));
+  if (mon !== '*') when.push('in ' + nameList(mon, MONTHS));
+  return time + (when.length ? ', ' + when.join(', ') : '');
+}
+
+function updateCronExplain() {
+  const el = document.getElementById('cron-explain');
+  const cron = document.getElementById('w-cron').value.trim();
+  if (!cron) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  const runs = cronNextRuns(cron, 3);
+  if (!runs) {
+    el.innerHTML = '<span style="color:var(--red)">Can’t parse that — 5 fields: minute hour day month weekday (*, lists, ranges, steps).</span>';
+    return;
+  }
+  const desc = describeCron(cron);
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const fmt = (d) => d.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  el.innerHTML =
+    '<div style="color:#6bcb77">⏰ <strong>' + esc(desc) + '</strong></div>' +
+    (runs.length
+      ? '<div style="color:var(--m);margin-top:4px">Next runs in your time (' + esc(tz) + '): ' + runs.map(fmt).map(esc).join(' · ') + '</div>'
+      : '<div style="color:var(--red);margin-top:4px">Never fires in the next 2 years — check the day/weekday fields (BOTH must match in Canary).</div>');
 }
 
 function toggleReportMode() {
