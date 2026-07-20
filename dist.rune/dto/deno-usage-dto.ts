@@ -35,6 +35,19 @@ export interface DenoUsageDto {
    *  a single app by index (`byApp.0.requests`) or the whole array (it
    *  serializes to JSON). */
   byApp: AppUsage[];
+  /** The window's metered usage priced at **list rate**: the org total, the
+   *  split by dimension, and that rate extrapolated to a month.
+   *
+   *  Deliberately ignores the plan's monthly included allotments (org-wide, so
+   *  not attributable to one app-day) and excludes the fixed plan fee and any
+   *  provisioned database/storage. It answers "which app costs what", NOT "what
+   *  is the bill" — in practice the metered slice is a small fraction of it.
+   *  For real dollars use the spend guardrail (`internal:deno-spend`). */
+  cost: {
+    totalUSD: number;
+    byMetric: Record<string, number>;
+    projectedMonthlyUSD: number;
+  };
   /** `byApp` pre-rendered as a fixed-width text table, for an alert body's
    *  `{breakdown}` capture — an array capture would render as raw JSON. */
   breakdown: string;

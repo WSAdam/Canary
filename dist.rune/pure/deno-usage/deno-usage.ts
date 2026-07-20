@@ -130,6 +130,51 @@ export function mergeTotals(perApp: Array<Record<Metric, number>>): Record<Metri
   return out;
 }
 
+/** What a slice of usage costs at list rate, split by dimension. */
+export interface UsageCost {
+  totalUSD: number;
+  byMetric: Record<Metric, number>;
+}
+
+/** Human labels for the cost breakdown, in report order. */
+export const COST_LABELS: Array<[Metric, string]> = [
+  ["request_count", "Requests"],
+  ["kv_read_units", "KV reads"],
+  ["kv_write_units", "KV writes"],
+  ["network_egress_bytes", "Egress"],
+  ["cpu_seconds", "CPU"],
+  ["memory_time_byte_seconds", "Memory"],
+];
+
+/**
+ * Price a usage total at **list rate, ignoring allotments**.
+ *
+ * The plan's included allowances are ORG-WIDE and MONTHLY, so subtracting them
+ * from one app's single day is meaningless — it would show most apps at $0 and
+ * attribute the entire bill to whichever one happened to cross the line. This
+ * answers "what did this usage cost", which is the question that makes per-app
+ * and day-over-day comparison possible.
+ *
+ * It is NOT an invoice: it excludes the fixed plan fee and any provisioned
+ * database/storage, which in practice dominate the real bill.
+ */
+export function listCost(t: Record<Metric, number>, plan: PlanCosts = PRO_PLAN): UsageCost {
+  const byMetric = {} as Record<Metric, number>;
+  let totalUSD = 0;
+  for (const m of METRICS) {
+    const c = plan[m].toUnits(t[m] ?? 0) * plan[m].pricePerUnit;
+    byMetric[m] = c;
+    totalUSD += c;
+  }
+  return { totalUSD, byMetric };
+}
+
+/** Money for a table cell. Daily per-app figures land in fractions of a cent,
+ *  so 2dp would flatten every app to `$0.00`; `dp` widens where that matters. */
+export function formatUSD(n: number, dp = 2): string {
+  return `$${n.toFixed(dp)}`;
+}
+
 /** One app's slice of the digest, in display units. */
 export interface AppUsage {
   app: string;
@@ -139,6 +184,9 @@ export interface AppUsage {
   egressGB: number;
   cpuHours: number;
   memoryGBHours: number;
+  /** This app's usage priced at list rate (see listCost) — for attribution,
+   *  not billing. */
+  costUSD: number;
   /** True when at least one analytics chunk for this app failed, so its numbers
    *  are known-incomplete rather than genuinely zero. */
   errored?: boolean;
@@ -158,6 +206,7 @@ export function toAppUsage(app: string, t: Record<Metric, number>, errored = fal
     egressGB: round(t.network_egress_bytes / 1e9, 3),
     cpuHours: round(t.cpu_seconds / 3600, 2),
     memoryGBHours: round(t.memory_time_byte_seconds / (1e9 * 3600), 1),
+    costUSD: round(listCost(t).totalUSD, 4),
     ...(errored ? { errored: true } : {}),
   };
 }
@@ -207,11 +256,13 @@ export function formatBreakdown(apps: AppUsage[], limit = 15): string {
     const reqW = w((a) => group(a.requests));
     const readW = w((a) => group(a.kvReadUnits));
     const writeW = w((a) => group(a.kvWriteUnits));
+    const costW = w((a) => formatUSD(a.costUSD, 3));
     for (const a of shown) {
       lines.push(
         `${a.app.padEnd(nameW)}  ${group(a.requests).padStart(reqW)} req  ` +
           `${group(a.kvReadUnits).padStart(readW)} KVr  ` +
-          `${group(a.kvWriteUnits).padStart(writeW)} KVw` +
+          `${group(a.kvWriteUnits).padStart(writeW)} KVw  ` +
+          `${formatUSD(a.costUSD, 3).padStart(costW)}` +
           (a.errored ? "  ⚠️ partial" : ""),
       );
     }
@@ -357,6 +408,9 @@ export function buildReport(input: {
   appsActive: number;
   apps: number;
   breakdown: string;
+  cost?: UsageCost;
+  /** Window length in hours, used to extrapolate the cost to a month. */
+  hours?: number;
   trend?: string;
   trendDays?: number;
 }): string {
@@ -378,6 +432,21 @@ export function buildReport(input: {
     "BY APP",
     input.breakdown,
   ];
+  if (input.cost) {
+    const rows = COST_LABELS
+      .filter(([m]) => input.cost!.byMetric[m] > 0)
+      .map(([m, label]) => [label, formatUSD(input.cost!.byMetric[m], 3)]);
+    rows.push(["Total", formatUSD(input.cost.totalUSD, 2)]);
+    out.push("", "COST (metered usage at list rate)", ...padCols(rows, ["l", "r"]));
+    if (input.hours && input.hours > 0) {
+      const monthly = input.cost.totalUSD * (730 / input.hours);
+      out.push(`≈ ${formatUSD(monthly, 2)}/month at this rate`);
+    }
+    out.push(
+      "Excludes the plan fee and any provisioned database/storage, and ignores",
+      "monthly included allotments — for attribution, not billing.",
+    );
+  }
   if (input.trend) {
     out.push("", `TRAILING ${input.trendDays ?? ""} DAYS`.replace(/\s+/g, " ").trim(), input.trend);
   }

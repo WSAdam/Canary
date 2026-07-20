@@ -4,6 +4,7 @@ import {
   formatBreakdown,
   formatTrend,
   isActiveApp,
+  listCost,
   type Metric,
   mergeTotals,
   rankApps,
@@ -142,6 +143,10 @@ export async function getDenoUsage(params: URLSearchParams = new URLSearchParams
   // "+N idle" tally stays accurate.
   const active = ranked.filter(isActiveApp);
   const breakdown = formatBreakdown(ranked);
+  const cost = listCost(t);
+  // Extrapolate the window's rate over an average month (730h) — the figure
+  // people actually reason about, since a day's metered cost is pennies.
+  const projectedMonthlyUSD = hours > 0 ? cost.totalUSD * (730 / hours) : 0;
 
   // A day with no traffic still gets a row (zeroes), so a gap in the series
   // reads as "quiet day" rather than silently vanishing from the trend.
@@ -178,6 +183,13 @@ export async function getDenoUsage(params: URLSearchParams = new URLSearchParams
     appsActive: active.length,
     appsIdle: ranked.length - active.length,
     byApp: active,
+    cost: {
+      totalUSD: round(cost.totalUSD, 4),
+      byMetric: Object.fromEntries(
+        Object.entries(cost.byMetric).map(([m, v]) => [m, round(v, 4)]),
+      ),
+      projectedMonthlyUSD: round(projectedMonthlyUSD, 2),
+    },
     breakdown,
     trailing,
     report: buildReport({
@@ -190,6 +202,8 @@ export async function getDenoUsage(params: URLSearchParams = new URLSearchParams
       appsActive: active.length,
       apps: apps.length,
       breakdown,
+      cost,
+      hours,
       trend: trailing?.table,
       trendDays: trailing?.days,
     }),

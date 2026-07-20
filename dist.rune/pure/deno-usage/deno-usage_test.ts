@@ -9,7 +9,9 @@ import {
   formatBreakdown,
   formatDelta,
   formatTrend,
+  formatUSD,
   isActiveApp,
+  listCost,
   mergeTotals,
   type Metric,
   type PlanCosts,
@@ -379,4 +381,97 @@ Deno.test("buildReport - omits the trend section entirely when there is none", (
     breakdown: "b",
   });
   assertEquals(report.includes("TRAILING"), false);
+});
+
+// --- cost attribution -------------------------------------------------------
+
+Deno.test("listCost - prices each dimension at list rate and sums them", () => {
+  const c = listCost(totals({
+    request_count: 1_000_000, // $2.00
+    kv_read_units: 1_000_000, // $1.00
+    kv_write_units: 1_000_000, // $2.50
+    network_egress_bytes: 10e9, // 10 GB → $5.00
+    cpu_seconds: 3600, // 1 CPU-h → $0.05
+    memory_time_byte_seconds: 1e9 * 3600, // 1 GB-h → $0.016
+  }));
+  assertAlmostEquals(c.byMetric.request_count, 2, 1e-9);
+  assertAlmostEquals(c.byMetric.kv_read_units, 1, 1e-9);
+  assertAlmostEquals(c.byMetric.kv_write_units, 2.5, 1e-9);
+  assertAlmostEquals(c.byMetric.network_egress_bytes, 5, 1e-9);
+  assertAlmostEquals(c.totalUSD, 10.566, 1e-9);
+});
+
+Deno.test("listCost - IGNORES allotments (they're org-wide and monthly)", () => {
+  // PRO_PLAN includes 5M requests. Under an allotment-aware model this would be
+  // $0; per app-day the allowance is unattributable, so list rate is charged.
+  const c = listCost(totals({ request_count: 1_000_000 }));
+  assertAlmostEquals(c.totalUSD, 2, 1e-9);
+  // estimateSpendUSD is the allotment-aware one, and must still say $0 here.
+  assertEquals(estimateSpendUSD(totals({ request_count: 1_000_000 })), 0);
+});
+
+Deno.test("listCost - zero usage costs nothing", () => {
+  assertEquals(listCost(totals({})).totalUSD, 0);
+});
+
+Deno.test("formatUSD - fixed precision, widened where fractions of a cent matter", () => {
+  assertEquals(formatUSD(0.1188, 3), "$0.119");
+  assertEquals(formatUSD(12.5), "$12.50");
+});
+
+Deno.test("toAppUsage - carries the app's list-rate cost", () => {
+  // 1M KV reads at $1/M.
+  assertAlmostEquals(toAppUsage("cockpit", totals({ kv_read_units: 1_000_000 })).costUSD, 1, 1e-9);
+});
+
+Deno.test("formatBreakdown - includes a right-aligned cost column", () => {
+  const out = formatBreakdown([
+    toAppUsage("cockpit", totals({ request_count: 4038, kv_read_units: 118818, kv_write_units: 10835 })),
+    toAppUsage("argus", totals({ request_count: 14 })),
+  ]);
+  const lines = out.split("\n");
+  assertEquals(lines[0].includes("$"), true, `no cost column: ${lines[0]}`);
+  // The $ signs line up across rows.
+  assertEquals(lines[0].indexOf("$"), lines[1].indexOf("$"));
+});
+
+Deno.test("buildReport - cost section lists only non-zero dimensions, with the caveat", () => {
+  const report = buildReport({
+    windowLabel: "w",
+    requests: 100,
+    kvReadUnits: 0,
+    kvWriteUnits: 0,
+    egressGB: 0,
+    cpuHours: 0,
+    appsActive: 1,
+    apps: 1,
+    breakdown: "b",
+    cost: listCost(totals({ request_count: 1_000_000 })),
+    hours: 24,
+  });
+  assertEquals(report.includes("COST (metered usage at list rate)"), true);
+  // Scope to the cost section: the stats block above it names every dimension
+  // regardless, so a whole-report search would always find "KV reads".
+  const costSection = report.slice(report.indexOf("COST (metered usage at list rate)"));
+  assertEquals(costSection.includes("Requests"), true);
+  // Dimensions costing nothing are omitted rather than padding with $0.000.
+  assertEquals(costSection.includes("KV reads"), false);
+  // $2/day over 730h/month ≈ $60.83.
+  assertEquals(report.includes("$60.83/month"), true, report);
+  assertEquals(report.includes("not billing"), true, "must not read as an invoice");
+});
+
+Deno.test("buildReport - omits the cost section entirely when no cost is given", () => {
+  const report = buildReport({
+    windowLabel: "w",
+    requests: 1,
+    kvReadUnits: 0,
+    kvWriteUnits: 0,
+    egressGB: 0,
+    cpuHours: 0,
+    appsActive: 1,
+    apps: 1,
+    breakdown: "b",
+  });
+  assertEquals(report.includes("COST"), false);
 });

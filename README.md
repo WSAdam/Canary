@@ -453,6 +453,29 @@ genuine zero.
 `breakdown` is `byApp` pre-rendered as a fixed-width text table, because a
 capture on an array would render as raw JSON in an email.
 
+##### Cost attribution
+
+Every app carries a `costUSD`, and the digest a `cost` block, pricing the
+window's metered usage at Deno's **list rate**:
+
+```jsonc
+"cost": {
+  "totalUSD": 0.4683,
+  "byMetric": { "request_count": 0.0369, "kv_read_units": 0.1224, … },
+  "projectedMonthlyUSD": 14.23
+}
+```
+
+**This is attribution, not billing.** It deliberately ignores the plan's monthly
+included allotments — they are org-wide, so subtracting them from one app on one
+day would show most apps at $0 and dump the whole bill on whichever app happened
+to cross the line — and it excludes the fixed plan fee and any provisioned
+database/storage. In practice the metered slice is a small fraction of the real
+invoice. It answers *which app costs what* and *is that going up*; for real
+dollars use the spend guardrail (`internal:deno-spend`).
+
+`projectedMonthlyUSD` extrapolates the window's rate over a 730-hour month.
+
 ##### Trailing trend — `?trailing=N`
 
 Adds the `N` days ending **with the reporting day itself** (2–31), so the digest
