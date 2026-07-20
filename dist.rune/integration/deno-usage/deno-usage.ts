@@ -1,5 +1,5 @@
-import { type Metric, mergeTotals, sumAnalytics } from "../../pure/deno-usage/deno-usage.ts";
-import type { AnalyticsResponse } from "../../pure/deno-usage/deno-usage.ts";
+import { formatBreakdown, type Metric, mergeTotals, rankApps, sumAnalytics, toAppUsage } from "../../pure/deno-usage/deno-usage.ts";
+import type { AnalyticsResponse, AppUsage } from "../../pure/deno-usage/deno-usage.ts";
 import type { DenoUsageDto } from "../../dto/deno-usage-dto.ts";
 import { CanaryError } from "../../dto/_shared.ts";
 import { log } from "../../impure/_log.ts";
@@ -55,6 +55,7 @@ export async function getDenoUsage(hours = 24): Promise<DenoUsageDto> {
 
   const chunks = windows(since.getTime(), until.getTime());
   const perApp: Array<Record<Metric, number>> = [];
+  const byApp: AppUsage[] = [];
   let appsErrored = 0;
   for (const app of apps) {
     const parts: Array<Record<Metric, number>> = [];
@@ -70,11 +71,16 @@ export async function getDenoUsage(hours = 24): Promise<DenoUsageDto> {
       }
     }
     if (failed) appsErrored++;
-    perApp.push(mergeTotals(parts));
+    const totals = mergeTotals(parts);
+    perApp.push(totals);
+    // Keep the per-app slice as well as folding it into the org total, so the
+    // digest can answer "which app drove that?" without a second API pass.
+    byApp.push(toAppUsage(app.slug, totals, failed));
   }
 
   const t = mergeTotals(perApp);
   const round = (n: number, dp: number) => Number(n.toFixed(dp));
+  const ranked = rankApps(byApp);
   const dto: DenoUsageDto = {
     ok: true,
     window: { since: since.toISOString(), until: until.toISOString(), hours },
@@ -86,6 +92,8 @@ export async function getDenoUsage(hours = 24): Promise<DenoUsageDto> {
     egressGB: round(t.network_egress_bytes / 1e9, 3),
     cpuHours: round(t.cpu_seconds / 3600, 2),
     memoryGBHours: round(t.memory_time_byte_seconds / (1e9 * 3600), 1),
+    byApp: ranked,
+    breakdown: formatBreakdown(ranked),
   };
   log.info(`✅ deno-usage: ${dto.apps} apps (${appsErrored} errored) — ${dto.requests} req, ${dto.kvReadUnits} KV-read, ${dto.kvWriteUnits} KV-write`);
   return dto;

@@ -70,6 +70,88 @@ export function mergeTotals(perApp: Array<Record<Metric, number>>): Record<Metri
   return out;
 }
 
+/** One app's slice of the digest, in display units. */
+export interface AppUsage {
+  app: string;
+  requests: number;
+  kvReadUnits: number;
+  kvWriteUnits: number;
+  egressGB: number;
+  cpuHours: number;
+  memoryGBHours: number;
+  /** True when at least one analytics chunk for this app failed, so its numbers
+   *  are known-incomplete rather than genuinely zero. */
+  errored?: boolean;
+}
+
+function round(n: number, dp: number): number {
+  return Number(n.toFixed(dp));
+}
+
+/** Convert one app's raw metric totals into the digest's display units. */
+export function toAppUsage(app: string, t: Record<Metric, number>, errored = false): AppUsage {
+  return {
+    app,
+    requests: t.request_count,
+    kvReadUnits: t.kv_read_units,
+    kvWriteUnits: t.kv_write_units,
+    egressGB: round(t.network_egress_bytes / 1e9, 3),
+    cpuHours: round(t.cpu_seconds / 3600, 2),
+    memoryGBHours: round(t.memory_time_byte_seconds / (1e9 * 3600), 1),
+    ...(errored ? { errored: true } : {}),
+  };
+}
+
+/** Busiest first, so the interesting apps head the list and the email. Ties
+ *  break on KV reads then name, so the order is stable run to run. */
+export function rankApps(apps: AppUsage[]): AppUsage[] {
+  return [...apps].sort((a, b) =>
+    b.requests - a.requests || b.kvReadUnits - a.kvReadUnits || a.app.localeCompare(b.app)
+  );
+}
+
+/** Thousands separators, so a 6-figure KV count is readable at a glance. */
+function group(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+/**
+ * Render the per-app table as fixed-width text for an alert body — the digest's
+ * `{breakdown}` capture. Apps with no traffic at all are collapsed into a
+ * trailing "+N idle" line rather than padding the email with zero rows.
+ * `limit` caps the listed rows (the rest roll into an "+N more" line) so a large
+ * org can't produce an unreadable wall of text or blow the capture size cap.
+ */
+export function formatBreakdown(apps: AppUsage[], limit = 15): string {
+  const ranked = rankApps(apps);
+  const active = ranked.filter((a) => a.requests > 0 || a.kvReadUnits > 0 || a.kvWriteUnits > 0);
+  const idle = ranked.length - active.length;
+  const shown = active.slice(0, Math.max(0, limit));
+
+  const lines: string[] = [];
+  if (shown.length > 0) {
+    // Right-align each numeric column to its widest value so the columns line up
+    // in a monospaced mail client.
+    const w = (pick: (a: AppUsage) => string) => Math.max(...shown.map((a) => pick(a).length));
+    const nameW = w((a) => a.app);
+    const reqW = w((a) => group(a.requests));
+    const readW = w((a) => group(a.kvReadUnits));
+    const writeW = w((a) => group(a.kvWriteUnits));
+    for (const a of shown) {
+      lines.push(
+        `${a.app.padEnd(nameW)}  ${group(a.requests).padStart(reqW)} req  ` +
+          `${group(a.kvReadUnits).padStart(readW)} KVr  ` +
+          `${group(a.kvWriteUnits).padStart(writeW)} KVw` +
+          (a.errored ? "  ⚠️ partial" : ""),
+      );
+    }
+  }
+  const more = active.length - shown.length;
+  if (more > 0) lines.push(`+${more} more`);
+  if (idle > 0) lines.push(`+${idle} idle`);
+  return lines.join("\n") || "(no activity)";
+}
+
 /** Cost model for one metered dimension. */
 export interface DimensionCost {
   /** Included free each billing cycle, in the billable unit `toUnits` yields. */
