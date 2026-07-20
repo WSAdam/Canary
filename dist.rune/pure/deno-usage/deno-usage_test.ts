@@ -2,17 +2,28 @@ import { assertAlmostEquals, assertEquals } from "jsr:@std/assert";
 import {
   type AnalyticsResponse,
   estimateSpendUSD,
+  averageOf,
+  buildReport,
+  compareLatest,
+  type DayUsage,
   formatBreakdown,
+  formatDelta,
+  formatTrend,
   isActiveApp,
   mergeTotals,
   type Metric,
   type PlanCosts,
+  pctChange,
   pctOfBudget,
   PRO_PLAN,
   rankApps,
   sumAnalytics,
+  sumAnalyticsByDay,
+  sumAnalyticsWhere,
   toAppUsage,
+  toDayUsage,
 } from "./deno-usage.ts";
+import { dayKey } from "../time-window/time-window.ts";
 
 // A response shaped exactly like the v2 API: fields describe columns, each row
 // is positionally aligned to fields. Two 15-min buckets.
@@ -214,4 +225,158 @@ Deno.test("isActiveApp - any one dimension of traffic counts as active", () => {
 
 Deno.test("isActiveApp - an all-zero app is idle and gets filtered out", () => {
   assertEquals(isActiveApp(toAppUsage("alfred-e2e-upstream", totals({}))), false);
+});
+
+// --- trailing trend ---------------------------------------------------------
+
+// Three 15-min buckets spanning two ET days: 19 July 20:00 EDT (= 20th 00:00Z)
+// is still the 19th locally, which is exactly the trap day-bucketing must avoid.
+const spanning: AnalyticsResponse = {
+  fields: [
+    { name: "time", type: "time" },
+    { name: "request_count", type: "number" },
+    { name: "kv_read_units", type: "number" },
+  ],
+  values: [
+    ["2026-07-19T12:00:00Z", 10, 1], // 08:00 EDT 19th
+    ["2026-07-20T00:00:00Z", 20, 2], // 20:00 EDT 19th — still the 19th locally
+    ["2026-07-20T16:00:00Z", 40, 4], // 12:00 EDT 20th
+  ],
+};
+
+const etDayKey = (t: number) => dayKey(new Date(t));
+
+Deno.test("sumAnalyticsWhere - sums only the buckets inside the window", () => {
+  const t = sumAnalyticsWhere(
+    spanning,
+    (ms) => ms >= Date.parse("2026-07-20T00:00:00Z") && ms <= Date.parse("2026-07-20T23:59:59Z"),
+  );
+  assertEquals(t.request_count, 60); // the 2nd and 3rd buckets
+});
+
+Deno.test("sumAnalyticsWhere - a response with no time column sums everything", () => {
+  const noTime: AnalyticsResponse = {
+    fields: [{ name: "request_count", type: "number" }],
+    values: [[5], [7]],
+  };
+  assertEquals(sumAnalyticsWhere(noTime, () => false).request_count, 12);
+});
+
+Deno.test("sumAnalyticsByDay - buckets by LOCAL day, not UTC day", () => {
+  const byDay = sumAnalyticsByDay(spanning, etDayKey);
+  assertEquals(Object.keys(byDay).sort(), ["2026-07-19", "2026-07-20"]);
+  // The 20:00 EDT bucket (00:00Z on the 20th) must land on the 19th.
+  assertEquals(byDay["2026-07-19"].request_count, 30);
+  assertEquals(byDay["2026-07-20"].request_count, 40);
+});
+
+Deno.test("sumAnalyticsByDay - no time column yields no days", () => {
+  const noTime: AnalyticsResponse = { fields: [{ name: "request_count", type: "number" }], values: [[5]] };
+  assertEquals(Object.keys(sumAnalyticsByDay(noTime, etDayKey)).length, 0);
+});
+
+function day(date: string, label: string, requests: number, reads = 0, writes = 0): DayUsage {
+  return toDayUsage(date, label, totals({
+    request_count: requests,
+    kv_read_units: reads,
+    kv_write_units: writes,
+  }));
+}
+
+Deno.test("pctChange - percent difference, null when there's no baseline", () => {
+  assertEquals(pctChange(110, 100), 10);
+  assertEquals(pctChange(50, 100), -50);
+  // Growth from zero isn't a percentage — must not be Infinity.
+  assertEquals(pctChange(5, 0), null);
+});
+
+Deno.test("formatDelta - signed arrows, dash when unknown", () => {
+  assertEquals(formatDelta(12.4), "▲12%");
+  assertEquals(formatDelta(-8.2), "▼8%");
+  assertEquals(formatDelta(0.2), "0%");
+  assertEquals(formatDelta(null), "—");
+});
+
+Deno.test("averageOf - mean across the series, 0 when empty", () => {
+  assertEquals(averageOf([day("a", "A", 10), day("b", "B", 20)], "requests"), 15);
+  assertEquals(averageOf([], "requests"), 0);
+});
+
+Deno.test("compareLatest - latest vs prior day and vs the PRECEDING average", () => {
+  const series = [day("1", "Mon", 100), day("2", "Tue", 100), day("3", "Wed", 150)];
+  const c = compareLatest(series, "requests");
+  assertEquals(c.vsPrevDay, 50); // 150 vs 100
+  // Baseline excludes the latest day: avg(100,100) = 100 → +50%, NOT avg of all
+  // three (116.7 → +28%), which would damp the deviation being surfaced.
+  assertEquals(c.vsAverage, 50);
+});
+
+Deno.test("compareLatest - single-day and empty series have no baseline", () => {
+  assertEquals(compareLatest([day("1", "Mon", 10)], "requests"), { vsPrevDay: null, vsAverage: null });
+  assertEquals(compareLatest([], "requests"), { vsPrevDay: null, vsAverage: null });
+});
+
+Deno.test("formatTrend - a row per day, then totals, average and the comparison", () => {
+  const out = formatTrend([
+    day("2026-07-18", "Sat 18/July", 15102, 98004, 12880),
+    day("2026-07-19", "Sun 19/July", 17759, 122395, 14019),
+  ]);
+  const lines = out.split("\n");
+  assertEquals(lines[0].includes("Requests"), true, "has a header");
+  assertEquals(out.includes("15,102"), true);
+  assertEquals(out.includes("17,759"), true);
+  assertEquals(out.includes("Total"), true);
+  assertEquals(out.includes("Average"), true);
+  // 17,759 vs 15,102 is +17.6% → ▲18%.
+  assertEquals(out.includes("▲18% vs prior day"), true, out);
+  // Oldest first, so the latest day sits next to the totals.
+  assertEquals(out.indexOf("15,102") < out.indexOf("17,759"), true);
+});
+
+Deno.test("formatTrend - a single day renders without a comparison block", () => {
+  const out = formatTrend([day("2026-07-19", "Sun 19/July", 100)]);
+  assertEquals(out.includes("vs prior day"), false);
+  assertEquals(out.includes("100"), true);
+});
+
+Deno.test("formatTrend - an empty series says so rather than rendering an empty table", () => {
+  assertEquals(formatTrend([]), "(no history)");
+});
+
+Deno.test("buildReport - assembles window, stats, per-app and trend in order", () => {
+  const report = buildReport({
+    windowLabel: "19/July/2026 00:00 → 23:59 EDT",
+    requests: 17759,
+    kvReadUnits: 122395,
+    kvWriteUnits: 14019,
+    egressGB: 0.145,
+    cpuHours: 1.44,
+    appsActive: 8,
+    apps: 23,
+    breakdown: "cockpit  4,038 req",
+    trend: "TREND TABLE",
+    trendDays: 7,
+  });
+  assertEquals(report.includes("19/July/2026 00:00 → 23:59 EDT"), true);
+  assertEquals(report.includes("17,759"), true);
+  assertEquals(report.includes("8 of 23 apps active"), true);
+  assertEquals(report.includes("BY APP"), true);
+  assertEquals(report.includes("TRAILING 7 DAYS"), true);
+  // Order: window → stats → by app → trend.
+  assertEquals(report.indexOf("BY APP") < report.indexOf("TRAILING 7 DAYS"), true);
+});
+
+Deno.test("buildReport - omits the trend section entirely when there is none", () => {
+  const report = buildReport({
+    windowLabel: "w",
+    requests: 1,
+    kvReadUnits: 0,
+    kvWriteUnits: 0,
+    egressGB: 0,
+    cpuHours: 0,
+    appsActive: 1,
+    apps: 1,
+    breakdown: "b",
+  });
+  assertEquals(report.includes("TRAILING"), false);
 });

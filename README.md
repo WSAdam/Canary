@@ -415,6 +415,9 @@ Pick the window with exactly one of:
 | `?from=…&to=…` | an explicit range, both required |
 | `?hours=N` | rolling N-hour window ending now — the default, `N=24` |
 
+Add `?trailing=N` to any of them for a trailing N-day trend alongside the day's
+own numbers (see below).
+
 **Prefer `?day=` for a recurring check.** An absolute `from`/`to` is frozen, so a
 daily digest would re-report the same date forever. `from`/`to` accept
 `YYYY-MM-DD`, `"YYYY-MM-DD HH:MM"`, or a full ISO timestamp; a value carrying
@@ -450,11 +453,52 @@ genuine zero.
 `breakdown` is `byApp` pre-rendered as a fixed-width text table, because a
 capture on an array would render as raw JSON in an email.
 
-**As a daily report** — URL `internal:deno-usage?day=yesterday`, `expression:
-requests`, `comparatorOp: gte`, `threshold: 0` (a condition that always passes),
-`notifyOnSuccess: true`, and captures such as
-`{ requests: "requests", kvReads: "kvReadUnits", kvWrites: "kvWriteUnits", window: "window.label", breakdown: "breakdown" }`.
-Capture a single app by index, e.g. `byApp.0.requests`.
+##### Trailing trend — `?trailing=N`
+
+Adds the `N` complete days ending with the reporting day (2–31), so the digest
+carries both "yesterday" and "yesterday in context". The fetch window widens to
+cover them and **both** the day's totals and the per-day series come from that
+one pass — the trend costs no extra API calls.
+
+```jsonc
+"trailing": {
+  "days": 7,
+  "series": [ { "date": "2026-07-13", "label": "Mon 13/July", "requests": 14210, … } ],
+  "comparison": {
+    "requests":     { "vsPrevDay": 37.9, "vsAverage": 15.1 },
+    "kvReadUnits":  { "vsPrevDay": 38.9, "vsAverage": 15.4 },
+    "kvWriteUnits": { "vsPrevDay": 27.6, "vsAverage": 8.2 }
+  },
+  "table": "Day          Requests  KV reads …"
+}
+```
+
+`series` is **oldest first**, so the most recent day reads last, next to the
+totals. `vsAverage` compares the latest day against the average of the *preceding*
+days only — including it in its own baseline would damp the deviation being
+surfaced. Either figure is `null` where there's no meaningful baseline (no prior
+day, or a previous value of 0 — "up from nothing" isn't a percentage), and
+renders as `—`. A day with no traffic still gets a row, so a quiet day reads as a
+zero rather than vanishing from the trend.
+
+##### `report` — the whole email in one capture
+
+Every digest carries a `report` string: the day's totals, the per-app breakdown,
+and (when requested) the trailing trend, already laid out. Capture it once as
+`{report}` instead of reproducing that layout in the alert template.
+
+**As a daily report** — URL `internal:deno-usage?day=yesterday&trailing=7`,
+`expression: requests`, `comparatorOp: gte`, `threshold: 0` (a condition that
+always passes), `notifyOnSuccess: true`, and a single capture
+`{ report: "report" }` with an email body of just `{report}`.
+
+For a hand-built layout instead, capture the pieces —
+`{ requests: "requests", kvReads: "kvReadUnits", kvWrites: "kvWriteUnits", window: "window.label", breakdown: "breakdown", trend: "trailing.table" }`
+— or a single app by index, e.g. `byApp.0.requests`.
+
+> Alert bodies are sent as plain text, so the fixed-width tables keep their
+> newlines. Some mail clients render `text/plain` in a proportional font, which
+> can soften the column alignment.
 
 #### Spend guardrail — `deno-spend`
 

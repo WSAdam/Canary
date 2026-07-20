@@ -1,7 +1,7 @@
 /** The `/api/deno-usage` response: org-wide Deno Deploy usage over a window,
  *  summed across every app. Flat numeric fields so a Canary check can extract
  *  any of them by dot-path (observed) or capture (`{kvReads}` etc.). */
-import type { AppUsage } from "../pure/deno-usage/deno-usage.ts";
+import type { AppUsage, DayUsage, TrendComparison, TrendKey } from "../pure/deno-usage/deno-usage.ts";
 
 export interface DenoUsageDto {
   ok: true;
@@ -38,4 +38,19 @@ export interface DenoUsageDto {
   /** `byApp` pre-rendered as a fixed-width text table, for an alert body's
    *  `{breakdown}` capture — an array capture would render as raw JSON. */
   breakdown: string;
+  /** Present when `?trailing=N` is requested: the N complete days ending with
+   *  the reporting day, plus how the latest compares to the rest. */
+  trailing?: {
+    days: number;
+    /** Oldest first, so the most recent day reads last. */
+    series: DayUsage[];
+    /** Per-metric change of the latest day vs the prior day and vs the average
+     *  of the preceding days (null where there's no meaningful baseline). */
+    comparison: Record<TrendKey, TrendComparison>;
+    /** The series pre-rendered as a fixed-width table with the deltas. */
+    table: string;
+  };
+  /** The whole email body — reporting day, per-app breakdown, and the trailing
+   *  trend — assembled ready for a single `{report}` capture. */
+  report: string;
 }

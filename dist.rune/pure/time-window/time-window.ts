@@ -104,6 +104,36 @@ export function formatRange(since: Date, until: Date, tz: string = DISPLAY_TZ): 
     : `${date(a)} ${hm(a)} → ${date(b)} ${hm(b)} ${b.abbrev}`;
 }
 
+/** An instant's local calendar date as `YYYY-MM-DD` — the key rows are bucketed
+ *  into so a "day" means the reader's day, not UTC's. */
+export function dayKey(instant: Date, tz: string = DISPLAY_TZ): string {
+  const p = partsIn(instant, tz);
+  return `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`;
+}
+
+/** A short local date for a table row, e.g. `Sun 19/July`. */
+export function dayLabel(instant: Date, tz: string = DISPLAY_TZ): string {
+  const p = partsIn(instant, tz);
+  const weekday = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" }).format(instant);
+  return `${weekday} ${p.day}/${MONTHS[p.month - 1]}`;
+}
+
+/** The `count` complete local days ending `endOffset` days back from `now`
+ *  (endOffset 1 = ending yesterday), oldest first — the trailing series. */
+export function trailingDays(
+  now: Date,
+  count: number,
+  endOffset = 1,
+  tz: string = DISPLAY_TZ,
+): Array<TimeWindow & { key: string; label: string }> {
+  const out: Array<TimeWindow & { key: string; label: string }> = [];
+  for (let i = count - 1 + endOffset; i >= endOffset; i--) {
+    const w = localDay(now, i, tz);
+    out.push({ ...w, key: dayKey(w.since, tz), label: dayLabel(w.since, tz) });
+  }
+  return out;
+}
+
 /** A resolved reporting window: UTC instants plus their display strings. */
 export interface TimeWindow {
   since: Date;

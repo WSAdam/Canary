@@ -1,9 +1,37 @@
-import { formatBreakdown, isActiveApp, type Metric, mergeTotals, rankApps, sumAnalytics, toAppUsage } from "../../pure/deno-usage/deno-usage.ts";
+import {
+  buildReport,
+  compareLatest,
+  formatBreakdown,
+  formatTrend,
+  isActiveApp,
+  type Metric,
+  mergeTotals,
+  rankApps,
+  sumAnalyticsByDay,
+  sumAnalyticsWhere,
+  toAppUsage,
+  toDayUsage,
+  TREND_COLUMNS,
+  type TrendComparison,
+  type TrendKey,
+} from "../../pure/deno-usage/deno-usage.ts";
 import type { AnalyticsResponse, AppUsage } from "../../pure/deno-usage/deno-usage.ts";
 import type { DenoUsageDto } from "../../dto/deno-usage-dto.ts";
 import { CanaryError } from "../../dto/_shared.ts";
-import { formatDisplay, formatRange, resolveWindow } from "../../pure/time-window/time-window.ts";
+import { dayKey, formatDisplay, formatRange, resolveWindow, trailingDays } from "../../pure/time-window/time-window.ts";
 import { log } from "../../impure/_log.ts";
+
+// Trend length. Capped because each extra day widens every per-app analytics
+// call; 31 keeps the fetch inside a handful of chunks per app.
+const MAX_TRAILING_DAYS = 31;
+
+/** `?trailing=N` → a day count, or 0 when absent/invalid (trend omitted). */
+function parseTrailing(raw: string | null): number {
+  if (raw === null) return 0;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 2) return 0; // a 1-day "trend" compares nothing
+  return Math.min(Math.floor(n), MAX_TRAILING_DAYS);
+}
 
 const BASE = "https://api.deno.com/v2";
 // The analytics endpoint rejects a single query whose range exceeds 7 days
@@ -44,7 +72,18 @@ export async function getDenoUsage(params: URLSearchParams = new URLSearchParams
 
   const { since, until } = resolveWindow(params);
   const hours = Number(((until.getTime() - since.getTime()) / 3_600_000).toFixed(2));
-  log.info(`🔍 deno-usage: summing ${formatRange(since, until)} across org apps`);
+
+  // ?trailing=N adds the N complete days ending with the reporting day. The
+  // fetch window is widened to cover them, and BOTH the primary totals and the
+  // per-day series are derived from that one pass — the trend costs no extra
+  // API calls, only a wider range on the calls already being made.
+  const trailingDaysCount = parseTrailing(params.get("trailing"));
+  const days = trailingDaysCount > 0 ? trailingDays(until, trailingDaysCount) : [];
+  const fetchSince = days.length > 0 && days[0].since < since ? days[0].since : since;
+  log.info(
+    `🔍 deno-usage: summing ${formatRange(since, until)} across org apps` +
+      (trailingDaysCount > 0 ? ` (+${trailingDaysCount}d trend from ${formatDisplay(fetchSince)})` : ""),
+  );
 
   // `limit` is capped at 100 by the API. Orgs above 100 apps would need paging;
   // warn rather than silently undercount if we ever hit the ceiling.
@@ -56,9 +95,14 @@ export async function getDenoUsage(params: URLSearchParams = new URLSearchParams
   const apps: DenoApp[] = await appsRes.json();
   if (apps.length >= 100) log.warn(`⚠️ deno-usage: hit the 100-app page limit — usage may undercount (add paging)`);
 
-  const chunks = windows(since.getTime(), until.getTime());
+  const chunks = windows(fetchSince.getTime(), until.getTime());
+  const sinceMs = since.getTime();
+  const untilMs = until.getTime();
+  const inPrimary = (t: number) => t >= sinceMs && t <= untilMs;
   const perApp: Array<Record<Metric, number>> = [];
   const byApp: AppUsage[] = [];
+  // Org-wide per-day totals, accumulated across every app.
+  const dayTotals: Record<string, Record<Metric, number>> = {};
   let appsErrored = 0;
   for (const app of apps) {
     const parts: Array<Record<Metric, number>> = [];
@@ -66,7 +110,15 @@ export async function getDenoUsage(params: URLSearchParams = new URLSearchParams
     for (const [s, u] of chunks) {
       const r = await denoGet(`/apps/${app.id}/analytics?since=${s}&until=${u}`, token);
       if (r.ok) {
-        parts.push(sumAnalytics(await r.json() as AnalyticsResponse));
+        const res = await r.json() as AnalyticsResponse;
+        // The fetched range can be wider than the reporting window (trend), so
+        // the app's own totals count only the buckets inside it.
+        parts.push(sumAnalyticsWhere(res, inPrimary));
+        if (days.length > 0) {
+          for (const [key, totals] of Object.entries(sumAnalyticsByDay(res, (t) => dayKey(new Date(t))))) {
+            dayTotals[key] = mergeTotals([dayTotals[key] ?? mergeTotals([]), totals]);
+          }
+        }
       } else {
         await r.body?.cancel();
         failed = true;
@@ -89,6 +141,22 @@ export async function getDenoUsage(params: URLSearchParams = new URLSearchParams
   // explicable, and formatBreakdown gets the unfiltered list so its trailing
   // "+N idle" tally stays accurate.
   const active = ranked.filter(isActiveApp);
+  const breakdown = formatBreakdown(ranked);
+
+  // A day with no traffic still gets a row (zeroes), so a gap in the series
+  // reads as "quiet day" rather than silently vanishing from the trend.
+  const series = days.map((d) => toDayUsage(d.key, d.label, dayTotals[d.key] ?? mergeTotals([])));
+  const trailing = series.length > 0
+    ? {
+      days: series.length,
+      series,
+      comparison: Object.fromEntries(
+        TREND_COLUMNS.map((c) => [c.key, compareLatest(series, c.key)]),
+      ) as Record<TrendKey, TrendComparison>,
+      table: formatTrend(series),
+    }
+    : undefined;
+
   const dto: DenoUsageDto = {
     ok: true,
     window: {
@@ -110,7 +178,21 @@ export async function getDenoUsage(params: URLSearchParams = new URLSearchParams
     appsActive: active.length,
     appsIdle: ranked.length - active.length,
     byApp: active,
-    breakdown: formatBreakdown(ranked),
+    breakdown,
+    trailing,
+    report: buildReport({
+      windowLabel: formatRange(since, until),
+      requests: t.request_count,
+      kvReadUnits: t.kv_read_units,
+      kvWriteUnits: t.kv_write_units,
+      egressGB: round(t.network_egress_bytes / 1e9, 3),
+      cpuHours: round(t.cpu_seconds / 3600, 2),
+      appsActive: active.length,
+      apps: apps.length,
+      breakdown,
+      trend: trailing?.table,
+      trendDays: trailing?.days,
+    }),
   };
   log.info(`✅ deno-usage: ${dto.apps} apps (${appsErrored} errored) — ${dto.requests} req, ${dto.kvReadUnits} KV-read, ${dto.kvWriteUnits} KV-write`);
   return dto;

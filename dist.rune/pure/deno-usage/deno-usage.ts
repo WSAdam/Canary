@@ -45,20 +45,80 @@ function zeroTotals(): Record<Metric, number> {
  * reordered field can't silently shift a total; unknown/absent metrics stay 0.
  */
 export function sumAnalytics(res: AnalyticsResponse): Record<Metric, number> {
-  const colIndex: Partial<Record<Metric, number>> = {};
+  // Deliberately NOT sumAnalyticsWhere(res, () => true): that one drops a row
+  // whose timestamp won't parse, because it can't tell whether the row belongs
+  // in the window. Here there is no window, so every row counts.
+  const cols = metricColumns(res);
+  const totals = zeroTotals();
+  for (const row of res.values) addRow(totals, row, cols);
+  return totals;
+}
+
+/** Index of the response's time column, or -1 when it has none. */
+function timeColumn(res: AnalyticsResponse): number {
+  return res.fields.findIndex((f) => f.type === "time" || f.name === "time");
+}
+
+/** Map each metric to its column index, matching by NAME so an added or
+ *  reordered field can't silently shift a total. */
+function metricColumns(res: AnalyticsResponse): Partial<Record<Metric, number>> {
+  const cols: Partial<Record<Metric, number>> = {};
   res.fields.forEach((f, i) => {
-    if (METRIC_SET.has(f.name)) colIndex[f.name as Metric] = i;
+    if (METRIC_SET.has(f.name)) cols[f.name as Metric] = i;
   });
+  return cols;
+}
+
+function addRow(totals: Record<Metric, number>, row: Array<string | number>, cols: Partial<Record<Metric, number>>) {
+  for (const m of METRICS) {
+    const i = cols[m];
+    if (i === undefined) continue;
+    const v = row[i];
+    if (typeof v === "number" && Number.isFinite(v)) totals[m] += v;
+  }
+}
+
+/**
+ * Sum only the buckets whose timestamp `keep` accepts. Lets one fetched
+ * response answer several questions — the primary window's totals AND each
+ * day's — instead of re-fetching per window. A response with no time column
+ * falls back to summing everything.
+ */
+export function sumAnalyticsWhere(res: AnalyticsResponse, keep: (timeMs: number) => boolean): Record<Metric, number> {
+  const cols = metricColumns(res);
+  const ti = timeColumn(res);
   const totals = zeroTotals();
   for (const row of res.values) {
-    for (const m of METRICS) {
-      const i = colIndex[m];
-      if (i === undefined) continue;
-      const v = row[i];
-      if (typeof v === "number" && Number.isFinite(v)) totals[m] += v;
+    if (ti >= 0) {
+      const t = Date.parse(String(row[ti]));
+      if (!Number.isFinite(t) || !keep(t)) continue;
     }
+    addRow(totals, row, cols);
   }
   return totals;
+}
+
+/**
+ * Bucket the response's rows into per-day totals, keyed by whatever
+ * `dayKeyOf` returns for each bucket's timestamp. The caller supplies the key
+ * function so the timezone rule stays in one place (time-window) and this
+ * module stays free of zone logic.
+ */
+export function sumAnalyticsByDay(
+  res: AnalyticsResponse,
+  dayKeyOf: (timeMs: number) => string,
+): Record<string, Record<Metric, number>> {
+  const cols = metricColumns(res);
+  const ti = timeColumn(res);
+  const out: Record<string, Record<Metric, number>> = {};
+  if (ti < 0) return out; // no time column — days are unknowable
+  for (const row of res.values) {
+    const t = Date.parse(String(row[ti]));
+    if (!Number.isFinite(t)) continue;
+    const key = dayKeyOf(t);
+    addRow(out[key] ??= zeroTotals(), row, cols);
+  }
+  return out;
 }
 
 /** Merge several apps' summed totals into one org-wide total. */
@@ -118,9 +178,11 @@ export function rankApps(apps: AppUsage[]): AppUsage[] {
   );
 }
 
-/** Thousands separators, so a 6-figure KV count is readable at a glance. */
+/** Thousands separators, so a 6-figure KV count is readable at a glance.
+ *  Rounded — an average is fractional and a table column of decimals doesn't
+ *  help anyone eyeball a trend. */
 function group(n: number): string {
-  return n.toLocaleString("en-US");
+  return Math.round(n).toLocaleString("en-US");
 }
 
 /**
@@ -158,6 +220,168 @@ export function formatBreakdown(apps: AppUsage[], limit = 15): string {
   if (more > 0) lines.push(`+${more} more`);
   if (idle > 0) lines.push(`+${idle} idle`);
   return lines.join("\n") || "(no activity)";
+}
+
+// --- trailing 7-day trend ---------------------------------------------------
+
+/** One day of the trailing series, in display units. */
+export interface DayUsage {
+  /** Local calendar date, `YYYY-MM-DD`. */
+  date: string;
+  /** Short local label for a table row, e.g. `Sun 19/July`. */
+  label: string;
+  requests: number;
+  kvReadUnits: number;
+  kvWriteUnits: number;
+  egressGB: number;
+  cpuHours: number;
+  memoryGBHours: number;
+}
+
+/** The metrics compared across days, and how they're labelled in the trend. */
+export const TREND_COLUMNS = [
+  { key: "requests", label: "Requests" },
+  { key: "kvReadUnits", label: "KV reads" },
+  { key: "kvWriteUnits", label: "KV writes" },
+] as const;
+export type TrendKey = typeof TREND_COLUMNS[number]["key"];
+
+export function toDayUsage(date: string, label: string, t: Record<Metric, number>): DayUsage {
+  return {
+    date,
+    label,
+    requests: t.request_count,
+    kvReadUnits: t.kv_read_units,
+    kvWriteUnits: t.kv_write_units,
+    egressGB: round(t.network_egress_bytes / 1e9, 3),
+    cpuHours: round(t.cpu_seconds / 3600, 2),
+    memoryGBHours: round(t.memory_time_byte_seconds / (1e9 * 3600), 1),
+  };
+}
+
+/** Mean of a metric across the series (0 for an empty series). */
+export function averageOf(series: DayUsage[], key: TrendKey): number {
+  if (series.length === 0) return 0;
+  return series.reduce((a, d) => a + d[key], 0) / series.length;
+}
+
+/**
+ * Percent change from `previous` to `current`. Returns null when there is no
+ * meaningful baseline (no previous day, or a previous value of 0 — "up from
+ * nothing" is not a percentage), so the caller renders a dash instead of
+ * Infinity or a fake 100%.
+ */
+export function pctChange(current: number, previous: number): number | null {
+  if (!Number.isFinite(previous) || previous === 0) return null;
+  return ((current - previous) / previous) * 100;
+}
+
+/** A percent change as a signed arrow, e.g. `▲12%` / `▼8%` / `—`. */
+export function formatDelta(pct: number | null): string {
+  if (pct === null) return "—";
+  const r = Math.round(pct);
+  if (r === 0) return "0%";
+  return `${r > 0 ? "▲" : "▼"}${Math.abs(r)}%`;
+}
+
+/** Yesterday against the day before, and against the trailing average. */
+export interface TrendComparison {
+  vsPrevDay: number | null;
+  vsAverage: number | null;
+}
+
+export function compareLatest(series: DayUsage[], key: TrendKey): TrendComparison {
+  if (series.length === 0) return { vsPrevDay: null, vsAverage: null };
+  const latest = series[series.length - 1][key];
+  const prev = series.length >= 2 ? series[series.length - 2][key] : null;
+  // Average EXCLUDING the latest day — comparing a day against an average it is
+  // itself part of would damp the very deviation we're trying to surface.
+  const baseline = series.slice(0, -1);
+  return {
+    vsPrevDay: prev === null ? null : pctChange(latest, prev),
+    vsAverage: baseline.length === 0 ? null : pctChange(latest, averageOf(baseline, key)),
+  };
+}
+
+function padCols(rows: string[][], align: Array<"l" | "r">): string[] {
+  const widths = rows[0].map((_, c) => Math.max(...rows.map((r) => r[c].length)));
+  return rows.map((r) =>
+    r.map((cell, c) => (align[c] === "l" ? cell.padEnd(widths[c]) : cell.padStart(widths[c]))).join("  ").trimEnd()
+  );
+}
+
+/**
+ * Render the trailing series as a fixed-width table: one row per day (oldest
+ * first, so the most recent reads last next to the totals), then the period
+ * total and average, then how the latest day compares to each.
+ */
+export function formatTrend(series: DayUsage[]): string {
+  if (series.length === 0) return "(no history)";
+  const header = ["Day", ...TREND_COLUMNS.map((c) => c.label)];
+  const body = series.map((d) => [d.label, ...TREND_COLUMNS.map((c) => group(d[c.key]))]);
+  const total = ["Total", ...TREND_COLUMNS.map((c) => group(series.reduce((a, d) => a + d[c.key], 0)))];
+  const avg = ["Average", ...TREND_COLUMNS.map((c) => group(averageOf(series, c.key)))];
+
+  const rows = padCols([header, ...body, total, avg], ["l", "r", "r", "r"]);
+  const ruleWidth = Math.max(...rows.map((r) => r.length));
+  const rule = "─".repeat(ruleWidth);
+  const out = [
+    rows[0],
+    rule,
+    ...rows.slice(1, 1 + body.length),
+    rule,
+    ...rows.slice(1 + body.length),
+  ];
+
+  if (series.length >= 2) {
+    const latest = series[series.length - 1];
+    const cmp = TREND_COLUMNS.map((c) => {
+      const { vsPrevDay, vsAverage } = compareLatest(series, c.key);
+      return `${c.label} ${formatDelta(vsPrevDay)} vs prior day, ${formatDelta(vsAverage)} vs avg`;
+    });
+    out.push("", `${latest.label} vs the rest of the period:`, ...cmp.map((l) => `  ${l}`));
+  }
+  return out.join("\n");
+}
+
+/** Assemble the whole digest email body: the reporting day's totals, its
+ *  per-app breakdown, then the trailing trend. One `{report}` capture so the
+ *  alert template doesn't have to reproduce this layout. */
+export function buildReport(input: {
+  windowLabel: string;
+  requests: number;
+  kvReadUnits: number;
+  kvWriteUnits: number;
+  egressGB: number;
+  cpuHours: number;
+  appsActive: number;
+  apps: number;
+  breakdown: string;
+  trend?: string;
+  trendDays?: number;
+}): string {
+  const stats = padCols([
+    ["Requests", group(input.requests)],
+    ["KV reads", group(input.kvReadUnits)],
+    ["KV writes", group(input.kvWriteUnits)],
+    ["Egress", `${input.egressGB} GB`],
+    ["CPU", `${input.cpuHours} h`],
+  ], ["l", "r"]);
+
+  const out = [
+    input.windowLabel,
+    "",
+    ...stats,
+    "",
+    `${input.appsActive} of ${input.apps} apps active`,
+    "",
+    "BY APP",
+    input.breakdown,
+  ];
+  if (input.trend) {
+    out.push("", `TRAILING ${input.trendDays ?? ""} DAYS`.replace(/\s+/g, " ").trim(), input.trend);
+  }
+  return out.join("\n");
 }
 
 /** Cost model for one metered dimension. */
