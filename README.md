@@ -89,9 +89,9 @@ DENO_ORG_ID=00000000-...      # your org's UUID (seen in the console billing req
 (requests, KV read/write units, egress, CPU, memory) summed across every app for
 the last `?hours=` (default 24), for a daily "here's what happened" report. It
 calls the Deno Deploy **v2** analytics API with `DENO_TOKEN` (a `ddo_` org token)
-and is bearer-authed with `DENO_USAGE_SECRET`. Point a check at it with header
-`Authorization: Bearer {{DENO_USAGE_SECRET}}`, `notifyOnSuccess: true`, and
-captures like `{ requests: "requests", kvReads: "kvReadUnits", kvWrites: "kvWriteUnits" }`.
+and is bearer-authed with `DENO_USAGE_SECRET`. Set a check's URL to
+`internal:deno-usage?hours=24` (see below), `notifyOnSuccess: true`, and captures
+like `{ requests: "requests", kvReads: "kvReadUnits", kvWrites: "kvWriteUnits" }`.
 
 **Deno Deploy spend guardrail.** `GET /api/deno-spend` returns the org's real
 usage-based spend (`spendUSD`), the live hard limit (`limitUSD`, so raising it in
@@ -100,9 +100,25 @@ breakdown. The public token API exposes usage, **not dollars**, so this reads th
 console's internal billing API (tRPC) with a browser **session cookie**
 (`DENO_SESSION_TOKEN` = the `token=ddw_…` value) — undocumented and the cookie
 **expires**, so on a rejected session the route returns 401 and the monitor
-alerts "refresh DENO_SESSION_TOKEN" rather than failing silent. Point a check at
-it (`Authorization: Bearer {{DENO_USAGE_SECRET}}`), `expression: pctOfLimit`,
-`comparatorOp: gte`, `threshold: 80`.
+alerts "refresh DENO_SESSION_TOKEN" rather than failing silent. Set a check's URL
+to `internal:deno-spend`, `expression: pctOfLimit`, `comparatorOp: gte`,
+`threshold: 80`.
+
+**`internal:` checks — how Canary monitors itself.** A deployment cannot
+HTTP-fetch its own hostname (Deno Deploy answers **508 Loop Detected**), so a
+check pointed at Canary's own `/api/deno-*` route can never run. Instead give the
+check an `internal:` URL and Canary calls the producer **in-process**:
+
+| Check URL | Produces |
+| --- | --- |
+| `internal:deno-usage?hours=24` | the same JSON as `GET /api/deno-usage` (`?hours=` optional, default 24) |
+| `internal:deno-spend` | the same JSON as `GET /api/deno-spend` |
+
+No network hop, so no `Authorization` header and **no `DENO_USAGE_SECRET`
+needed** — the data never leaves the isolate. The wizard's **Test request**
+button resolves `internal:` URLs too. The HTTP routes remain for external
+callers; a check should use `internal:`. An unknown producer name fails loudly at
+run time listing the valid ones.
 
 ### 2. Run locally
 

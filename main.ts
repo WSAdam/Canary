@@ -50,6 +50,7 @@ import { log } from "./dist.rune/impure/_log.ts";
 import { redactHeaders } from "./dist.rune/integration/runner-execute/runner-execute.ts";
 import { getDenoUsage } from "./dist.rune/integration/deno-usage/deno-usage.ts";
 import { getDenoSpend } from "./dist.rune/integration/deno-spend/deno-spend.ts";
+import { isInternalUrl, runInternal } from "./dist.rune/impure/source/implementations/internal/mod.ts";
 
 // ---------------------------------------------------------------------------
 // Seed admin on startup
@@ -3182,6 +3183,13 @@ Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http
     // Test request proxy
     if (method === "POST" && pathname === "/test-request") {
       const body = await parseBody<{ url: string; method: string; headers?: Record<string, string>; body?: string }>(req);
+      // An `internal:` url is a producer Canary runs in-process, not a fetch —
+      // resolve it here so the wizard's Test request button previews the same
+      // payload the runner will see. Admin-gated like the rest of this route.
+      if (isInternalUrl(body.url)) {
+        const internal = await runInternal(body.url);
+        return json({ status: internal.status, ok: true, data: JSON.parse(internal.payload) });
+      }
       // SSRF guard: block proxying to internal/loopback/metadata hosts so this
       // request-and-read primitive can't reach the deployment's private network.
       // fetchNoSsrfRedirect re-applies the guard on every redirect hop so a
