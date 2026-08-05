@@ -46,7 +46,7 @@ export function validatePassword(password: unknown): string {
 const SIGNING_KEY_KV = ["config", "session-signing-key"] as const;
 let cachedSigningKey: Promise<CryptoKey> | null = null;
 
-function importHmacKey(raw: Uint8Array): Promise<CryptoKey> {
+function importHmacKey(raw: Uint8Array<ArrayBuffer>): Promise<CryptoKey> {
   return crypto.subtle.importKey(
     "raw",
     raw,
@@ -60,7 +60,7 @@ function importHmacKey(raw: Uint8Array): Promise<CryptoKey> {
 // is generated once on first use (no env var required) and never falls back to
 // a predictable constant. Cached per-isolate so it isn't re-read every request.
 async function loadOrCreateSigningKey(): Promise<CryptoKey> {
-  const existing = await kv.get<Uint8Array>(SIGNING_KEY_KV, { consistency: "strong" });
+  const existing = await kv.get<Uint8Array<ArrayBuffer>>(SIGNING_KEY_KV, { consistency: "strong" });
   if (existing.value) {
     log.debug("🔑 signingKey: loaded existing key from KV");
     return importHmacKey(existing.value);
@@ -75,7 +75,7 @@ async function loadOrCreateSigningKey(): Promise<CryptoKey> {
     return importHmacKey(fresh);
   }
   // Lost the first-boot race with another isolate — adopt the winning key.
-  const winner = await kv.get<Uint8Array>(SIGNING_KEY_KV, { consistency: "strong" });
+  const winner = await kv.get<Uint8Array<ArrayBuffer>>(SIGNING_KEY_KV, { consistency: "strong" });
   if (!winner.value) {
     throw new CanaryError("internal-error", "Failed to establish session signing key", 500);
   }
@@ -107,7 +107,7 @@ function b64u(buf: ArrayBuffer | Uint8Array): string {
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
 }
 
-function fromb64u(s: string): Uint8Array {
+function fromb64u(s: string): Uint8Array<ArrayBuffer> {
   const padded = s + "=".repeat((4 - (s.length % 4)) % 4);
   return Uint8Array.from(atob(padded.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
 }

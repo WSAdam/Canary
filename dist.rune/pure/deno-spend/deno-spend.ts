@@ -2,9 +2,13 @@
 //
 // The console dashboard's billing procedures (console.deno.com/api/
 // billing.currentUsageCost / billing.getSpendLimits) return `result.data` as a
-// STRING using an unquoted-key serialization — NOT strict JSON — e.g.
+// STRING. Historically that used an unquoted-key serialization — NOT strict
+// JSON — e.g.
 //   {total:12.34,items:[{description:"KV Reads (units)",total:5.67}]}
-// so it's parsed leniently by regex here rather than JSON.parse. PURE, no I/O.
+// This is an UNDOCUMENTED interface and its shape has changed under us once
+// already (2026-08), so parsing is layered: strict JSON first, then the legacy
+// lenient regex, then a LOUD error carrying a payload snippet — never a silent
+// zero. PURE, no I/O.
 
 export interface SpendItem {
   description: string;
@@ -15,18 +19,75 @@ export interface DenoSpend {
   items: SpendItem[];
 }
 
-/** Parse a `billing.currentUsageCost` data string → grand total + line items.
- *  The FIRST `total:` is the grand total; each `{description:"…",total:N}` is a
- *  billed line (KV reads, egress, …). Throws if no total is present (so a shape
- *  change fails loud instead of silently reporting 0). */
+/** First chars of the payload for a parse-failure message, so the run detail
+ *  shows WHAT shape arrived instead of leaving us blind. Admin-only surface. */
+function snippet(dataStr: string): string {
+  return JSON.stringify(dataStr.slice(0, 180).replace(/\s+/g, " "));
+}
+
+function num(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+/** Pull {description, cost} pairs out of a JSON items array, tolerating the
+ *  obvious key spellings so a rename doesn't blank the breakdown. */
+function jsonItems(items: unknown): SpendItem[] {
+  if (!Array.isArray(items)) return [];
+  const out: SpendItem[] = [];
+  for (const it of items) {
+    if (typeof it !== "object" || it === null) continue;
+    const o = it as Record<string, unknown>;
+    const description = typeof o.description === "string" ? o.description : typeof o.name === "string" ? o.name : undefined;
+    const costUSD = num(o.total) ?? num(o.cost) ?? num(o.amount);
+    if (description !== undefined && costUSD !== undefined) out.push({ description, costUSD });
+  }
+  return out;
+}
+
+/**
+ * Parse a `billing.currentUsageCost` data string → grand total + line items.
+ *
+ * Accepts BOTH serializations seen from the console: strict JSON (quoted keys)
+ * and the legacy unquoted-key form. The legacy regex is anchored so a field
+ * that merely CONTAINS "total" (e.g. `subtotal: 0`) can never be mistaken for
+ * the grand total — that exact false match once turned a shape change into a
+ * silent $0 that sailed past the guardrail's threshold.
+ *
+ * Fails LOUD (with a payload snippet) rather than guessing: no recognizable
+ * total, or a $0 total with no line items (no real bill looks like that —
+ * a genuine zero still itemizes), both throw.
+ */
 export function parseCurrentUsageCost(dataStr: string): DenoSpend {
-  const grand = dataStr.match(/total:\s*(-?[0-9]+(?:\.[0-9]+)?)/);
-  if (!grand) throw new Error("currentUsageCost: no 'total' found — billing payload shape changed");
-  const totalUSD = Number(grand[1]);
-  const items: SpendItem[] = [];
-  const re = /\{description:"((?:[^"\\]|\\.)*)",total:\s*(-?[0-9]+(?:\.[0-9]+)?)\}/g;
-  for (let m = re.exec(dataStr); m; m = re.exec(dataStr)) {
-    items.push({ description: m[1], costUSD: Number(m[2]) });
+  let totalUSD: number | undefined;
+  let items: SpendItem[] = [];
+
+  // 1) Strict JSON (the post-2026-08 shape, and any future sane one).
+  try {
+    const parsed = JSON.parse(dataStr);
+    if (typeof parsed === "object" && parsed !== null) {
+      const o = parsed as Record<string, unknown>;
+      totalUSD = num(o.total) ?? num(o.totalUSD) ?? num(o.grandTotal);
+      items = jsonItems(o.items ?? o.lines ?? o.breakdown);
+    }
+  } catch {
+    // 2) Legacy unquoted-key serialization. The lookbehind anchors `total:` to
+    //    a non-identifier boundary so `subtotal:`/`usageTotal:` can't match.
+    const grand = dataStr.match(/(?<![A-Za-z0-9_$"'])total:\s*(-?[0-9]+(?:\.[0-9]+)?)/);
+    if (grand) totalUSD = Number(grand[1]);
+    const re = /\{description:"((?:[^"\\]|\\.)*)",total:\s*(-?[0-9]+(?:\.[0-9]+)?)\}/g;
+    for (let m = re.exec(dataStr); m; m = re.exec(dataStr)) {
+      items.push({ description: m[1], costUSD: Number(m[2]) });
+    }
+  }
+
+  if (totalUSD === undefined) {
+    throw new Error(`currentUsageCost: no 'total' found — billing payload shape changed; payload starts: ${snippet(dataStr)}`);
+  }
+  if (totalUSD === 0 && items.length === 0) {
+    // A real invoice itemizes even when small; total 0 with NOTHING billed is
+    // the signature of a misread shape. Fail loud so the guardrail can't be
+    // silently pinned at 0% by a payload change.
+    throw new Error(`currentUsageCost: parsed $0 with no line items — likely a shape change; payload starts: ${snippet(dataStr)}`);
   }
   return { totalUSD, items };
 }
@@ -34,9 +95,14 @@ export function parseCurrentUsageCost(dataStr: string): DenoSpend {
 /** Parse a `billing.getSpendLimits` data string (a JSON array like "[140,180,400]").
  *  The hard cap is the max; the smaller values are the configured alert thresholds. */
 export function parseSpendLimits(dataStr: string): { limitUSD: number; thresholds: number[] } {
-  const arr = JSON.parse(dataStr);
+  let arr: unknown;
+  try {
+    arr = JSON.parse(dataStr);
+  } catch {
+    throw new Error(`getSpendLimits: not JSON; payload starts: ${snippet(dataStr)}`);
+  }
   if (!Array.isArray(arr) || arr.length === 0 || arr.some((n) => typeof n !== "number" || !Number.isFinite(n))) {
-    throw new Error("getSpendLimits: expected a non-empty number array");
+    throw new Error(`getSpendLimits: expected a non-empty number array; payload starts: ${snippet(dataStr)}`);
   }
   const limitUSD = Math.max(...arr as number[]);
   const thresholds = (arr as number[]).filter((n) => n < limitUSD).sort((a, b) => a - b);
