@@ -757,10 +757,19 @@ In Deno Deploy logs, you should see exactly one `🔍 cron tick:` per minute fol
 
 ## Deploying to Deno Deploy
 
-1. Push this repository to GitHub
-2. Create a new project at [dash.deno.com](https://dash.deno.com)
-3. Set the entrypoint to `main.ts`
-4. Add environment variables in the project settings:
+The app runs on the current Deno Deploy (console.deno.com). Deploy with the
+`deno deploy` subcommand — NOT `deployctl`, which targets the legacy
+dash.deno.com platform and will hang waiting for a sign-in claim:
+
+```bash
+deno deploy --org thetechgoose --app canary --prod
+# non-interactive (CI): DENO_DEPLOY_TOKEN=ddo_... deno deploy --org thetechgoose --app canary --prod -y
+```
+
+First-time setup:
+
+1. Create the app in the [console](https://console.deno.com) with entrypoint `main.ts`
+2. Add environment variables in the app settings:
    - `ADMIN_USERNAME` + `ADMIN_PASSWORD` (required — seeds the admin user on first boot)
    - `POSTMARK_SERVER_TOKEN` + `POSTMARK_FROM_EMAIL` (for email alerts and invite emails)
    - `ZAPIER_SMS_URL` (for SMS alerts)
