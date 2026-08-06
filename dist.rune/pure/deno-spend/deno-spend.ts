@@ -72,9 +72,11 @@ export function parseCurrentUsageCost(dataStr: string): DenoSpend {
   } catch {
     // 2) Legacy unquoted-key serialization. The lookbehind anchors `total:` to
     //    a non-identifier boundary so `subtotal:`/`usageTotal:` can't match.
-    const grand = dataStr.match(/(?<![A-Za-z0-9_$"'])total:\s*(-?[0-9]+(?:\.[0-9]+)?)/);
+    //    Numbers may arrive WITHOUT a leading zero (`total:.159962`) — the
+    //    serializer drops it on sub-1 values (seen live 2026-08-06).
+    const grand = dataStr.match(/(?<![A-Za-z0-9_$"'])total:\s*(-?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+))/);
     if (grand) totalUSD = Number(grand[1]);
-    const re = /\{description:"((?:[^"\\]|\\.)*)",total:\s*(-?[0-9]+(?:\.[0-9]+)?)\}/g;
+    const re = /\{description:"((?:[^"\\]|\\.)*)",total:\s*(-?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+))\}/g;
     for (let m = re.exec(dataStr); m; m = re.exec(dataStr)) {
       items.push({ description: m[1], costUSD: Number(m[2]) });
     }

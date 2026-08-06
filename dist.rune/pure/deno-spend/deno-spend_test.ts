@@ -79,3 +79,16 @@ Deno.test("pctOfLimit - percentage of the hard limit, and guards a zero limit", 
   assertAlmostEquals(pctOfLimit(300, 400), 75, 1e-4);
   assertEquals(pctOfLimit(300, 0), 0);
 });
+
+Deno.test("parseCurrentUsageCost - the live 2026-08-06 shape: no leading zero on sub-1 numbers", () => {
+  // Verbatim shape from the failing run's payload snippet (placeholder value):
+  // numbers below 1 arrive as `.159962`, not `0.159962`.
+  const s = parseCurrentUsageCost('{total:.25,items:[{description:"KV Reads (units)",total:.25}]}');
+  assertAlmostEquals(s.totalUSD, 0.25, 1e-9);
+  assertEquals(s.items, [{ description: "KV Reads (units)", costUSD: 0.25 }]);
+});
+
+Deno.test("parseCurrentUsageCost - negative bare-decimal (a credit) parses too", () => {
+  const s = parseCurrentUsageCost('{total:.5,items:[{description:"Credit",total:-.25},{description:"KV Reads (units)",total:.75}]}');
+  assertAlmostEquals(s.items[0].costUSD, -0.25, 1e-9);
+});
