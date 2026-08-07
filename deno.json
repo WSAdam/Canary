@@ -8,5 +8,10 @@
   "compilerOptions": {
     "strict": true
   },
-  "unstable": ["kv", "cron"]
+  "unstable": ["kv", "cron"],
+  "deploy": {
+    "org": "thetechgoose",
+    "app": "canary"
+  }
 }
+
