@@ -315,3 +315,74 @@ Deno.test("RunResult.dismissCorrupt / isCorruptDismissed - round-trip", async ()
     await kv.delete(["run_corrupt_ack", monitorId]);
   }
 });
+
+// 2026-09: the 30-day Reports window took 43.6s against the SPA's 15s abort — it
+// could never load. scanWindow read history with batchSize:1, one KV round-trip
+// per run row (~65ms each). It now reads batched and only falls back to
+// row-by-row when a row won't deserialize. These pin the two halves of that:
+// batched must agree with row-by-row on healthy data, and a corrupt row must
+// still truncate exactly where it used to.
+
+Deno.test("RunResult.scanWindow - batched read agrees with the row-by-row walk", async () => {
+  const monitorId = `scan-batched-${crypto.randomUUID()}`;
+  // More rows than any plausible KV batch boundary, so the fast path genuinely
+  // spans several batches rather than trivially fitting in one.
+  const rows: RunResultDto[] = Array.from({ length: 120 }, (_, i) => ({
+    runId: crypto.randomUUID(),
+    monitorId,
+    observed: i,
+    passed: i % 3 !== 0,
+    timestamp: `2026-03-01T00:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.000Z`,
+  }));
+  for (const r of rows) await new RunResult().save(r);
+  try {
+    const batched = await RunResult.scanWindow(monitorId, "2026-01-01T00:00:00.000Z", 500);
+    // Reach past the public API to the row-by-row walk the fallback uses, and
+    // require the two to be indistinguishable.
+    const rowByRow = await (RunResult as unknown as {
+      collectRuns: (m: string, c: string, cap: number, b?: number) => Promise<{ runs: unknown[]; passed: number; capped: boolean }>;
+    }).collectRuns(monitorId, "2026-01-01T00:00:00.000Z", 500, 1);
+
+    assertEquals(batched.runs.length, 120);
+    assertEquals(batched.corrupt.length, 0);
+    assertEquals(batched.runs, rowByRow.runs);
+    assertEquals(batched.passed, rowByRow.passed);
+    assertEquals(batched.capped, rowByRow.capped);
+    // Newest-first ordering must survive batching.
+    assertEquals(batched.runs[0].observed, 119);
+    assertEquals(batched.runs[119].observed, 0);
+  } finally {
+    for (const r of rows) {
+      await kv.delete(["run", monitorId, r.timestamp, r.runId]);
+      await kv.delete(["run_idx", monitorId, r.timestamp, r.runId]);
+    }
+  }
+});
+
+Deno.test("RunResult.scanWindow - the cap still binds through the batched path", async () => {
+  const monitorId = `scan-batchcap-${crypto.randomUUID()}`;
+  const rows: RunResultDto[] = Array.from({ length: 40 }, (_, i) => ({
+    runId: crypto.randomUUID(),
+    monitorId,
+    observed: i,
+    passed: true,
+    timestamp: `2026-03-01T00:00:${String(i).padStart(2, "0")}.000Z`,
+  }));
+  for (const r of rows) await new RunResult().save(r);
+  try {
+    // A batch can overshoot the cap internally; the walk must still stop at it.
+    const res = await RunResult.scanWindow(monitorId, "2026-01-01T00:00:00.000Z", 10);
+    assertEquals(res.runs.length, 10);
+    assertEquals(res.capped, true);
+    assertEquals(res.runs[0].observed, 39);
+    // Exactly-at-cap must NOT report capped (the peek-one-past rule).
+    const exact = await RunResult.scanWindow(monitorId, "2026-01-01T00:00:00.000Z", 40);
+    assertEquals(exact.runs.length, 40);
+    assertEquals(exact.capped, false);
+  } finally {
+    for (const r of rows) {
+      await kv.delete(["run", monitorId, r.timestamp, r.runId]);
+      await kv.delete(["run_idx", monitorId, r.timestamp, r.runId]);
+    }
+  }
+});

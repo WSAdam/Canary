@@ -47,6 +47,7 @@ import { RunResult } from "./dist.rune/impure/runResult/runResult.ts";
 import type { RunResultDto } from "./dist.rune/dto/run-result-dto.ts";
 import type { AlertDto } from "./dist.rune/dto/alert-dto.ts";
 import { log } from "./dist.rune/impure/_log.ts";
+import { maybeCompress } from "./dist.rune/impure/_compress.ts";
 import { redactHeaders } from "./dist.rune/integration/runner-execute/runner-execute.ts";
 import { getDenoUsage } from "./dist.rune/integration/deno-usage/deno-usage.ts";
 import { getDenoSpend } from "./dist.rune/integration/deno-spend/deno-spend.ts";
@@ -144,24 +145,48 @@ Deno.cron("canary-runner", "* * * * *", async () => {
   log.debug("🔍 cron tick:", now.toISOString());
 
   const due: string[] = [];
-  // Iterate one row at a time with a per-row error boundary so a single corrupt
-  // check row (undeserializable value, or a malformed cron that slips past
-  // cronMatchesNow's guards) can't reject the whole tick and silently halt ALL
-  // monitoring every minute. batchSize:1 isolates the failure to its row; an
-  // undeserializable value throws when the iterator advances onto it, so we log
-  // and stop the scan (KV can't advance its cursor past such a row) — the
-  // monitors already collected still run.
-  const iter = kv.list<CheckDto>({ prefix: ["check"] }, { batchSize: 1 });
-  while (true) {
-    let entry: IteratorResult<Deno.KvEntry<CheckDto>>;
-    try {
-      entry = await iter.next();
-    } catch (e) {
-      log.error(`❌ cron tick: check scan hit an unreadable row — stopping scan: ${(e as Error).message}`);
-      break;
+  // Read every check row FIRST, then decide what is due. Separating the read from
+  // the lock-and-schedule pass is what makes a batched read safe here: a batched
+  // scan that fails can simply be re-read row by row, whereas re-running an
+  // interleaved loop would re-attempt run-locks it had already taken and then
+  // skip — and so silently drop — the monitors it had already collected.
+  //
+  // Row-at-a-time is the reliable-but-slow mode: a corrupt check row throws when
+  // the iterator advances onto it and KV cannot move its cursor past it, so the
+  // scan stops there and the checks already collected still run. Batching first
+  // turns ~1 KV round-trip per check into ~1 per batch, every minute of every day.
+  const readChecks = async (batchSize?: number): Promise<{ rows: CheckDto[]; error: Error | null }> => {
+    const rows: CheckDto[] = [];
+    const iter = kv.list<CheckDto>(
+      { prefix: ["check"] },
+      batchSize === undefined ? {} : { batchSize },
+    );
+    while (true) {
+      let entry: IteratorResult<Deno.KvEntry<CheckDto>>;
+      try {
+        entry = await iter.next();
+      } catch (e) {
+        return { rows, error: e as Error };
+      }
+      if (entry.done) break;
+      rows.push(entry.value.value);
     }
-    if (entry.done) break;
-    const checkDto = entry.value.value;
+    return { rows, error: null };
+  };
+
+  let scan = await readChecks();
+  if (scan.error) {
+    log.warn(`⚠️ cron tick: batched check scan failed — re-reading row by row: ${scan.error.message}`);
+    scan = await readChecks(1);
+  }
+  if (scan.error) {
+    log.error(`❌ cron tick: check scan hit an unreadable row — stopping scan: ${scan.error.message}`);
+  }
+
+  // Per-row error boundary so a single bad check (e.g. a malformed cron that
+  // slips past cronMatchesNow's guards) can't reject the whole tick and silently
+  // halt ALL monitoring every minute.
+  for (const checkDto of scan.rows) {
     try {
       if (!cronMatchesNow(checkDto.cron, now)) continue;
 
@@ -2937,7 +2962,9 @@ Deno.serve({
   // it (the platform manages the listener).
   port: Number(Deno.env.get("PORT")) || 8000,
   onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http://${hostname}:${port}/`),
-}, async (req: Request): Promise<Response> => {
+}, async (req: Request): Promise<Response> => maybeCompress(req, await handleRequest(req)));
+
+async function handleRequest(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const { pathname } = url;
   const method = req.method;
@@ -3211,27 +3238,34 @@ Deno.serve({
       log.debug(`🔍 GET /api/reports window=${windowKey} cutoff=${cutoff}`);
 
       const monitorsResult = await listMonitors();
-      const reports: Array<Record<string, unknown>> = [];
-
-      for (const m of monitorsResult.monitors) {
-        // Check config supplies the observed-vs-threshold context; may not exist yet.
+      // Fan out across monitors rather than awaiting each in turn: every monitor's
+      // scan is independent, and serially they added up (10 monitors × a 30-day
+      // walk was the bulk of a 43s response that the SPA aborted at 15s).
+      // Promise.all preserves input order, so `reports` ordering is unchanged.
+      const reports = await Promise.all(monitorsResult.monitors.map(async (m) => {
+        // Check config supplies the observed-vs-threshold context; may not exist
+        // yet. A relay monitor has no check row BY DESIGN, so skip the lookup
+        // rather than paying a strong-consistency KV get plus a thrown-and-caught
+        // not-found on every reports request.
         let check: CheckDto | null = null;
-        try {
-          check = await getCheck({ monitorId: m.monitorId });
-        } catch {
-          check = null;
+        if (m.type !== "relay") {
+          try {
+            check = await getCheck({ monitorId: m.monitorId });
+          } catch {
+            check = null;
+          }
         }
 
-        // The per-monitor walk (batchSize:1 corrupt-row resilience, run_idx
-        // recovery, dismiss filter) lives in RunResult.scanWindow so it's covered
-        // by the dist.rune test suite.
+        // The per-monitor walk (batched fast path, row-by-row corrupt-row
+        // fallback, run_idx recovery, dismiss filter) lives in
+        // RunResult.scanWindow so it's covered by the dist.rune test suite.
         const { runs, passed, corrupt, capped } = await RunResult.scanWindow(
           m.monitorId,
           cutoff,
           PER_CHECK_CAP,
         );
 
-        reports.push({
+        return {
           monitorId: m.monitorId,
           name: m.name,
           description: m.description,
@@ -3245,8 +3279,8 @@ Deno.serve({
           capped,
           runs,
           corrupt,
-        });
-      }
+        };
+      }));
 
       log.debug(`✅ GET /api/reports → 200 window=${windowKey} checks=${reports.length}`);
       return json({ window: windowKey, generatedAt: new Date().toISOString(), reports });
@@ -3631,6 +3665,6 @@ Deno.serve({
     log.debug(`❌ request error: ${(e as Error).message}`, (e as Error).stack);
     return errorResponse(e);
   }
-});
+}
 
 log.debug("🚀 Canary is running");

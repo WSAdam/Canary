@@ -116,19 +116,24 @@ export class RunResult {
     }
   }
 
-  // Walk a monitor's run history newest-first within a window. Reads one row at a
-  // time (batchSize:1) so a single undeserializable row truncates history at that
-  // row instead of wiping the whole batch. The bad row is surfaced in `corrupt`
-  // with its exact key recovered from run_idx when possible (one-click purge), or
-  // suppressed when the user has dismissed an unrecoverable legacy banner.
-  static async scanWindow(
+  // One pass over a monitor's run history, newest-first, stopping at the window
+  // edge or the cap. NEVER throws: an unreadable row ends the walk and comes back
+  // in `error`, with everything read so far preserved — the caller needs that
+  // partial state to identify the offending row.
+  private static async collectRuns(
     monitorId: string,
     cutoff: string,
     cap: number,
-  ): Promise<ScanWindowResult> {
+    batchSize?: number,
+  ): Promise<{
+    runs: ScanRunRow[];
+    passed: number;
+    capped: boolean;
+    lastGoodRunId: string | null;
+    error: unknown;
+  }> {
     const runs: ScanRunRow[] = [];
     let passed = 0;
-    const corrupt: CorruptEntry[] = [];
     // Track the last good row's runId alongside its timestamp so corrupt-row
     // recovery can build a precise index bound when the bad row shares a
     // millisecond with the last good one.
@@ -142,7 +147,12 @@ export class RunResult {
     let capped = false;
     const iter = kv.list<RunResultDto>(
       { prefix: ["run", monitorId] },
-      { reverse: true, limit: cap > 0 ? cap + 1 : undefined, batchSize: 1 },
+      {
+        reverse: true,
+        limit: cap > 0 ? cap + 1 : undefined,
+        // Omitted entirely on the fast path so KV picks its own batch size.
+        ...(batchSize === undefined ? {} : { batchSize }),
+      },
     );
     try {
       while (true) {
@@ -168,32 +178,80 @@ export class RunResult {
         });
       }
     } catch (e) {
-      log.warn(
-        `⚠️ RunResult.scanWindow: run history for ${monitorId} truncated at an ` +
-          `unreadable row — ${e instanceof Error ? e.message : String(e)}`,
-      );
-      const newerThan = runs.length ? runs[runs.length - 1].timestamp : null;
-      try {
-        const entry = await RunResult.resolveCorruptEntry(monitorId, newerThan, lastGoodRunId);
-        // exact rows are one-click purgeable, so always surface them. A legacy
-        // (exact:false) row can't be deleted — its key is unrecoverable — so honor a
-        // user dismissal and suppress its banner once acknowledged.
-        if (entry.exact || !(await RunResult.isCorruptDismissed(monitorId))) {
-          corrupt.push(entry);
-        }
-      } catch (recoveryErr) {
-        // A secondary KV hiccup during recovery must NOT blank out the whole
-        // Reports page — degrade this one monitor's corrupt-row detail instead.
-        // Surface a non-exact banner from what we already read so the user still
-        // sees that history is truncated here.
-        log.warn(
-          `⚠️ RunResult.scanWindow: corrupt-row recovery for ${monitorId} failed ` +
-            `(non-fatal) — ${recoveryErr instanceof Error ? recoveryErr.message : String(recoveryErr)}`,
-        );
-        corrupt.push({ exact: false, newerThan, olderThan: null });
-      }
+      return { runs, passed, capped, lastGoodRunId, error: e };
     }
-    return { runs, passed, corrupt, capped };
+    return { runs, passed, capped, lastGoodRunId, error: null };
+  }
+
+  /**
+   * Walk a monitor's run history newest-first within a window.
+   *
+   * Two-tier by design. The FAST path lets Deno KV batch normally — one
+   * round-trip per batch rather than per row. That is the whole difference
+   * between a 30-day report rendering in well under a second and timing out at
+   * 43s: 668 rows at a ~65ms round-trip each, against the SPA's 15s abort.
+   *
+   * The SLOW path (`batchSize: 1`) still exists because a batched read loses
+   * every row that shared a batch with an undeserializable one, and which rows
+   * those are is not knowable. So when the fast walk fails its partial result is
+   * DISCARDED and the history is re-walked a row at a time, truncating exactly at
+   * the bad row — the behaviour the Reports purge banner depends on. A corrupt
+   * monitor pays one extra scan; a healthy one never pays for the guarantee.
+   *
+   * The bad row is surfaced in `corrupt` with its exact key recovered from
+   * run_idx when possible (one-click purge), or suppressed when the user has
+   * dismissed an unrecoverable legacy banner.
+   */
+  static async scanWindow(
+    monitorId: string,
+    cutoff: string,
+    cap: number,
+  ): Promise<ScanWindowResult> {
+    const fast = await RunResult.collectRuns(monitorId, cutoff, cap);
+    if (fast.error === null) {
+      return { runs: fast.runs, passed: fast.passed, corrupt: [], capped: fast.capped };
+    }
+
+    // Something in this monitor's history is unreadable — re-walk precisely.
+    const slow = await RunResult.collectRuns(monitorId, cutoff, cap, 1);
+    if (slow.error === null) {
+      // The fast failure did not reproduce row-by-row: a transient KV hiccup, or
+      // a bad row OUTSIDE the window that only batching reached. The precise walk
+      // is authoritative, and there is no in-window corrupt row to report.
+      log.warn(
+        `⚠️ RunResult.scanWindow: batched read for ${monitorId} failed but the ` +
+          `row-by-row re-scan succeeded — treating as transient`,
+      );
+      return { runs: slow.runs, passed: slow.passed, corrupt: [], capped: slow.capped };
+    }
+
+    const corrupt: CorruptEntry[] = [];
+    const e = slow.error;
+    log.warn(
+      `⚠️ RunResult.scanWindow: run history for ${monitorId} truncated at an ` +
+        `unreadable row — ${e instanceof Error ? e.message : String(e)}`,
+    );
+    const newerThan = slow.runs.length ? slow.runs[slow.runs.length - 1].timestamp : null;
+    try {
+      const entry = await RunResult.resolveCorruptEntry(monitorId, newerThan, slow.lastGoodRunId);
+      // exact rows are one-click purgeable, so always surface them. A legacy
+      // (exact:false) row can't be deleted — its key is unrecoverable — so honor a
+      // user dismissal and suppress its banner once acknowledged.
+      if (entry.exact || !(await RunResult.isCorruptDismissed(monitorId))) {
+        corrupt.push(entry);
+      }
+    } catch (recoveryErr) {
+      // A secondary KV hiccup during recovery must NOT blank out the whole
+      // Reports page — degrade this one monitor's corrupt-row detail instead.
+      // Surface a non-exact banner from what we already read so the user still
+      // sees that history is truncated here.
+      log.warn(
+        `⚠️ RunResult.scanWindow: corrupt-row recovery for ${monitorId} failed ` +
+          `(non-fatal) — ${recoveryErr instanceof Error ? recoveryErr.message : String(recoveryErr)}`,
+      );
+      corrupt.push({ exact: false, newerThan, olderThan: null });
+    }
+    return { runs: slow.runs, passed: slow.passed, corrupt, capped: slow.capped };
   }
 
   // Identify the orphan row that truncated a scanWindow walk. The scan stopped at
