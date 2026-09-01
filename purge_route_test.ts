@@ -7,7 +7,7 @@ import { RunResult } from "./dist.rune/impure/runResult/runResult.ts";
 // main.ts, so the server binds exactly once.
 import "./main.ts";
 
-const BASE = "http://localhost:8000";
+const BASE = `http://localhost:${Number(Deno.env.get("PORT")) || 8000}`;
 const TS = encodeURIComponent("2026-01-01T00:00:00.000Z");
 
 // Mint a real session token the same way auth_test.ts does — the DELETE /api/runs
@@ -25,7 +25,10 @@ async function withSession(fn: (token: string) => Promise<void>) {
     await fn(token);
   } finally {
     await deleteUser(username);
-    await deleteUser(sentinel);
+    // The sentinel stays: with the hermetic in-memory test store it may be the
+    // LAST user at this point, and deleteUser's last-user guard refuses that
+    // (correctly). Leftover sentinels are process-local and also serve as
+    // witnesses for later tests' deletes.
   }
 }
 

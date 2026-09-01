@@ -2931,7 +2931,13 @@ function extractToken(req: Request): string {
 // onListen overrides Deno.serve's default stdout "Listening on …" line, which
 // Deno Deploy reprints on every isolate spin-up and floods the logs. Route it
 // through our logger at debug level so it's hidden at the normal info level.
-Deno.serve({ onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http://${hostname}:${port}/`) }, async (req: Request): Promise<Response> => {
+Deno.serve({
+  // PORT override so the test suite can bind a side port — a dev server on the
+  // default :8000 otherwise fails the whole run with AddrInUse. Deploy ignores
+  // it (the platform manages the listener).
+  port: Number(Deno.env.get("PORT")) || 8000,
+  onListen: ({ hostname, port }) => log.debug(`🚀 Listening on http://${hostname}:${port}/`),
+}, async (req: Request): Promise<Response> => {
   const url = new URL(req.url);
   const { pathname } = url;
   const method = req.method;

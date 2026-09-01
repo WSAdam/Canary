@@ -39,7 +39,10 @@ Deno.test("login - deleting a user revokes their existing session token", async 
   // After deletion the stateless token must no longer validate.
   const err = await assertRejects(() => validateSession(token), CanaryError);
   assertEquals(err.status, 401);
-  await deleteUser(sentinel);
+  // No cleanup delete: with the hermetic in-memory test store the sentinel is
+  // now the LAST user, and the last-user guard refuses (correctly). The old
+  // cleanup only worked because the shared on-disk store had leftover accounts
+  // acting as witnesses.
 });
 
 // validateSession is the single gate every authenticated route inherits (the
