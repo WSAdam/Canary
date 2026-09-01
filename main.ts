@@ -278,7 +278,7 @@ textarea{resize:vertical;min-height:72px}
 .col3{grid-template-columns:1fr 1fr 1fr}
 
 /* Buttons */
-.btn{padding:10px 20px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;border:none;transition:opacity .15s}
+.btn{padding:10px 20px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;border:none;transition:opacity .15s,border-color .15s,color .15s,transform .06s}
 .btn:hover{opacity:.85}
 .btn:disabled{opacity:.4;cursor:not-allowed}
 .btn-primary{background:var(--y);color:#000}
@@ -287,6 +287,38 @@ textarea{resize:vertical;min-height:72px}
 .btn-danger{background:none;border:1px solid #3a1a1a;color:var(--red)}
 .btn-danger:hover{border-color:var(--red);opacity:1}
 .btn-full{width:100%}
+
+/* Press feedback. Nothing in the app had an :active state, so every click sat
+   visually inert until the network came back. */
+.btn:active:not(:disabled){transform:translateY(1px)}
+.icon-btn:active,.var-chip:active,.sched-tab:active{transform:translateY(1px)}
+
+/* Keyboard focus. The outline:none on inputs (below) left the only focus cue as a
+   1px border tint, and buttons/checkboxes had no focus styling at all — tabbing
+   through the app gave no reliable "where am I". :focus-visible keeps mouse
+   clicks clean while making keyboard focus obvious. */
+.btn:focus-visible,.icon-btn:focus-visible,.var-chip:focus-visible,.sched-tab:focus-visible,
+.wizard-back:focus-visible,.modal-close:focus-visible,.report-row-clickable:focus-visible,
+.json-leaf:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,
+[type=checkbox]:focus-visible{outline:2px solid var(--y);outline-offset:2px;border-radius:6px}
+
+/* The two hints written with class="help-text" rendered at full body size
+   because the class was never defined; match the .hint they sit beside. */
+.help-text{font-size:12px;color:var(--m);margin-top:4px}
+
+/* Reports keeps its rows on screen while a new window loads instead of blanking
+   to a placeholder and hard-flashing the page. */
+.is-loading{opacity:.45;transition:opacity .12s;pointer-events:none}
+
+/* A run row is clickable — say so on hover and keyboard focus alike. */
+.report-row-clickable{border-radius:6px}
+/* Clickable numbers in the Test request panel: the only cue used to be a title
+   tooltip, so there was no way to discover that clicking one fills the threshold. */
+.json-leaf[data-path]{border-radius:4px;padding:0 2px;transition:background .12s}
+.json-leaf[data-path]:hover{background:rgba(255,215,0,.16);text-decoration:underline}
+/* Completed wizard steps are clickable to go back. */
+.step.done{cursor:pointer}
+.step.done:hover .step-num{border-color:var(--y);color:var(--y)}
 .btn-sm{padding:6px 14px;font-size:12px}
 .var-chips{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-top:6px}
 .var-chips-label{font-size:11px;color:#666;margin-right:2px}
@@ -506,7 +538,7 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
   <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
     <input id="sec-key" placeholder="KEY (letters, numbers, _)" style="flex:1;min-width:160px">
     <input id="sec-val" type="password" placeholder="value" style="flex:2;min-width:200px">
-    <button class="btn btn-primary btn-sm" onclick="addSecret()">Save secret</button>
+    <button class="btn btn-primary btn-sm" onclick="addSecret(this)">Save secret</button>
   </div>
   <div class="error-msg" id="sec-err"></div>
   <div id="d-secret-list"></div>
@@ -553,11 +585,11 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
   </div>
 
   <div class="steps" id="wiz-steps">
-    <div class="step active" id="wstep-1"><div class="step-num">1</div><span>Basics</span></div>
+    <div class="step active" id="wstep-1" role="button" tabindex="0" data-goto-step="1"><div class="step-num">1</div><span>Basics</span></div>
     <div class="step-line"></div>
-    <div class="step" id="wstep-2"><div class="step-num">2</div><span>Check</span></div>
+    <div class="step" id="wstep-2" role="button" tabindex="0" data-goto-step="2"><div class="step-num">2</div><span>Check</span></div>
     <div class="step-line"></div>
-    <div class="step" id="wstep-3"><div class="step-num">3</div><span>Alerts</span></div>
+    <div class="step" id="wstep-3" role="button" tabindex="0" data-goto-step="3"><div class="step-num">3</div><span>Alerts</span></div>
   </div>
 
   <!-- Step 1: Basics -->
@@ -621,7 +653,7 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
       <div class="toggle-row">
         <div>
           <div class="toggle-label">Report mode — no threshold, always send</div>
-          <div class="toggle-desc">For digests/reports: skip the pass/fail comparison entirely. Every successful fetch counts as healthy and sends the alert (email &amp; ntfy) on this check's schedule. A fetch error still alerts as a failure. Use captures below to put the response's values in the message.</div>
+          <div class="toggle-desc">For digests and reports: no pass/fail comparison — every successful fetch sends, on this check's schedule. A fetch error still alerts as a failure. Email &amp; ntfy only. Use captures below to put the response's values in the message.</div>
         </div>
         <input type="checkbox" id="w-report-only" onchange="toggleReportMode()">
       </div>
@@ -636,11 +668,11 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
         <div>
           <label for="w-op">Comparator</label>
           <select id="w-op" onchange="updateComparatorHint()">
-            <option value="gt">gt (&gt;)</option>
-            <option value="lt">lt (&lt;)</option>
-            <option value="gte">gte (&ge;)</option>
-            <option value="lte">lte (&le;)</option>
-            <option value="eq">eq (=)</option>
+            <option value="gt">is more than (&gt;)</option>
+            <option value="lt">is less than (&lt;)</option>
+            <option value="gte">is at least (&ge;)</option>
+            <option value="lte">is at most (&le;)</option>
+            <option value="eq">equals (=)</option>
           </select>
         </div>
         <div>
@@ -711,7 +743,7 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
       <div class="toggle-row">
         <div>
           <div class="toggle-label">Notify on every run (all-clear)</div>
-          <div class="toggle-desc">Also alert on healthy runs, not just failures — a passing run sends an "all clear" with the observed count (e.g. "0 errors found"). Fires on this check's schedule, to email &amp; ntfy recipients. SMS is skipped for all-clears so a heartbeat never texts you.</div>
+          <div class="toggle-desc">Alert on healthy runs too — a passing run sends an "all clear" with the observed count (e.g. "0 errors found"). Email &amp; ntfy only; SMS is skipped so an all-clear never texts you.</div>
         </div>
         <input type="checkbox" id="w-notify-success">
       </div>
@@ -878,7 +910,7 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
       <div class="card" style="margin-bottom:16px">
         <p style="font-size:11px;color:#FFD700;font-weight:600;letter-spacing:.08em;margin-bottom:14px">HOW IT WORKS</p>
         <p style="font-size:13px;color:var(--m);margin-bottom:0;line-height:1.6">
-          Other projects POST to canary with a per-monitor bearer secret. Canary verifies it, writes a run result, and dispatches alerts through the SMS / email / ntfy recipients configured on the Configuration tab — same templating, same recovery semantics as a cron-driven check. Use this as a single alert hub for your whole stack: one place to manage who gets paged, every project pipes its events through.
+          Other projects POST here with this monitor's bearer secret; Canary records a run and alerts the recipients on the Configuration tab, exactly as a scheduled check would. One place to manage who gets paged, for your whole stack.
         </p>
       </div>
 
@@ -909,7 +941,7 @@ input[type=checkbox]{width:auto;accent-color:var(--y)}
         <div id="wh-secret-display" style="display:none;margin-top:14px">
           <div class="success-msg" style="display:block;margin-bottom:10px">⚠️ Save this secret now — it will not be shown again.</div>
           <pre id="wh-secret-pre" style="background:#111;border:1px solid #FFD700;border-radius:6px;padding:12px;color:#FFD700;font-family:ui-monospace,Menlo,monospace;font-size:12px;word-break:break-all;white-space:pre-wrap;margin:0"></pre>
-          <button type="button" class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="copyWebhookSecret()">Copy to clipboard</button>
+          <button type="button" class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="copyWebhookSecret(this)">Copy to clipboard</button>
         </div>
       </div>
     </div>
@@ -1093,11 +1125,111 @@ async function api(method, path, body) {
     console.warn('⚠️ api: 401 — clearing token and redirecting to login');
     localStorage.removeItem('canary_token');
     S.token = null;
+    // A modal open when the session expired would otherwise stay mounted on top
+    // of the login screen (it's position:fixed, z-index:100) with no way to close it.
+    closeAllModals();
     showView('login');
     throw new Error('Session expired — please log in again');
   }
   if (!res.ok) throw new Error(data.message || 'Request failed (' + res.status + ')');
   return data;
+}
+
+// Run an async action with the button showing it's working, and ALWAYS give the
+// button back. Every "permanently dead button" bug in this app has been the same
+// shape: something sets disabled=true on one path and the restore lives somewhere
+// a later path can skip. Routing every mutating control through one finally
+// removes the shape rather than the instance.
+async function withPending(btn, label, fn) {
+  if (!btn) return await fn();
+  const wasHtml = btn.innerHTML;
+  const wasDisabled = btn.disabled;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>' + esc(label);
+  try {
+    return await fn();
+  } finally {
+    btn.disabled = wasDisabled;
+    btn.innerHTML = wasHtml;
+  }
+}
+
+// Briefly confirm on the button itself that something happened, then restore it.
+// Used for actions with no other visible result (copy to clipboard, run now).
+function flashButton(btn, label, ms) {
+  if (!btn) return;
+  const wasHtml = btn.innerHTML;
+  btn.textContent = label;
+  setTimeout(() => { btn.innerHTML = wasHtml; }, ms || 1400);
+}
+
+// Completed wizard steps are a real way back — the rail looked like a stepper
+// but wasn't clickable, so people tried "1 Basics" and nothing happened.
+function initStepRail() {
+  const activate = (el) => {
+    const n = Number(el.dataset.gotoStep);
+    // Only backwards: forward steps depend on the current one having been saved.
+    if (n && el.classList.contains('done')) wizardGoStep(n);
+  };
+  document.querySelectorAll('[data-goto-step]').forEach((el) => {
+    el.addEventListener('click', () => activate(el));
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(el); }
+    });
+  });
+}
+
+// ─── Modals ──────────────────────────────────────────────────────────────────
+// None of the four modals used to trap focus, close on Escape, or hand focus
+// back — and the run-detail modal focused nothing at all, so a keyboard user who
+// opened it could neither reach nor dismiss it. One manager for all of them.
+let _modalOpener = null;
+
+function openModal(id) {
+  const modal = document.getElementById(id);
+  if (!modal) return;
+  // Remember what to hand focus back to when this closes.
+  _modalOpener = document.activeElement;
+  modal.classList.add('open');
+  // Stop the page behind the overlay scrolling under it.
+  document.body.style.overflow = 'hidden';
+  // Focus the first thing worth typing into, else the dialog itself.
+  const first = modal.querySelector('input:not([disabled]),textarea,select,button');
+  if (first) first.focus();
+}
+
+function closeModal(id) {
+  const modal = document.getElementById(id);
+  if (!modal) return;
+  modal.classList.remove('open');
+  if (!document.querySelector('.modal-overlay.open')) document.body.style.overflow = '';
+  if (_modalOpener && document.contains(_modalOpener)) _modalOpener.focus();
+  _modalOpener = null;
+}
+
+function openModalEl() {
+  return document.querySelector('.modal-overlay.open');
+}
+
+document.addEventListener('keydown', (e) => {
+  const modal = openModalEl();
+  if (!modal) return;
+  if (e.key === 'Escape') { e.preventDefault(); closeModal(modal.id); return; }
+  if (e.key !== 'Tab') return;
+  // Keep Tab inside the dialog rather than walking out into the page behind it.
+  const focusable = [...modal.querySelectorAll(
+    'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])',
+  )].filter((el) => el.offsetParent !== null);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
+
+function closeAllModals() {
+  document.querySelectorAll('.modal-overlay.open').forEach((m) => m.classList.remove('open'));
+  document.body.style.overflow = '';
 }
 
 // ─── View router ─────────────────────────────────────────────────────────────
@@ -1119,7 +1251,7 @@ async function doLogin() {
   const btn = document.getElementById('li-btn');
   const err = document.getElementById('li-err');
   if (!username || !password) { err.textContent = 'Username and password are required.'; return; }
-  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Signing in...'; err.textContent = '';
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Signing in…'; err.textContent = '';
   try {
     const data = await api('POST', '/auth/login', { username, password });
     S.token = data.token;
@@ -1163,7 +1295,7 @@ async function doAcceptInvite(token) {
   const err = document.getElementById('ia-err');
   if (!pass) { err.textContent = 'Please choose a password.'; return; }
   if (pass !== pass2) { err.textContent = 'Passwords do not match.'; return; }
-  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Creating account...'; err.textContent = '';
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Creating account…'; err.textContent = '';
   try {
     const data = await api('POST', '/invite/accept', { token, password: pass });
     S.token = data.token;
@@ -1176,26 +1308,42 @@ async function doAcceptInvite(token) {
 
 // ─── Dashboard ───────────────────────────────────────────────────────────────
 async function loadDashboard() {
-  try {
-    const status = await api('GET', '/api/status');
-    document.getElementById('d-status').textContent = status.status || 'ok';
-    document.getElementById('d-monitors').textContent = status.monitors ?? '—';
-    document.getElementById('d-tick').textContent = status.lastCronTick
-      ? new Date(status.lastCronTick).toLocaleString() : 'Not yet ticked';
-  } catch (e) {
-    console.error('❌ loadDashboard: /api/status failed:', e.message);
+  // The monitor list is the slowest of the three and the one people look at, so
+  // say it's loading rather than leaving the markup's "No monitors yet" empty
+  // state up — which claimed you had none every time you opened the dashboard.
+  const listEl = document.getElementById('d-monitor-list');
+  if (listEl && !listEl.dataset.loaded) {
+    listEl.innerHTML = '<div class="empty-state"><span class="spinner"></span> Loading monitors…</div>';
   }
 
-  try {
-    const data = await api('GET', '/monitors');
-    renderMonitorList(data.monitors || []);
-  } catch (e) {
-    console.error('❌ loadDashboard: /monitors failed:', e.message);
-    const el = document.getElementById('d-monitor-list');
-    if (el) el.innerHTML = '<div class="empty-state"><div style="font-size:32px">⚠️</div><p>Could not load monitors: ' + esc(e.message) + '</p></div>';
+  // These three are independent; awaiting them in turn cost three round-trips of
+  // latency for one screen. allSettled so a failure in one still renders the others.
+  const [status, monitors] = await Promise.allSettled([
+    api('GET', '/api/status'),
+    api('GET', '/monitors'),
+    loadSecrets(),
+  ]);
+
+  if (status.status === 'fulfilled') {
+    const st = status.value;
+    document.getElementById('d-status').textContent = st.status || 'ok';
+    document.getElementById('d-monitors').textContent = st.monitors ?? '—';
+    document.getElementById('d-tick').textContent = st.lastCronTick
+      ? new Date(st.lastCronTick).toLocaleString() : 'Not yet ticked';
+  } else {
+    console.error('❌ loadDashboard: /api/status failed:', status.reason?.message);
+    // Don't leave stale numbers looking current when the fetch behind them failed.
+    document.getElementById('d-status').textContent = '—';
+    document.getElementById('d-tick').textContent = '—';
   }
 
-  loadSecrets();
+  if (monitors.status === 'fulfilled') {
+    renderMonitorList(monitors.value.monitors || []);
+    if (listEl) listEl.dataset.loaded = '1';
+  } else {
+    console.error('❌ loadDashboard: /monitors failed:', monitors.reason?.message);
+    if (listEl) listEl.innerHTML = '<div class="empty-state"><div style="font-size:32px">⚠️</div><p>Could not load monitors: ' + esc(monitors.reason?.message || 'unknown error') + '</p></div>';
+  }
 }
 
 async function loadSecrets() {
@@ -1220,7 +1368,7 @@ async function loadSecrets() {
   }
 }
 
-async function addSecret() {
+async function addSecret(btn) {
   const key = document.getElementById('sec-key').value.trim();
   const val = document.getElementById('sec-val').value;
   const err = document.getElementById('sec-err');
@@ -1230,7 +1378,7 @@ async function addSecret() {
   if (!/^[A-Za-z0-9_]+$/.test(key)) return fail('Key may only contain letters, numbers, and underscores.');
   if (!val) return fail('Secret value is required.');
   try {
-    await api('POST', '/secrets', { secretKey: key, secretValue: val });
+    await withPending(btn, 'Saving…', () => api('POST', '/secrets', { secretKey: key, secretValue: val }));
     document.getElementById('sec-key').value = '';
     document.getElementById('sec-val').value = '';
     loadSecrets();
@@ -1254,10 +1402,10 @@ function grabDenoToken() {
   window.open('https://console.deno.com', '_blank');
 }
 
-async function deleteSecret(key) {
+async function deleteSecret(key, btn) {
   if (!confirm('Delete secret {{' + key + '}}? Checks referencing it will fail until it is replaced.')) return;
   try {
-    await api('DELETE', '/secrets/' + encodeURIComponent(key));
+    await withPending(btn, 'Deleting…', () => api('DELETE', '/secrets/' + encodeURIComponent(key)));
     loadSecrets();
   } catch (e) {
     const err = document.getElementById('sec-err');
@@ -1279,7 +1427,7 @@ function openRelayModal() {
   document.getElementById('relay-err').textContent = '';
   document.getElementById('relay-ok').textContent = '';
   document.getElementById('relay-result').innerHTML = '';
-  document.getElementById('relay-modal').classList.add('open');
+  openModal('relay-modal');
   document.getElementById('relay-name').focus();
 }
 
@@ -1302,7 +1450,7 @@ async function editRelay(monitorId) {
     + '<div style="margin-bottom:6px;color:var(--m)">Fire it: POST here with <code>Authorization: Bearer &lt;token&gt;</code> and a JSON body like <code>{ "error": "…" }</code> (extra fields become captures):</div>'
     + '<pre style="white-space:pre-wrap;word-break:break-all;font-size:12px;margin:0">' + esc(relayFireUrl(monitorId)) + '</pre>'
     + '</div>';
-  document.getElementById('relay-modal').classList.add('open');
+  openModal('relay-modal');
   try {
     const cfg = await api('GET', '/monitors/' + encodeURIComponent(monitorId) + '/relay');
     document.getElementById('relay-numbers').value = (cfg.numbers || []).join(', ');
@@ -1312,7 +1460,7 @@ async function editRelay(monitorId) {
 }
 
 function closeRelayModal() {
-  document.getElementById('relay-modal').classList.remove('open');
+  closeModal('relay-modal');
 }
 
 async function submitRelay() {
@@ -1333,7 +1481,7 @@ async function submitRelay() {
   if (!_relayEditId && !token) return fail('A token is required.');
 
   const btn = document.getElementById('relay-submit-btn');
-  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Saving...';
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Saving…';
   try {
     if (_relayEditId) {
       const body = { numbers: numbers };
@@ -1364,11 +1512,11 @@ function relayFireUrl(monitorId) {
 
 // Named onDeleteMonitor (not deleteMonitor) to avoid colliding with the
 // server-side deleteMonitor import at the top of this file.
-async function onDeleteMonitor(monitorId) {
+async function onDeleteMonitor(monitorId, btn) {
   const name = _monitorNames[monitorId] || monitorId;
   if (!confirm('Delete monitor "' + name + '"? This permanently removes it and all its history (check, alert, webhook, relay, runs). This cannot be undone.')) return;
   try {
-    await api('DELETE', '/monitors/' + encodeURIComponent(monitorId));
+    await withPending(btn, 'Deleting…', () => api('DELETE', '/monitors/' + encodeURIComponent(monitorId)));
     loadDashboard();
   } catch (e) {
     alert('Could not delete monitor: ' + e.message);
@@ -1393,17 +1541,17 @@ function renderMonitorList(monitors) {
       : '';
     // Type-specific actions, then a shared "Delete" that removes the whole monitor.
     const specific = isRelay
-      ? \`<button class="btn btn-ghost btn-sm" onclick="editDetails('\${esc(m.monitorId)}')">Edit details</button>
+      ? \`<button class="btn btn-ghost btn-sm" onclick="editDetails('\${esc(m.monitorId)}', this)">Edit details</button>
          <button class="btn btn-ghost btn-sm" onclick="editRelay('\${esc(m.monitorId)}')">Edit relay</button>\`
-      : \`<button class="btn btn-ghost btn-sm" onclick="editDetails('\${esc(m.monitorId)}')">Edit details</button>
+      : \`<button class="btn btn-ghost btn-sm" onclick="editDetails('\${esc(m.monitorId)}', this)">Edit details</button>
          <button class="btn btn-ghost btn-sm" onclick="editCheck('\${esc(m.monitorId)}')">Edit check</button>
          <button class="btn btn-ghost btn-sm" onclick="editAlert('\${esc(m.monitorId)}')">Edit alert</button>
-         <button class="btn btn-ghost btn-sm" onclick="duplicateMonitor('\${esc(m.monitorId)}')">Duplicate</button>
+         <button class="btn btn-ghost btn-sm" onclick="duplicateMonitor('\${esc(m.monitorId)}', this)">Duplicate</button>
          <button class="btn btn-ghost btn-sm" onclick="runNow('\${esc(m.monitorId)}', this)">Run now</button>\`;
     return \`<div class="monitor-card">
       <div class="monitor-info"><h3>\${esc(m.name)}\${badge}</h3><p>\${esc(m.description || 'No description')}</p></div>
       <div class="monitor-actions">\${specific}
-        <button class="btn btn-danger btn-sm" onclick="onDeleteMonitor('\${esc(m.monitorId)}')">Delete</button>
+        <button class="btn btn-danger btn-sm" onclick="onDeleteMonitor('\${esc(m.monitorId)}', this)">Delete</button>
       </div>
     </div>\`;
   }).join('');
@@ -1412,30 +1560,46 @@ function renderMonitorList(monitors) {
 // ─── Reports ───────────────────────────────────────────────────────────────────
 function setReportWindow(w) {
   S.reportWindow = w;
+  syncReportWindowPills();
+  loadReports();
+}
+
+// The highlight used to be set only when a pill was clicked, while the selected
+// window persisted in S — so picking 30d, leaving Reports and coming back showed
+// 30d data under a lit 24h pill. Drive the pills from state instead.
+function syncReportWindowPills() {
   ['24h','7d','30d'].forEach(x => {
     const b = document.getElementById('rep-win-' + x);
-    if (b) b.className = 'btn btn-sm ' + (x === w ? 'btn-primary' : 'btn-ghost');
+    if (!b) return;
+    b.className = 'btn btn-sm ' + (x === S.reportWindow ? 'btn-primary' : 'btn-ghost');
+    b.setAttribute('aria-pressed', String(x === S.reportWindow));
   });
-  loadReports();
 }
 
 async function loadReports() {
   const el = document.getElementById('reports-list');
   if (!el) return;
-  el.innerHTML = '<div class="empty-state"><div style="font-size:32px">📊</div><p>Loading…</p></div>';
+  syncReportWindowPills();
+  // Dim what's there rather than replacing it with a "Loading…" placeholder:
+  // blanking the whole list made every window switch hard-flash the page.
+  const hasContent = el.querySelector('.card') !== null;
+  if (hasContent) el.classList.add('is-loading');
+  else el.innerHTML = '<div class="empty-state"><span class="spinner"></span> Loading reports…</div>';
   try {
     const data = await api('GET', '/api/reports?window=' + encodeURIComponent(S.reportWindow));
     renderReports(data.reports || []);
   } catch (e) {
     console.error('❌ loadReports failed:', e.message);
     el.innerHTML = '<div class="empty-state"><div style="font-size:32px">⚠️</div><p>Could not load reports: ' + esc(e.message) + '</p></div>';
+  } finally {
+    el.classList.remove('is-loading');
   }
 }
 
 function renderReports(reports) {
   const el = document.getElementById('reports-list');
   if (!reports.length) {
-    el.innerHTML = '<div class="empty-state"><div style="font-size:32px">🐦</div><p>No monitors yet. Add one to start collecting check history.</p></div>';
+    el.innerHTML = '<div class="empty-state"><div style="font-size:32px">🐦</div><p>No monitors yet. Add one from the dashboard to start collecting history.</p></div>';
     return;
   }
   el.innerHTML = reports.map(rep => {
@@ -1476,7 +1640,10 @@ function renderReports(reports) {
         ? ' data-run-detail="1" data-monitorid="' + esc(rep.monitorId) + '" data-timestamp="' + esc(r.timestamp) + '" data-runid="' + esc(r.runId) + '"'
         : '';
       const cls = clickable ? 'report-row report-row-clickable' : 'report-row';
-      return '<div class="' + cls + '"' + dataAttrs + ' style="display:flex;gap:12px;align-items:baseline;padding:6px 0;border-top:1px solid #1d1d1d;font-size:13px">'
+      // Clickable rows carry button semantics + a tab stop; the drill-in used to
+      // be reachable by mouse only.
+      const a11y = clickable ? ' role="button" tabindex="0"' : '';
+      return '<div class="' + cls + '"' + dataAttrs + a11y + ' style="display:flex;gap:12px;align-items:baseline;padding:6px 0;border-top:1px solid #1d1d1d;font-size:13px">'
         + '<span style="white-space:nowrap;min-width:160px;color:var(--m)">' + esc(when) + '</span>'
         + '<span style="white-space:nowrap;min-width:64px">' + badge + '</span>'
         + '<span style="flex:1">' + detail + '</span>'
@@ -1532,18 +1699,16 @@ function renderReports(reports) {
 async function purgeRun(monitorId, timestamp, runId, btn) {
   if (!timestamp || !runId) { alert('Both a timestamp and a runId are required.'); return; }
   if (!confirm('Permanently delete this run row?\\n\\ntimestamp: ' + timestamp + '\\nrunId: ' + runId + '\\n\\nThis cannot be undone.')) return;
-  if (btn) { btn.disabled = true; btn.textContent = 'Purging…'; }
   try {
-    await api('DELETE', '/api/runs/'
+    await withPending(btn, 'Purging…', () => api('DELETE', '/api/runs/'
       + encodeURIComponent(monitorId) + '/'
       + encodeURIComponent(timestamp) + '/'
-      + encodeURIComponent(runId));
+      + encodeURIComponent(runId)));
     console.log('🗑️ purgeRun: deleted run ' + runId + ' — reloading reports');
     loadReports(); // re-scan; older rows behind the purged orphan now load
   } catch (e) {
     console.error('❌ purgeRun failed:', e.message);
     alert('Could not purge run: ' + e.message);
-    if (btn) { btn.disabled = false; btn.textContent = 'Purge row'; }
   }
 }
 
@@ -1552,15 +1717,13 @@ async function purgeRun(monitorId, timestamp, runId, btn) {
 // the warning stops showing. Genuinely purgeable (indexed) rows are unaffected.
 async function dismissCorrupt(monitorId, btn) {
   if (!confirm('Hide this unreadable-row warning for this monitor?\\n\\nThe row cannot be deleted (its key is unrecoverable), so this only stops the warning from showing. A newly corrupt row would still appear.')) return;
-  if (btn) { btn.disabled = true; btn.textContent = 'Dismissing…'; }
   try {
-    await api('POST', '/api/reports/' + encodeURIComponent(monitorId) + '/dismiss-corrupt');
+    await withPending(btn, 'Dismissing…', () => api('POST', '/api/reports/' + encodeURIComponent(monitorId) + '/dismiss-corrupt'));
     console.log('🙈 dismissCorrupt: dismissed for ' + monitorId + ' — reloading reports');
     loadReports();
   } catch (e) {
     console.error('❌ dismissCorrupt failed:', e.message);
     alert('Could not dismiss warning: ' + e.message);
-    if (btn) { btn.disabled = false; btn.textContent = 'Dismiss warning'; }
   }
 }
 
@@ -1572,7 +1735,7 @@ async function openRunDetail(monitorId, timestamp, runId) {
   _runDetailCopy = null;
   if (copyAll) copyAll.style.display = 'none';
   body.innerHTML = '<div class="empty-state"><div style="font-size:32px">📊</div><p>Loading…</p></div>';
-  modal.classList.add('open');
+  openModal('run-detail-modal');
   try {
     const run = await api('GET', '/api/runs/'
       + encodeURIComponent(monitorId) + '/'
@@ -1586,7 +1749,7 @@ async function openRunDetail(monitorId, timestamp, runId) {
 }
 
 function closeRunDetail() {
-  document.getElementById('run-detail-modal').classList.remove('open');
+  closeModal('run-detail-modal');
   const copyAll = document.getElementById('run-detail-copy-all');
   if (copyAll) copyAll.style.display = 'none';
 }
@@ -1699,14 +1862,18 @@ function renderRunDetail(run) {
 }
 
 async function runNow(monitorId, btn) {
-  btn.disabled = true; btn.textContent = 'Running...';
   try {
-    await api('POST', '/run/' + monitorId);
-    btn.textContent = 'Done!';
-    setTimeout(() => { btn.disabled = false; btn.textContent = 'Run now'; }, 2000);
+    await withPending(btn, 'Running…', () => api('POST', '/run/' + monitorId));
+    flashButton(btn, 'Done!', 1600);
+    // The run just changed this monitor's last result and the cron tick stat, and
+    // none of that was visible without navigating to Reports. Refresh in the
+    // background so the dashboard reflects what just happened.
+    loadDashboard();
   } catch (e) {
-    btn.textContent = 'Failed';
-    setTimeout(() => { btn.disabled = false; btn.textContent = 'Run now'; }, 2000);
+    // The error used to be swallowed entirely — the user got the word "Failed"
+    // on a button for two seconds and no way to find out why.
+    flashButton(btn, 'Failed', 1600);
+    alert('Run failed: ' + e.message);
   }
 }
 
@@ -1745,7 +1912,7 @@ function editAlert(monitorId) {
   prefillAlert(monitorId);
 }
 
-async function editDetails(monitorId) {
+async function editDetails(monitorId, btn) {
   S.wizardMonitorId = monitorId;
   S.wizardMode = 'edit-details';
   resetWizard();
@@ -1755,18 +1922,18 @@ async function editDetails(monitorId) {
   document.getElementById('wiz-subtitle').textContent = monitorId;
   document.getElementById('ws1-btn').textContent = 'Save details';
   try {
-    const m = await api('GET', '/monitors/' + monitorId);
+    const m = await withPending(btn, 'Opening…', () => api('GET', '/monitors/' + monitorId));
     document.getElementById('w-name').value = m.name || '';
     document.getElementById('w-desc').value = m.description || '';
   } catch (e) {
-    document.getElementById('ws1-err').textContent = e.message;
+    showStepErr('ws1-err', e.message);
   }
 }
 
 // Duplicate: open the create wizard prefilled with a full copy of the source's
 // check + alert config. Nothing is persisted until the user finishes the steps —
 // create mode (wizardMonitorId=null) makes wizardStep1 POST a brand-new monitor.
-async function duplicateMonitor(sourceId) {
+async function duplicateMonitor(sourceId, btn) {
   S.wizardMonitorId = null;
   S.wizardMode = 'create';
   resetWizard();
@@ -1774,19 +1941,29 @@ async function duplicateMonitor(sourceId) {
   document.getElementById('wiz-subtitle').textContent = '';
   wizardGoStep(1);
   showView('wizard');
+  const nameEl = document.getElementById('w-name');
+  // The three fetches below land in a wizard the user is already looking at, so
+  // keep the name box out of their way until it's filled: focusing it after the
+  // awaits used to yank the caret out of whatever they'd started typing.
+  nameEl.disabled = true;
   try {
-    const m = await api('GET', '/monitors/' + sourceId);
-    document.getElementById('w-name').value = '(Copy of) ' + (m.name || '');
+    // Independent reads of the same source monitor — fetch them together rather
+    // than three round-trips deep behind a blank form.
+    const [m] = await withPending(btn, 'Copying…', () => Promise.all([
+      api('GET', '/monitors/' + sourceId),
+      // prefillCheck/prefillAlert fill steps 2 & 3 by element id from the source —
+      // they don't touch S.wizardMonitorId, so they're safe in create mode.
+      prefillCheck(sourceId),
+      prefillAlert(sourceId),
+    ]));
+    nameEl.value = '(Copy of) ' + (m.name || '');
     document.getElementById('w-desc').value = m.description || '';
-    // prefillCheck/prefillAlert fill steps 2 & 3 by element id from the source —
-    // they don't touch S.wizardMonitorId, so they're safe in create mode.
-    await prefillCheck(sourceId);
-    await prefillAlert(sourceId);
   } catch (e) {
-    document.getElementById('ws1-err').textContent = e.message;
+    showStepErr('ws1-err', e.message);
+  } finally {
+    nameEl.disabled = false;
   }
   // Focus the name with the caret at the very start of the box.
-  const nameEl = document.getElementById('w-name');
   nameEl.focus();
   if (nameEl.setSelectionRange) nameEl.setSelectionRange(0, 0);
 }
@@ -1870,19 +2047,31 @@ function wizardGoStep(n) {
   if (n === 2) updateSimpleSched();
 }
 
+// Wizard forms are tall enough that a validation error at the footer can be
+// off-screen when the user is scrolled up — step 3 already scrolled its error
+// into view, steps 1 and 2 silently did not.
+function showStepErr(id, msg) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = msg;
+  el.style.display = 'block';
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
 async function wizardStep1() {
   const name = document.getElementById('w-name').value.trim();
   const description = document.getElementById('w-desc').value.trim();
-  if (!name) { document.getElementById('ws1-err').textContent = 'Monitor name is required.'; return; }
+  if (!name) { return showStepErr('ws1-err', 'Monitor name is required.'); }
   clearErr();
+  const btn = document.getElementById('ws1-btn');
   // Edit-details mode: PATCH the existing monitor's name/description, then
   // return to the dashboard (no check/alert steps).
   if (S.wizardMode === 'edit-details') {
     try {
-      await api('PATCH', '/monitors/' + S.wizardMonitorId, { name, description });
+      await withPending(btn, 'Saving…', () => api('PATCH', '/monitors/' + S.wizardMonitorId, { name, description }));
       showView('dashboard');
     } catch (e) {
-      document.getElementById('ws1-err').textContent = e.message;
+      showStepErr('ws1-err', e.message);
     }
     return;
   }
@@ -1890,11 +2079,13 @@ async function wizardStep1() {
   // existing one (would orphan the edit onto a brand-new monitor).
   if (S.wizardMode !== 'create') { wizardGoStep(2); return; }
   try {
-    const data = await api('POST', '/monitors', { name, description });
+    // Disabled while in flight: this POSTs a monitor, so a double-click on a
+    // slow connection used to create two.
+    const data = await withPending(btn, 'Saving…', () => api('POST', '/monitors', { name, description }));
     S.wizardMonitorId = data.monitorId;
     wizardGoStep(2);
   } catch (e) {
-    document.getElementById('ws1-err').textContent = e.message;
+    showStepErr('ws1-err', e.message);
   }
 }
 
@@ -1903,17 +2094,17 @@ async function wizardStep2() {
   const reportOnly = document.getElementById('w-report-only').checked;
   const expression = document.getElementById('w-expr').value.trim();
   const threshold = parseFloat(document.getElementById('w-threshold').value);
-  if (!url) { document.getElementById('ws2-err').textContent = 'URL is required.'; return; }
+  if (!url) { return showStepErr('ws2-err', 'URL is required.'); }
   // Report mode has no comparator — skip the expression/threshold requirements.
   if (!reportOnly) {
-    if (!expression) { document.getElementById('ws2-err').textContent = 'JSON expression is required.'; return; }
-    if (isNaN(threshold)) { document.getElementById('ws2-err').textContent = 'Threshold must be a number.'; return; }
+    if (!expression) { return showStepErr('ws2-err', 'Response path is required — pick a value from Test request, or type a path like data.total.'); }
+    if (isNaN(threshold)) { return showStepErr('ws2-err', 'Threshold is required — enter the number to compare against.'); }
   }
 
   let cron = '';
   if (S.schedMode === 'cron') {
     cron = document.getElementById('w-cron').value.trim();
-    if (!cron) { document.getElementById('ws2-err').textContent = 'Cron expression is required.'; return; }
+    if (!cron) { return showStepErr('ws2-err', 'Cron expression is required.'); }
   } else {
     cron = buildLocalCron(
       document.getElementById('w-freq').value,
@@ -1954,7 +2145,11 @@ async function wizardStep2() {
       captures: Object.keys(captures).length ? captures : undefined,
     };
     console.log('🔍 wizardStep2: POST payload', JSON.stringify(payload));
-    const result = await api('POST', '/monitors/' + S.wizardMonitorId + '/check', payload);
+    const result = await withPending(
+      document.getElementById('ws2-btn'),
+      'Saving…',
+      () => api('POST', '/monitors/' + S.wizardMonitorId + '/check', payload),
+    );
     console.log('✅ wizardStep2: check saved', JSON.stringify(result));
     // Edit-check is a standalone edit: the check is now saved, so finish here
     // instead of forcing the Alerts step (a check needs no alert — see the
@@ -1967,7 +2162,7 @@ async function wizardStep2() {
     }
     wizardGoStep(3);
   } catch (e) {
-    document.getElementById('ws2-err').textContent = e.message;
+    showStepErr('ws2-err', e.message);
   }
 }
 
@@ -2033,7 +2228,7 @@ async function wizardStep3() {
 
   const btn = document.getElementById('ws3-btn');
   const isEditAlert = S.wizardMode === 'edit-alert';
-  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Saving...';
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Saving…';
   clearErr();
   console.log('🚀 wizardStep3: saving alert monitorId=' + S.wizardMonitorId + ' recipients=' + JSON.stringify(recipients));
   try {
@@ -2434,15 +2629,15 @@ async function loadWebhookState() {
       stateEl.innerHTML = '<p style="font-size:13px;color:#e0e0e0;margin-bottom:10px">Active key: <code style="color:#FFD700;font-family:ui-monospace,Menlo,monospace;font-size:12px;background:#111;padding:2px 6px;border-radius:4px">' + esc(d.fingerprint) + '…</code></p>' +
         '<p style="font-size:11px;color:#666;margin-bottom:14px">Created ' + new Date(d.createdAt).toLocaleString() + '</p>' +
         '<div style="display:flex;gap:8px">' +
-        '<button type="button" class="btn btn-ghost btn-sm" onclick="generateWebhookKey(true)">Rotate</button>' +
-        '<button type="button" class="btn btn-danger btn-sm" onclick="revokeWebhookKey()">Revoke</button>' +
+        '<button type="button" class="btn btn-ghost btn-sm" onclick="generateWebhookKey(true, this)">Rotate</button>' +
+        '<button type="button" class="btn btn-danger btn-sm" onclick="revokeWebhookKey(this)">Revoke</button>' +
         '</div>';
       if (!_lastWebhookSecret) {
         document.getElementById('wh-secret-display').style.display = 'none';
       }
     } else {
       stateEl.innerHTML = '<p style="font-size:13px;color:var(--m);margin-bottom:14px;margin-top:0">No webhook key yet.</p>' +
-        '<button type="button" class="btn btn-primary btn-sm" onclick="generateWebhookKey(false)">Generate webhook key</button>';
+        '<button type="button" class="btn btn-primary btn-sm" onclick="generateWebhookKey(false, this)">Generate webhook key</button>';
       document.getElementById('wh-secret-display').style.display = 'none';
     }
   } catch (e) {
@@ -2450,12 +2645,14 @@ async function loadWebhookState() {
   }
 }
 
-async function generateWebhookKey(isRotate) {
+async function generateWebhookKey(isRotate, btn) {
   const monitorId = S.wizardMonitorId;
   if (!monitorId) return;
   if (isRotate && !confirm('Rotate the webhook key? Any project still using the old key will start receiving 401s immediately.')) return;
   try {
-    const d = await api('POST', '/monitors/' + monitorId + '/webhook');
+    // Disabled while in flight — rotate was double-clickable, and each click
+    // mints a new key that invalidates the one before it.
+    const d = await withPending(btn, isRotate ? 'Rotating…' : 'Generating…', () => api('POST', '/monitors/' + monitorId + '/webhook'));
     _lastWebhookSecret = d.secret;
     document.getElementById('wh-secret-pre').textContent = d.secret;
     document.getElementById('wh-secret-display').style.display = 'block';
@@ -2466,12 +2663,12 @@ async function generateWebhookKey(isRotate) {
   }
 }
 
-async function revokeWebhookKey() {
+async function revokeWebhookKey(btn) {
   const monitorId = S.wizardMonitorId;
   if (!monitorId) return;
   if (!confirm('Revoke the webhook key? Anything using it will start getting 401s.')) return;
   try {
-    await api('DELETE', '/monitors/' + monitorId + '/webhook');
+    await withPending(btn, 'Revoking…', () => api('DELETE', '/monitors/' + monitorId + '/webhook'));
     _lastWebhookSecret = null;
     document.getElementById('wh-secret-display').style.display = 'none';
     await loadWebhookState();
@@ -2497,10 +2694,12 @@ function renderWebhookCurl(secret, monitorId) {
   }
 }
 
-function copyWebhookSecret() {
+function copyWebhookSecret(btn) {
   if (!_lastWebhookSecret) return;
   navigator.clipboard.writeText(_lastWebhookSecret).then(
-    () => { /* no-op success */ },
+    // Confirm it landed: this is the one value in the app you cannot get back,
+    // and a click that changes nothing looks like a click that did nothing.
+    () => flashButton(btn, 'Copied!'),
     () => alert('Could not copy — select the text manually'),
   );
 }
@@ -2511,7 +2710,7 @@ async function sendTestAlert(channel) {
   const btn = document.getElementById(\`ex-\${channel}-btn\`);
   const address = addrEl.value.trim();
   if (!address) { resultEl.textContent = 'Enter an address first.'; resultEl.style.color = '#f66'; return; }
-  btn.disabled = true; btn.textContent = 'Sending...';
+  btn.disabled = true; btn.textContent = 'Sending…';
   resultEl.textContent = '';
   try {
     await api('POST', '/test-alert', { channel, address });
@@ -2531,11 +2730,11 @@ function openInviteModal() {
   document.getElementById('invite-err').textContent = '';
   document.getElementById('invite-ok').textContent = '';
   addInviteEmail();
-  document.getElementById('invite-modal').classList.add('open');
+  openModal('invite-modal');
 }
 
 function closeInviteModal() {
-  document.getElementById('invite-modal').classList.remove('open');
+  closeModal('invite-modal');
 }
 
 function addInviteEmail() {
@@ -2564,7 +2763,7 @@ async function sendInvites() {
   const err = document.getElementById('invite-err');
   const ok = document.getElementById('invite-ok');
   if (!emails.length) { err.textContent = 'Enter at least one email address.'; return; }
-  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Sending...';
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Sending…';
   err.textContent = ''; ok.textContent = '';
   try {
     const result = await api('POST', '/invites', { emails });
@@ -2595,12 +2794,12 @@ function openIntegrationModal() {
   document.getElementById('ig-err').textContent = '';
   document.getElementById('ig-ok').textContent = '';
   document.getElementById('ig-result').innerHTML = '';
-  document.getElementById('integration-modal').classList.add('open');
+  openModal('integration-modal');
   document.getElementById('ig-name').focus();
 }
 
 function closeIntegrationModal() {
-  document.getElementById('integration-modal').classList.remove('open');
+  closeModal('integration-modal');
 }
 
 async function submitIntegration() {
@@ -2624,7 +2823,7 @@ async function submitIntegration() {
   if (!name || !baseUrl || !secret) { err.textContent = 'Name, base URL, and secret are required.'; return; }
   if (!recipients.length) { err.textContent = 'Add at least one alert recipient.'; return; }
 
-  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Creating & verifying...';
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Creating &amp; verifying…';
   try {
     const payload = { name, baseUrl, secret, recipients };
     if (cron) payload.cron = cron;
@@ -2640,7 +2839,7 @@ async function submitIntegration() {
       + '<div style="margin-bottom:6px">First check: ' + badge + '</div>'
       + (fr.error
           ? '<div style="color:var(--red);font-size:12px">' + esc(fr.error) + '</div>'
-            + '<div style="color:var(--m);font-size:12px;margin-top:6px">Double-check the base URL and secret, then re-run from the Reports tab.</div>'
+            + '<div style="color:var(--m);font-size:12px;margin-top:6px">Double-check the base URL and secret, then use Run now on the dashboard to retry.</div>'
           : '<div style="color:var(--m);font-size:12px">Observed totalErrors = ' + esc(String(fr.observed)) + '. Monitoring is live.</div>')
       + '</div>';
     loadDashboard();
@@ -2696,7 +2895,7 @@ async function testRequest() {
   const innerEl = document.getElementById('test-result-inner');
   const errEl = document.getElementById('test-error');
 
-  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Testing...';
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Testing…';
   resultEl.style.display = 'none'; errEl.style.display = 'none';
   document.getElementById('ws2-err').textContent = '';
 
@@ -2806,6 +3005,7 @@ document.getElementById('li-user').addEventListener('keydown', e => { if (e.key 
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 (async function init() {
+  initStepRail();
   const path = location.pathname;
   const token = new URLSearchParams(location.search).get('token');
   if (path === '/invite/accept' && token) {
@@ -2833,6 +3033,15 @@ document.getElementById('li-user').addEventListener('keydown', e => { if (e.key 
     const row = e.target.closest('[data-run-detail]');
     if (row) openRunDetail(row.dataset.monitorid, row.dataset.timestamp, row.dataset.runid);
   });
+  // Same activation from the keyboard — the rows are role=button now, so Enter
+  // and Space have to do what a click does.
+  if (rl) rl.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const row = e.target.closest('[data-run-detail]');
+    if (!row) return;
+    e.preventDefault();
+    openRunDetail(row.dataset.monitorid, row.dataset.timestamp, row.dataset.runid);
+  });
   // Legacy-orphan purge form: user supplies timestamp + runId from the logs.
   if (rl) rl.addEventListener('submit', (e) => {
     const form = e.target.closest('[data-purge-legacy]');
@@ -2852,7 +3061,7 @@ document.getElementById('li-user').addEventListener('keydown', e => { if (e.key 
   const sl = document.getElementById('d-secret-list');
   if (sl) sl.addEventListener('click', (e) => {
     const b = e.target.closest('[data-del-secret]');
-    if (b) deleteSecret(b.getAttribute('data-del-secret'));
+    if (b) deleteSecret(b.getAttribute('data-del-secret'), b);
   });
   buildTimeOptions();
 })();
