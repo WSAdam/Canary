@@ -305,6 +305,9 @@ textarea{resize:vertical;min-height:72px}
 /* The two hints written with class="help-text" rendered at full body size
    because the class was never defined; match the .hint they sit beside. */
 .help-text{font-size:12px;color:var(--m);margin-top:4px}
+/* Disabled inputs were styled identically to editable ones, so a locked field
+   (loading, or the relay name on edit) just looked broken. */
+input:disabled,select:disabled,textarea:disabled{opacity:.5;cursor:not-allowed}
 
 /* Reports keeps its rows on screen while a new window loads instead of blanking
    to a placeholder and hard-flashing the page. */
@@ -1921,12 +1924,20 @@ async function editDetails(monitorId, btn) {
   document.getElementById('wiz-title').textContent = 'Edit details';
   document.getElementById('wiz-subtitle').textContent = monitorId;
   document.getElementById('ws1-btn').textContent = 'Save details';
+  const nameEl = document.getElementById('w-name');
+  const descEl = document.getElementById('w-desc');
+  // The wizard is already on screen by now, so the pending state has to live in
+  // the form: empty enabled fields read as "this monitor has no name", and
+  // anything typed into them would be overwritten when the fetch lands.
+  nameEl.disabled = descEl.disabled = true;
   try {
     const m = await withPending(btn, 'Opening…', () => api('GET', '/monitors/' + monitorId));
-    document.getElementById('w-name').value = m.name || '';
-    document.getElementById('w-desc').value = m.description || '';
+    nameEl.value = m.name || '';
+    descEl.value = m.description || '';
   } catch (e) {
     showStepErr('ws1-err', e.message);
+  } finally {
+    nameEl.disabled = descEl.disabled = false;
   }
 }
 
