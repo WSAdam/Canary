@@ -41,12 +41,24 @@ Deno.test("parseCurrentUsageCost - 'subtotal' can NOT be misread as the total", 
   assertEquals(err.message.includes("shape changed"), true);
 });
 
-Deno.test("parseCurrentUsageCost - $0 with no line items fails loud, not silent", () => {
-  // A misread shape pins the guardrail at 0% forever if this returns. A real
-  // zero bill still itemizes, so bare {total:0,items:[]} is treated as a
-  // shape-change signature.
-  assertThrows(() => parseCurrentUsageCost("{total:0,items:[]}"));
-  assertThrows(() => parseCurrentUsageCost('{"total":0,"items":[]}'));
+Deno.test("parseCurrentUsageCost - a billing-cycle-reset zero is a REAL number", () => {
+  // Verbatim live payload from 2026-08-31 8PM — renewal day: the fresh cycle
+  // genuinely holds $0 with an explicit empty items array. The zero-guard's
+  // first form threw on this and paged hourly on a true zero.
+  const s = parseCurrentUsageCost("{total:0,items:[],usage:[]}");
+  assertEquals(s.totalUSD, 0);
+  assertEquals(s.items, []);
+  // Same for a strict-JSON equivalent.
+  assertEquals(parseCurrentUsageCost('{"total":0,"items":[]}').totalUSD, 0);
+});
+
+Deno.test("parseCurrentUsageCost - $0 WITHOUT any items structure still fails loud", () => {
+  // A misread shape pins the guardrail at 0% forever if this returns. The
+  // guard trusts a zero only when a recognized items array is present —
+  // a bare total with no items structure remains a shape-change signature.
+  assertThrows(() => parseCurrentUsageCost("{total:0}"));
+  assertThrows(() => parseCurrentUsageCost('{"total":0}'));
+  assertThrows(() => parseCurrentUsageCost("{total:0,lineItemsV2:{}}"));
 });
 
 Deno.test("parseCurrentUsageCost - a genuine zero WITH items is accepted", () => {

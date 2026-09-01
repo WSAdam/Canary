@@ -60,14 +60,19 @@ function jsonItems(items: unknown): SpendItem[] {
 export function parseCurrentUsageCost(dataStr: string): DenoSpend {
   let totalUSD: number | undefined;
   let items: SpendItem[] = [];
+  // Did the payload carry a RECOGNIZED items structure (even an empty one)?
+  // This is what separates a trustworthy $0 from a misread shape below.
+  let itemsStructureFound = false;
 
-  // 1) Strict JSON (the post-2026-08 shape, and any future sane one).
+  // 1) Strict JSON (a possible future shape).
   try {
     const parsed = JSON.parse(dataStr);
     if (typeof parsed === "object" && parsed !== null) {
       const o = parsed as Record<string, unknown>;
       totalUSD = num(o.total) ?? num(o.totalUSD) ?? num(o.grandTotal);
-      items = jsonItems(o.items ?? o.lines ?? o.breakdown);
+      const rawItems = o.items ?? o.lines ?? o.breakdown;
+      itemsStructureFound = Array.isArray(rawItems);
+      items = jsonItems(rawItems);
     }
   } catch {
     // 2) Legacy unquoted-key serialization. The lookbehind anchors `total:` to
@@ -76,6 +81,7 @@ export function parseCurrentUsageCost(dataStr: string): DenoSpend {
     //    serializer drops it on sub-1 values (seen live 2026-08-06).
     const grand = dataStr.match(/(?<![A-Za-z0-9_$"'])total:\s*(-?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+))/);
     if (grand) totalUSD = Number(grand[1]);
+    itemsStructureFound = /(?<![A-Za-z0-9_$"'])items:\s*\[/.test(dataStr);
     const re = /\{description:"((?:[^"\\]|\\.)*)",total:\s*(-?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+))\}/g;
     for (let m = re.exec(dataStr); m; m = re.exec(dataStr)) {
       items.push({ description: m[1], costUSD: Number(m[2]) });
@@ -85,10 +91,13 @@ export function parseCurrentUsageCost(dataStr: string): DenoSpend {
   if (totalUSD === undefined) {
     throw new Error(`currentUsageCost: no 'total' found — billing payload shape changed; payload starts: ${snippet(dataStr)}`);
   }
-  if (totalUSD === 0 && items.length === 0) {
-    // A real invoice itemizes even when small; total 0 with NOTHING billed is
-    // the signature of a misread shape. Fail loud so the guardrail can't be
-    // silently pinned at 0% by a payload change.
+  if (totalUSD === 0 && items.length === 0 && !itemsStructureFound) {
+    // $0 with no recognizable items structure at all is the signature of a
+    // misread shape — fail loud so the guardrail can't be silently pinned at
+    // 0% by a payload change. A $0 WITH an explicit (empty) items array is a
+    // real number: exactly what the first hours after a billing-cycle renewal
+    // look like ({total:0,items:[],usage:[]}, seen live 2026-08-31 8PM, cycle
+    // renewal day — the guard's original form paged hourly on a true zero).
     throw new Error(`currentUsageCost: parsed $0 with no line items — likely a shape change; payload starts: ${snippet(dataStr)}`);
   }
   return { totalUSD, items };
